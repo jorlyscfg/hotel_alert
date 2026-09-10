@@ -1,0 +1,3 @@
+-- The executable migration is kept in 001_initial.ts so compiled production builds do not depend on source files.
+-- This SQL file mirrors the migration boundary and is retained as an operator-readable schema reference.
+-- Run `pnpm db:migrate`; do not execute migration files manually against production.

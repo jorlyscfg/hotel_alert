@@ -1,0 +1,37 @@
+export const ERROR_CODES = [
+  'AUTH_REQUIRED',
+  'AUTH_INVALID',
+  'AUTH_LOCKED',
+  'FORBIDDEN_ASSIGNMENT',
+  'DEVICE_INACTIVE',
+  'DEVICE_TOKEN_REVOKED',
+  'AUTH_AMBIGUOUS_CREDENTIALS',
+  'INACTIVE_DEPENDENCY',
+  'ACTIVE_DEPENDENCIES',
+  'VERSION_CONFLICT',
+  'TOKEN_ROTATION_EXPIRED',
+  'TOKEN_ROTATION_MISMATCH',
+  'SETTING_INVALID',
+  'VALIDATION_ERROR',
+  'RESOURCE_NOT_FOUND',
+  'RESOURCE_CONFLICT',
+  'REQUEST_INVALID_TRANSITION',
+  'REQUEST_VERSION_CONFLICT',
+  'IDEMPOTENCY_KEY_REUSE_MISMATCH',
+  'RATE_LIMITED',
+  'DATABASE_UNAVAILABLE',
+  'INTERNAL_ERROR'
+] as const;
+
+export type ErrorCode = (typeof ERROR_CODES)[number];
+
+export interface ApiErrorBody {
+  code: ErrorCode;
+  message: string;
+  details?: unknown;
+  requestId: string;
+}
+
+export interface ApiErrorResponse {
+  error: ApiErrorBody;
+}
