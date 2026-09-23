@@ -52,7 +52,7 @@ The Android pairing already stores the device assignment and bearer token in app
 - Build, lint, run `check`, and `git diff --check`; the parent performs the authorized tablet smoke verification without station mutation.
 - **Route:** delegated direct writer.
 - **Checks:** Android unit tests, assemble, lint, check, `git diff --check`, and on-device smoke verification.
-- **Progress:** initial implementation and host checks passed; parent reports the SM-T220 upgrade/restart smoke restored the AREA console and foreground receiver. Follow-up now keeps `DEVICE_ID_MISMATCH` from triggering assignment cleanup, and host checks passed; post-fix tablet recheck is pending.
+- **Progress:** implementation, host checks, in-place SM-T220 APK update, and post-update process-restart smoke all passed; no station assignment was changed.
 - **Commits:** initial implementation `624fd11` (`fix(android): resume paired area receiver`); assignment-invalidation follow-up `420956d` (`fix(android): invalidate forbidden area assignment`).
 
 ## Acceptance Criteria
@@ -77,10 +77,10 @@ The Android pairing already stores the device assignment and bearer token in app
 - `source /home/jorlys/.local/share/hotel-alert-env/android-toolchain.sh && ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:check` from `apps/android-notification-receiver` succeeds (`BUILD SUCCESSFUL`, 78 actionable tasks; 16 executed). The focused AASP-02 unit tests had also passed in the prior test invocation; this combined run confirmed all requested Gradle targets remain green.
 - The legacy migration test explicitly verifies config + Keystore token are sufficient when the run-intent and snapshot cache are both absent; startup can proceed to fetch the server-authoritative AREA snapshot. Explicit `false` remains stopped.
 - After the invalidation follow-up, the same Gradle command passes again (`BUILD SUCCESSFUL`, 78 actionable tasks; 20 executed), including the new `DEVICE_ID_MISMATCH` non-invalidation test and the existing `FORBIDDEN_ASSIGNMENT` cleanup test.
-- Parent reports the authorized SM-T220 in-place update/restart restored the AREA console and foreground receiver without changing station assignment. That smoke predates the follow-up below; parent must reinstall and repeat it after the invalidation fix.
+- The final APK was installed in-place with `adb install -r` on the authorized SM-T220. The tablet reopened its Housekeeping AREA console with the existing six completed requests; after `am force-stop` and relaunch, the same console returned and `HotelNotificationReceiverService` remained foreground. The screenshot is `artifacts/aasp02-sm-t220-visible.png`. No pairing, registration, or station assignment was changed.
 - Follow-up closes the review gap: `FORBIDDEN_ASSIGNMENT` still invokes pairing/cache/run-intent cleanup, while `DEVICE_ID_MISMATCH` remains an auth failure without automatic assignment invalidation. Focused tests cover both code paths.
 - `git diff --check` and `git diff --cached --check` pass for the AASP-02 source, tests, and task tracker paths.
 
 ## Next Step
 
-Parent to reinstall and repeat the authorized tablet smoke without changing station assignment.
+No implementation steps remain for this feature. The debug APK used for the on-device smoke is at `apps/android-notification-receiver/app/build/outputs/apk/debug/app-debug.apk`.
