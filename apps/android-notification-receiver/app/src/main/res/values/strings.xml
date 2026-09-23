@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hotel Alert</string>
+    <string name="receiver_channel_name">Hotel Alert requests</string>
+    <string name="receiver_channel_description">Room-service request notifications with actions.</string>
+    <string name="receiver_service_notification">Hotel Alert receiver is running</string>
+    <string name="receiver_open_diagnostics">Open diagnostics</string>
+    <string name="receiver_start_request">Start request</string>
+    <string name="receiver_accept_start_request">Accept / start request</string>
+    <string name="receiver_action_failed_title">Request could not be started</string>
+    <string name="receiver_action_failed_generic">Refresh the area queue and try again.</string>
+    <string name="receiver_action_failed_version_conflict">The request changed already. Refresh the area queue.</string>
+    <string name="receiver_action_failed_invalid_transition">This request is no longer pending.</string>
+    <string name="receiver_action_failed_device">This station is no longer authorized. Open the app diagnostics.</string>
+    <string name="receiver_action_failed_unavailable">The station is not ready to process requests. Open the app diagnostics.</string>
+</resources>
