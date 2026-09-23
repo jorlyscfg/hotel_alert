@@ -52,7 +52,7 @@ The Android pairing already stores the device assignment and bearer token in app
 - **Route:** delegated direct writer.
 - **Checks:** Android unit tests, assemble, lint, check, `git diff --check`, and on-device smoke verification.
 - **Progress:** implementation complete; host checks passed. Parent's on-device smoke verification remains pending.
-- **Commit:** pending.
+- **Commit:** `624fd11` (`fix(android): resume paired area receiver`).
 
 ## Acceptance Criteria
 
@@ -76,8 +76,8 @@ The Android pairing already stores the device assignment and bearer token in app
 - `source /home/jorlys/.local/share/hotel-alert-env/android-toolchain.sh && ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:check` from `apps/android-notification-receiver` succeeds (`BUILD SUCCESSFUL`, 78 actionable tasks; 16 executed). The focused AASP-02 unit tests had also passed in the prior test invocation; this combined run confirmed all requested Gradle targets remain green.
 - The legacy migration test explicitly verifies config + Keystore token are sufficient when the run-intent and snapshot cache are both absent; startup can proceed to fetch the server-authoritative AREA snapshot. Explicit `false` remains stopped.
 - APK installation/device smoke verification was not performed by this work unit; it remains with the parent as authorized.
-- `git diff --check`: pending.
+- `git diff --check` and `git diff --cached --check` pass for the AASP-02 source, tests, and task tracker paths.
 
 ## Next Step
 
-Implement AASP-02 on the existing feature branch, then run Android host checks and the authorized tablet smoke verification.
+Parent to perform the authorized tablet smoke verification without changing the station assignment.
