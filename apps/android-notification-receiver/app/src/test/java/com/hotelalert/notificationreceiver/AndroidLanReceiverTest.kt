@@ -226,6 +226,32 @@ class AndroidLanReceiverTest {
     }
 
     @Test
+    fun deviceIdMismatchDoesNotAutomaticallyInvalidateTheAssignment() = runTest {
+        val states = mutableListOf<ReceiverState>()
+        val authFailures = mutableListOf<String>()
+        val invalidationCodes = mutableListOf<String>()
+        val receiver = createReceiver(
+            scope = this,
+            socket = FakeSocket(),
+            states = states,
+            snapshotClient = FailingSnapshotClient(
+                com.hotelalert.notificationreceiver.protocol.DeviceSnapshotAssignmentException(
+                    "DEVICE_ID_MISMATCH",
+                    "The device session snapshot does not match the configured device."
+                )
+            ),
+            onAuthFailure = { authFailures += it },
+            onDeviceInvalidated = { invalidationCodes += it }
+        )
+
+        receiver.start()
+
+        assertEquals(ReceiverState.AUTH_FAILED, states.last())
+        assertEquals(listOf("DEVICE_ID_MISMATCH"), authFailures)
+        assertTrue(invalidationCodes.isEmpty())
+    }
+
+    @Test
     fun tokenRotationRequiredStopsWithoutAdvancingOrAcknowledgingTheEvent() = runTest {
         val socket = FakeSocket()
         val cursor = FakeCursorStore()

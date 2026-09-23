@@ -452,7 +452,6 @@ class AndroidLanReceiver(
         private val INVALID_DEVICE_ASSIGNMENT_CODES = setOf(
             "DEVICE_INACTIVE",
             "DEVICE_TOKEN_REVOKED",
-            "DEVICE_ID_MISMATCH",
             "FORBIDDEN_ASSIGNMENT"
         )
         private val DURABLE_EVENT_NAMES = listOf(
