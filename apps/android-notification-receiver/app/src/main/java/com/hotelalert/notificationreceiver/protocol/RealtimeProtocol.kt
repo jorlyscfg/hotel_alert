@@ -14,6 +14,13 @@ interface ReceiverConfigurationStore {
 
     fun write(configuration: ReceiverConfiguration)
 
+    /** Returns null when upgrading a version that did not persist receiver intent. */
+    fun readReceiverRunIntent(): Boolean? = null
+
+    fun writeReceiverRunIntent(enabled: Boolean) = Unit
+
+    fun clearReceiverRunIntent() = Unit
+
     /** Clears device assignment fields while retaining the configured server origin. */
     fun clearDeviceAssignment() = Unit
 

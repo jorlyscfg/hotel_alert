@@ -115,11 +115,30 @@ class AndroidReceiverConfigurationStore(context: Context) : ReceiverConfiguratio
         }
     }
 
+    override fun readReceiverRunIntent(): Boolean? = if (preferences.contains(RECEIVER_RUN_INTENT_KEY)) {
+        preferences.getBoolean(RECEIVER_RUN_INTENT_KEY, false)
+    } else {
+        null
+    }
+
+    override fun writeReceiverRunIntent(enabled: Boolean) {
+        check(preferences.edit().putBoolean(RECEIVER_RUN_INTENT_KEY, enabled).commit()) {
+            "The receiver run intent could not be persisted."
+        }
+    }
+
+    override fun clearReceiverRunIntent() {
+        check(preferences.edit().remove(RECEIVER_RUN_INTENT_KEY).commit()) {
+            "The receiver run intent could not be cleared."
+        }
+    }
+
     override fun clearDeviceAssignment() {
         check(preferences.edit()
             .remove(DEVICE_ID_KEY)
             .remove(CLIENT_INSTANCE_ID_KEY)
             .remove(CLIENT_VERSION_KEY)
+            .remove(RECEIVER_RUN_INTENT_KEY)
             .commit()) {
             "The receiver device assignment could not be cleared."
         }
@@ -131,6 +150,7 @@ class AndroidReceiverConfigurationStore(context: Context) : ReceiverConfiguratio
             .remove(DEVICE_ID_KEY)
             .remove(CLIENT_INSTANCE_ID_KEY)
             .remove(CLIENT_VERSION_KEY)
+            .remove(RECEIVER_RUN_INTENT_KEY)
             .commit()) {
             "The receiver configuration could not be cleared."
         }
@@ -142,6 +162,7 @@ class AndroidReceiverConfigurationStore(context: Context) : ReceiverConfiguratio
         private const val DEVICE_ID_KEY = "device_id"
         private const val CLIENT_INSTANCE_ID_KEY = "client_instance_id"
         private const val CLIENT_VERSION_KEY = "client_version"
+        private const val RECEIVER_RUN_INTENT_KEY = "receiver_run_enabled"
     }
 }
 
@@ -153,6 +174,7 @@ class AndroidPairingStateStore(
 
     override suspend fun replace(configuration: ReceiverConfiguration, token: String): PairingStateRollback {
         val previousConfiguration = configurationStore.read()
+        val previousRunIntent = configurationStore.readReceiverRunIntent()
         val previousToken = tokenStore.read()
         try {
             tokenStore.write(token)
@@ -172,6 +194,10 @@ class AndroidPairingStateStore(
             }
             runCatching {
                 if (previousConfiguration == null) configurationStore.clear() else configurationStore.write(previousConfiguration)
+            }
+            runCatching {
+                if (previousRunIntent == null) configurationStore.clearReceiverRunIntent()
+                else configurationStore.writeReceiverRunIntent(previousRunIntent)
             }
         }
     }

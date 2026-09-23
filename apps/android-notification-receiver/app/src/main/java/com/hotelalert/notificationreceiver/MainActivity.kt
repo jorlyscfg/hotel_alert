@@ -15,6 +15,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import com.hotelalert.notificationreceiver.protocol.ReceiverConfiguration
 import com.hotelalert.notificationreceiver.receiver.HotelNotificationReceiverService
@@ -91,6 +92,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        resumeReceiverIfConfigured()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -140,10 +142,25 @@ class MainActivity : ComponentActivity() {
                         clientVersion = BuildConfig.VERSION_NAME
                     )
                 )
+                component.configurationStore.writeReceiverRunIntent(true)
                 HotelNotificationReceiverService.start(this@MainActivity)
             }.onFailure {
                 component.statusStore.update(com.hotelalert.notificationreceiver.protocol.ReceiverState.ERROR)
             }
+        }
+    }
+
+    private fun resumeReceiverIfConfigured() {
+        lifecycleScope.launch {
+            val shouldStart = try {
+                component.shouldStartReceiver()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                component.statusStore.update(com.hotelalert.notificationreceiver.protocol.ReceiverState.ERROR)
+                false
+            }
+            if (shouldStart) HotelNotificationReceiverService.start(this@MainActivity)
         }
     }
 

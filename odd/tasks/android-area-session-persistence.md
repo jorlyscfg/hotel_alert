@@ -26,7 +26,7 @@ The Android pairing already stores the device assignment and bearer token in app
 - **Runner:** `apps/android-notification-receiver/gradlew` with `:app:testDebugUnitTest`, `:app:assembleDebug`, `:app:lintDebug`, and `:app:check`.
 - **Receipt-driven review:** disabled/unmanaged (`gentle-ai review mode status`, deciding source `clone_local`).
 - **Route:** delegated direct writer for both tasks. Trigger evidence: the fix spans at least four lifecycle/storage/test files; implementation touches multiple non-trivial Android files.
-- **Delivery strategy:** `ask-on-risk`; forecast approximately 180 authored changed lines, under the advisory 400-line budget. No chain strategy selected.
+- **Delivery strategy:** `ask-on-risk`; AASP-01 measured 372 authored changed lines (+367/-5, including the initial task document). Per the user's instruction to continue, use `feature-branch-chain` on the existing branch `jorlys/feat/lan-notification-agent`; do not create a branch or push/open a PR.
 
 ## Tasks
 
@@ -44,13 +44,14 @@ The Android pairing already stores the device assignment and bearer token in app
 ### AASP-02 — Resume the configured receiver without undoing explicit Stop
 
 - Persist whether the native receiver is intended to run; pairing/start enables it and the existing explicit Stop disables it.
-- On `MainActivity` startup, start the foreground service only when the run intent, AREA configuration, and protected device token are all present.
-- Keep the immediate cached AREA view while the service fetches the authoritative server snapshot; if server auth invalidates the station, clear the pairing/cache and allow the existing bootstrap/login flow.
-- Add focused tests for the startup eligibility/run-intent behavior.
-- Build, lint, run `check`, and install/smoke-verify the APK in-place on the authorized tablet without station mutation.
+- On `MainActivity` startup, resume only when the run intent, native assignment configuration, and protected device token are present; server snapshot validation remains authoritative for an active AREA assignment.
+- Migrate a missing run-intent key from legacy installs to enabled only when native assignment configuration and the Keystore-backed token exist. Do not require a snapshot cache for this first fetch; explicit stored `false` always remains stopped.
+- Keep the immediate cached AREA view while the service fetches the authoritative server snapshot; if server auth or assignment validation invalidates the station, clear the pairing/cache/run intent and allow the existing bootstrap/login flow.
+- Add focused tests for legacy migration, explicit Stop, missing configuration/token, and assignment rejection cleanup.
+- Build, lint, run `check`, and `git diff --check`; the parent performs the authorized tablet smoke verification without station mutation.
 - **Route:** delegated direct writer.
 - **Checks:** Android unit tests, assemble, lint, check, `git diff --check`, and on-device smoke verification.
-- **Progress:** pending.
+- **Progress:** implementation complete; host checks passed. Parent's on-device smoke verification remains pending.
 - **Commit:** pending.
 
 ## Acceptance Criteria
@@ -70,6 +71,13 @@ The Android pairing already stores the device assignment and bearer token in app
 - `git diff --check` passes for tracked AASP-01 changes; the new test file has no trailing whitespace.
 - APK build/install is not part of AASP-01; AASP-02 carries the end-to-end host/device checks.
 
+### AASP-02 verification
+
+- `source /home/jorlys/.local/share/hotel-alert-env/android-toolchain.sh && ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:check` from `apps/android-notification-receiver` succeeds (`BUILD SUCCESSFUL`, 78 actionable tasks; 16 executed). The focused AASP-02 unit tests had also passed in the prior test invocation; this combined run confirmed all requested Gradle targets remain green.
+- The legacy migration test explicitly verifies config + Keystore token are sufficient when the run-intent and snapshot cache are both absent; startup can proceed to fetch the server-authoritative AREA snapshot. Explicit `false` remains stopped.
+- APK installation/device smoke verification was not performed by this work unit; it remains with the parent as authorized.
+- `git diff --check`: pending.
+
 ## Next Step
 
-Record the AASP-01 work-unit commit, then begin AASP-02.
+Implement AASP-02 on the existing feature branch, then run Android host checks and the authorized tablet smoke verification.

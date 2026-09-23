@@ -2,6 +2,11 @@ package com.hotelalert.notificationreceiver.protocol
 
 import org.json.JSONObject
 
+class DeviceSnapshotAssignmentException(
+    val errorCode: String,
+    message: String
+) : IllegalArgumentException(message)
+
 object DeviceSnapshotParser {
     fun parseResponse(body: JSONObject, expectedDeviceId: String): DeviceSessionSnapshot {
         val requestId = body.requiredString("requestId")
@@ -20,20 +25,26 @@ object DeviceSnapshotParser {
         val deviceId = device.requiredString("id")
             ?: throw IllegalArgumentException("The device session snapshot has an invalid device ID.")
         if (deviceId != expectedDeviceId) {
-            throw IllegalArgumentException("The device session snapshot does not match the configured device.")
+            throw DeviceSnapshotAssignmentException(
+                "DEVICE_ID_MISMATCH",
+                "The device session snapshot does not match the configured device."
+            )
         }
-        if (device.requiredString("assignmentMode") != "AREA" || !device.optBoolean("active", false)) {
-            throw IllegalArgumentException("The device must have an active AREA assignment.")
+        if (device.requiredString("assignmentMode") != "AREA") {
+            throw DeviceSnapshotAssignmentException("FORBIDDEN_ASSIGNMENT", "The device must have an AREA assignment.")
+        }
+        if (!device.optBoolean("active", false)) {
+            throw DeviceSnapshotAssignmentException("DEVICE_INACTIVE", "The AREA device assignment is inactive.")
         }
         val areaId = device.requiredString("areaId")
-            ?: throw IllegalArgumentException("The device session snapshot has no area assignment.")
+            ?: throw DeviceSnapshotAssignmentException("FORBIDDEN_ASSIGNMENT", "The device session snapshot has no area assignment.")
         if (config.requiredString("mode") != "AREA") {
-            throw IllegalArgumentException("The device session snapshot has an inconsistent AREA assignment.")
+            throw DeviceSnapshotAssignmentException("FORBIDDEN_ASSIGNMENT", "The device session snapshot has an inconsistent AREA assignment.")
         }
         val configArea = config.optJSONObject("area")
-            ?: throw IllegalArgumentException("The device session snapshot is missing the configured area.")
+            ?: throw DeviceSnapshotAssignmentException("FORBIDDEN_ASSIGNMENT", "The device session snapshot is missing the configured area.")
         if (configArea.requiredString("id") != areaId) {
-            throw IllegalArgumentException("The device session snapshot has an inconsistent AREA assignment.")
+            throw DeviceSnapshotAssignmentException("FORBIDDEN_ASSIGNMENT", "The device session snapshot has an inconsistent AREA assignment.")
         }
         if (!data.has("activeRequests") || data.optJSONArray("activeRequests") == null) {
             throw IllegalArgumentException("The device session snapshot is missing activeRequests.")

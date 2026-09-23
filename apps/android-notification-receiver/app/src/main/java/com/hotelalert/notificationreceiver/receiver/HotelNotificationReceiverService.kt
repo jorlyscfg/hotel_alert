@@ -35,19 +35,21 @@ class HotelNotificationReceiverService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            (application as HotelAlertApplication).component.configurationStore.writeReceiverRunIntent(false)
             stopSelf()
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_RESTART) {
             receiver?.stop()
             receiver = (application as HotelAlertApplication).component.createReceiver(serviceScope)
-            serviceScope.launch { receiver?.start() }
+            startReceiverIfEnabled(startId)
             return START_STICKY
         }
         if (intent?.action == ACTION_START || intent == null) {
-            serviceScope.launch { receiver?.start() }
+            startReceiverIfEnabled(startId)
+            return START_STICKY
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
@@ -94,6 +96,18 @@ class HotelNotificationReceiverService : Service() {
         )
     }
 
+    private fun startReceiverIfEnabled(startId: Int) {
+        serviceScope.launch {
+            val component = (application as HotelAlertApplication).component
+            if (component.shouldStartReceiver()) {
+                receiver?.start()
+            } else {
+                receiver?.stop()
+                stopSelfResult(startId)
+            }
+        }
+    }
+
     companion object {
         private const val SERVICE_CHANNEL_ID = "hotel-alert-receiver-service"
         private const val NOTIFICATION_ID = 10_001
@@ -102,17 +116,28 @@ class HotelNotificationReceiverService : Service() {
         private const val ACTION_STOP = "com.hotelalert.notificationreceiver.STOP"
 
         fun start(context: Context) {
+            persistRunIntent(context, true)
             val intent = Intent(context, HotelNotificationReceiverService::class.java).setAction(ACTION_START)
             ContextCompat.startForegroundService(context, intent)
         }
 
         fun restart(context: Context) {
+            persistRunIntent(context, true)
             val intent = Intent(context, HotelNotificationReceiverService::class.java).setAction(ACTION_RESTART)
             ContextCompat.startForegroundService(context, intent)
         }
 
         fun stop(context: Context) {
-            context.startService(Intent(context, HotelNotificationReceiverService::class.java).setAction(ACTION_STOP))
+            try {
+                persistRunIntent(context, false)
+            } finally {
+                context.startService(Intent(context, HotelNotificationReceiverService::class.java).setAction(ACTION_STOP))
+            }
+        }
+
+        private fun persistRunIntent(context: Context, enabled: Boolean) {
+            val application = context.applicationContext as? HotelAlertApplication ?: return
+            application.component.configurationStore.writeReceiverRunIntent(enabled)
         }
     }
 }

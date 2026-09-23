@@ -1,6 +1,7 @@
 package com.hotelalert.notificationreceiver.receiver
 
 import com.hotelalert.notificationreceiver.protocol.ConnectionReady
+import com.hotelalert.notificationreceiver.protocol.DeviceSnapshotAssignmentException
 import com.hotelalert.notificationreceiver.protocol.DeviceSnapshotClient
 import com.hotelalert.notificationreceiver.protocol.DeviceSessionSnapshot
 import com.hotelalert.notificationreceiver.protocol.DurableCursorStore
@@ -93,7 +94,8 @@ class AndroidLanReceiver(
             socket?.disconnect()
             socket = null
             startRequested = false
-            val authenticationCode = authenticationFailureCode(error)
+            val authenticationCode = (error as? DeviceSnapshotAssignmentException)?.errorCode
+                ?: authenticationFailureCode(error)
             if (authenticationCode != null) {
                 handleAuthenticationFailure(authenticationCode)
             } else {
@@ -423,7 +425,7 @@ class AndroidLanReceiver(
         detachSocketHandlers()
         socket?.disconnect()
         setState(ReceiverState.AUTH_FAILED)
-        if (errorCode == "DEVICE_INACTIVE" || errorCode == "DEVICE_TOKEN_REVOKED") {
+        if (errorCode in INVALID_DEVICE_ASSIGNMENT_CODES) {
             onDeviceInvalidated(errorCode)
         }
         onAuthFailure(errorCode)
@@ -447,6 +449,12 @@ class AndroidLanReceiver(
     private class AuthenticationFailureException(val errorCode: String) : Exception(errorCode)
 
     companion object {
+        private val INVALID_DEVICE_ASSIGNMENT_CODES = setOf(
+            "DEVICE_INACTIVE",
+            "DEVICE_TOKEN_REVOKED",
+            "DEVICE_ID_MISMATCH",
+            "FORBIDDEN_ASSIGNMENT"
+        )
         private val DURABLE_EVENT_NAMES = listOf(
             "request.created",
             "request.updated",

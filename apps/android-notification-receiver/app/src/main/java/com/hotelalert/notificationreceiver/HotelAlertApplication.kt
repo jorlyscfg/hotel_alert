@@ -10,6 +10,7 @@ import com.hotelalert.notificationreceiver.protocol.NativeRequestCommandCoordina
 import com.hotelalert.notificationreceiver.protocol.NativeRequestCommandResult
 import com.hotelalert.notificationreceiver.protocol.NativeRequestTransition
 import com.hotelalert.notificationreceiver.protocol.ReceiverConfigurationStore
+import com.hotelalert.notificationreceiver.protocol.ReceiverStartupCoordinator
 import com.hotelalert.notificationreceiver.receiver.AndroidLanReceiver
 import com.hotelalert.notificationreceiver.receiver.AndroidReceiverServiceController
 import com.hotelalert.notificationreceiver.receiver.NativeReceiverSnapshotStore
@@ -47,6 +48,7 @@ class AndroidReceiverComponent(context: Application) {
         configurationStore = configurationStore,
         persistence = AtomicFileAreaSnapshotPersistence(context)
     )
+    private val startupCoordinator = ReceiverStartupCoordinator(configurationStore, tokenStore)
     val serverOriginStore: ServerOriginStore = ValidatedServerOriginStore(AndroidServerOriginStore(context))
     private val cursorStore = AtomicFileCursorStore(context)
     private val snapshotClient = HttpDeviceSnapshotClient()
@@ -77,6 +79,8 @@ class AndroidReceiverComponent(context: Application) {
 
     suspend fun transitionRequest(request: NativeRequestTransition): NativeRequestCommandResult =
         requestCommandCoordinator.transition(request)
+
+    suspend fun shouldStartReceiver(): Boolean = startupCoordinator.shouldStartReceiver()
 
     fun createReceiver(scope: CoroutineScope): AndroidLanReceiver = AndroidLanReceiver(
         configurationStore = configurationStore,

@@ -200,6 +200,32 @@ class AndroidLanReceiverTest {
     }
 
     @Test
+    fun invalidAreaAssignmentClearsPairingBeforeReceiverCanConnect() = runTest {
+        val states = mutableListOf<ReceiverState>()
+        val authFailures = mutableListOf<String>()
+        val invalidationCodes = mutableListOf<String>()
+        val receiver = createReceiver(
+            scope = this,
+            socket = FakeSocket(),
+            states = states,
+            snapshotClient = FailingSnapshotClient(
+                com.hotelalert.notificationreceiver.protocol.DeviceSnapshotAssignmentException(
+                    "FORBIDDEN_ASSIGNMENT",
+                    "The device must have an AREA assignment."
+                )
+            ),
+            onAuthFailure = { authFailures += it },
+            onDeviceInvalidated = { invalidationCodes += it }
+        )
+
+        receiver.start()
+
+        assertEquals(ReceiverState.AUTH_FAILED, states.last())
+        assertEquals(listOf("FORBIDDEN_ASSIGNMENT"), authFailures)
+        assertEquals(listOf("FORBIDDEN_ASSIGNMENT"), invalidationCodes)
+    }
+
+    @Test
     fun tokenRotationRequiredStopsWithoutAdvancingOrAcknowledgingTheEvent() = runTest {
         val socket = FakeSocket()
         val cursor = FakeCursorStore()
