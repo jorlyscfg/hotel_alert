@@ -86,7 +86,7 @@ The app already scopes most route UI to Spanish for staff and lets ROOM devices 
 - Keep the sound shorter than the existing 2-second playback cap so the second strike and decay are not cut off; do not change mute, ringer, notification-channel, or DND behavior.
 - Route: inline. Trigger evidence: exploration confirmed the bundled OGG is 1.15 seconds and the existing player cap is 2 seconds, so the requested design can be delivered by replacing one resource without changing playback code.
 - Checks: inspect encoded duration with `ffprobe`, Android unit tests, assemble, lint, check, and `git diff --check`; operator confirmation after a fresh request remains pending.
-- Progress: 🟡 Replaced the bundled alert with an offline two-strike, descending bell/chime. The packaged OGG is 1.84 seconds, below the 2-second player cap. `:app:testDebugUnitTest`, `:app:assembleDebug`, `:app:lintDebug`, `:app:check`, and `git diff --check` passed (unit-test task was UP-TO-DATE). Installed the Debug APK on the authorized SM-T220 with `adb install -r`, preserving app data. Operator confirmation that a fresh request plays the new recognizable tone remains pending.
+- Progress: 🟡 Replaced the bundled alert with an offline two-strike, descending bell/chime. The packaged OGG is 1.84 seconds, below the 2-second player cap. `:app:testDebugUnitTest`, `:app:assembleDebug`, `:app:lintDebug`, `:app:check`, and `git diff --check` passed (unit-test task was UP-TO-DATE). Installed the Debug APK on the authorized SM-T220 with `adb install -r`, preserving app data. Work-unit commit: `7e8aacb804d7f90097a4f4b47b1f0546746ef517`. Operator confirmation that a fresh request plays the new recognizable tone remains pending.
 
 ## Acceptance Criteria
 
