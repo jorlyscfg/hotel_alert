@@ -138,7 +138,7 @@ class NotificationReceiverCoreTest {
             request = requestSnapshot("area-a")
         )
 
-        assertEquals("hotel-alert-requests-v3", NotificationMapper.map(notification).channelId)
+        assertEquals("hotel-alert-requests-v4", NotificationMapper.map(notification).channelId)
     }
 
     @Test

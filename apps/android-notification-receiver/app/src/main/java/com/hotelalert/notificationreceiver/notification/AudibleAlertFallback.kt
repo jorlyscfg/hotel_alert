@@ -2,35 +2,47 @@ package com.hotelalert.notificationreceiver.notification
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioRouting
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import com.hotelalert.notificationreceiver.R
 
 /**
- * A bounded second chance for devices that show a heads-up notification but do
- * not route the channel sound to the notification stream reliably. This is not
- * a background loop: one short playback is scheduled per alert and a second
- * alert while it is active is coalesced.
+ * Plays one app-owned alert after the actual output route is verified as the
+ * tablet speaker. Playback stays muted while Android resolves that route, and
+ * overlapping alerts are coalesced.
  */
 internal object AudibleAlertFallback {
     private const val TAG = "HotelAlertSound"
     private const val START_DELAY_MS = 450L
+    private const val ROUTE_CHECK_INTERVAL_MS = 50L
+    private const val ROUTE_CHECK_TIMEOUT_MS = 900L
     private const val MAX_PLAYBACK_MS = 2_000L
 
     private val lock = Any()
     private val handler = Handler(Looper.getMainLooper())
-    private var activePlayer: MediaPlayer? = null
+    private var activePlayback: ActiveAlertPlayback? = null
     private var pendingStart = false
+
+    private class ActiveAlertPlayback(
+        val player: MediaPlayer,
+        val startedAtMs: Long
+    ) {
+        var routeListener: AudioRouting.OnRoutingChangedListener? = null
+        var pendingRouteLogged = false
+        var routeVerified = false
+    }
 
     fun schedule(context: Context) {
         val appContext = context.applicationContext
         synchronized(lock) {
-            if (pendingStart || activePlayer != null) {
+            if (pendingStart || activePlayback != null) {
                 logSuppressed(AudibleAlertBlockReason.ALREADY_PLAYING)
                 return
             }
@@ -46,7 +58,7 @@ internal object AudibleAlertFallback {
     private fun play(context: Context) {
         val blockReason = synchronized(lock) {
             pendingStart = false
-            if (activePlayer != null) {
+            if (activePlayback != null) {
                 AudibleAlertBlockReason.ALREADY_PLAYING
             } else {
                 blockReason(context)
@@ -74,54 +86,110 @@ internal object AudibleAlertFallback {
             logFailure = { reason -> Log.w(TAG, "fallback=failed reason=$reason") }
         ) ?: return
         if (!requestSpeakerRoute(context, player)) {
-            releasePlayer(player)
+            disposeUnstartedPlayer(player)
             return
         }
         try {
-            player.setOnCompletionListener { releasePlayer(it) }
-            player.setOnErrorListener { errorPlayer, what, extra ->
+            player.setVolume(0f, 0f)
+            player.isLooping = true
+            val playback = ActiveAlertPlayback(player, SystemClock.elapsedRealtime())
+            val routeListener = AudioRouting.OnRoutingChangedListener {
+                handler.post { verifyPlaybackRoute(playback) }
+            }
+            playback.routeListener = routeListener
+            player.setOnCompletionListener { releasePlayer(playback) }
+            player.setOnErrorListener { _, what, extra ->
                 Log.w(TAG, "fallback=failed reason=player_error what=$what extra=$extra")
-                releasePlayer(errorPlayer)
+                releasePlayer(playback)
                 true
             }
             synchronized(lock) {
-                activePlayer = player
+                activePlayback = playback
             }
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+                throw UnsupportedOperationException("Speaker route verification requires Android 9 or newer.")
+            }
+            player.addOnRoutingChangedListener(routeListener, handler)
             player.start()
-            val routedDevice = try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) player.routedDevice else null
-            } catch (error: Throwable) {
-                Log.w(TAG, "fallback=failed reason=routed_device_query_failed exception=${error.javaClass.simpleName}")
-                releasePlayer(player)
-                return
-            }
-            if (!verifyBuiltInSpeakerRoute(
-                    routedDevice?.let { AlertAudioOutputDevice(id = it.id, type = it.type) },
-                    log = { message ->
-                        if (message.startsWith("fallback=route_verified")) Log.i(TAG, message)
-                        else Log.w(TAG, message)
-                    }
-                )
-            ) {
-                releasePlayer(player)
-                return
-            }
-            Log.i(TAG, "fallback=started route=built_in_speaker")
+            // A route change callback is authoritative when available. Polling
+            // covers vendors that do not deliver it promptly after start().
+            verifyPlaybackRoute(playback)
         } catch (error: Throwable) {
             Log.w(TAG, "fallback=failed reason=player_start_failed exception=${error.javaClass.simpleName}")
-            releasePlayer(player)
+            releaseActivePlayer(player)
             return
         }
-        // A malformed/unsupported audio resource must never leave a player
-        // alive indefinitely, even if completion is not delivered by a vendor.
-        handler.postDelayed({ releasePlayer(player) }, MAX_PLAYBACK_MS)
     }
 
-    private fun releasePlayer(player: MediaPlayer) {
-        synchronized(lock) {
-            if (activePlayer !== player && activePlayer != null) return
-            if (activePlayer === player) activePlayer = null
+    private fun verifyPlaybackRoute(playback: ActiveAlertPlayback) {
+        val previouslyVerified = synchronized(lock) {
+            if (activePlayback !== playback) return
+            playback.routeVerified
         }
+
+        val routedDevice = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) playback.player.routedDevice else null
+        } catch (error: Throwable) {
+            Log.w(TAG, "fallback=failed reason=routed_device_query_failed exception=${error.javaClass.simpleName}")
+            releasePlayer(playback)
+            return
+        }
+        val result = verifyBuiltInSpeakerRoute(
+            routedDevice?.let { AlertAudioOutputDevice(id = it.id, type = it.type) },
+            elapsedMs = SystemClock.elapsedRealtime() - playback.startedAtMs,
+            timeoutMs = ROUTE_CHECK_TIMEOUT_MS,
+            previouslyVerified = previouslyVerified,
+            log = { message ->
+                if (message.startsWith("fallback=route_verified")) Log.i(TAG, message)
+                else Log.w(TAG, message)
+            }
+        )
+        when (result) {
+            SpeakerRouteCheckResult.PENDING -> {
+                if (!playback.pendingRouteLogged) {
+                    playback.pendingRouteLogged = true
+                    Log.i(TAG, "fallback=route_pending actual_device=unknown")
+                }
+                handler.postDelayed({ verifyPlaybackRoute(playback) }, ROUTE_CHECK_INTERVAL_MS)
+            }
+            SpeakerRouteCheckResult.REJECTED, SpeakerRouteCheckResult.TIMED_OUT -> releasePlayer(playback)
+            SpeakerRouteCheckResult.VERIFIED -> {
+                if (previouslyVerified) return
+                try {
+                    playback.player.isLooping = false
+                    playback.player.seekTo(0)
+                    playback.player.setVolume(1f, 1f)
+                    synchronized(lock) { playback.routeVerified = true }
+                    Log.i(TAG, "fallback=started route=built_in_speaker")
+                    handler.postDelayed({ releasePlayer(playback) }, MAX_PLAYBACK_MS)
+                } catch (error: Throwable) {
+                    Log.w(TAG, "fallback=failed reason=unmute_after_route_verification exception=${error.javaClass.simpleName}")
+                    releasePlayer(playback)
+                }
+            }
+        }
+    }
+
+    private fun releaseActivePlayer(player: MediaPlayer) {
+        val playback = synchronized(lock) { activePlayback?.takeIf { it.player === player } }
+        if (playback == null) disposeUnstartedPlayer(player) else releasePlayer(playback)
+    }
+
+    private fun releasePlayer(playback: ActiveAlertPlayback) {
+        synchronized(lock) {
+            if (activePlayback !== playback) return
+            activePlayback = null
+        }
+        playback.routeListener?.let { listener ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                runCatching { playback.player.removeOnRoutingChangedListener(listener) }
+            }
+        }
+        runCatching { playback.player.setVolume(0f, 0f) }
+        disposeUnstartedPlayer(playback.player)
+    }
+
+    private fun disposeUnstartedPlayer(player: MediaPlayer) {
         runCatching { player.stop() }
         runCatching { player.release() }
     }
@@ -227,12 +295,19 @@ internal fun requestBuiltInSpeakerPreference(
 
 internal fun verifyBuiltInSpeakerRoute(
     actualDevice: AlertAudioOutputDevice?,
+    elapsedMs: Long,
+    timeoutMs: Long,
+    previouslyVerified: Boolean = false,
     log: (String) -> Unit
-): Boolean {
+): SpeakerRouteCheckResult {
     if (actualDevice?.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
         log("fallback=route_verified actual_device=built_in_speaker")
-        return true
+        return SpeakerRouteCheckResult.VERIFIED
     }
+    if (actualDevice == null && !previouslyVerified && elapsedMs < timeoutMs) {
+        return SpeakerRouteCheckResult.PENDING
+    }
+
     val actualDeviceName = when (actualDevice?.type) {
         null -> "unknown"
         AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "bluetooth_a2dp"
@@ -241,8 +316,24 @@ internal fun verifyBuiltInSpeakerRoute(
         AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "wired_headset"
         else -> "type_${actualDevice.type}"
     }
-    log("fallback=failed reason=route_not_built_in_speaker actual_device=$actualDeviceName")
-    return false
+    if (actualDevice != null) {
+        val reason = if (previouslyVerified) "route_changed_after_verification" else "route_not_built_in_speaker"
+        log("fallback=failed reason=$reason actual_device=$actualDeviceName")
+        return SpeakerRouteCheckResult.REJECTED
+    }
+    if (previouslyVerified) {
+        log("fallback=failed reason=route_changed_after_verification actual_device=unknown")
+        return SpeakerRouteCheckResult.REJECTED
+    }
+    log("fallback=failed reason=route_verification_timeout actual_device=$actualDeviceName")
+    return SpeakerRouteCheckResult.TIMED_OUT
+}
+
+internal enum class SpeakerRouteCheckResult {
+    PENDING,
+    VERIFIED,
+    REJECTED,
+    TIMED_OUT
 }
 
 internal data class AudibleAlertEligibilityState(
@@ -264,7 +355,7 @@ internal enum class AudibleAlertBlockReason(val logToken: String) {
     CHANNEL_MISSING("channel_missing"),
     CHANNEL_DISABLED("channel_disabled"),
     CHANNEL_IMPORTANCE_TOO_LOW("channel_importance_too_low"),
-    CHANNEL_SOUND_DISABLED("channel_sound_disabled"),
+    CHANNEL_NOT_SILENT("channel_not_silent"),
     ALREADY_PLAYING("already_playing")
 }
 
@@ -284,7 +375,7 @@ internal object AudibleAlertEligibility {
         if (state.channelImportance < android.app.NotificationManager.IMPORTANCE_DEFAULT) {
             return AudibleAlertBlockReason.CHANNEL_IMPORTANCE_TOO_LOW
         }
-        if (!state.channelHasSound) return AudibleAlertBlockReason.CHANNEL_SOUND_DISABLED
+        if (state.channelHasSound) return AudibleAlertBlockReason.CHANNEL_NOT_SILENT
         return null
     }
 }

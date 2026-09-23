@@ -19,8 +19,10 @@ data class NotificationContent(
 )
 
 object NotificationMapper {
-    /** A new channel id is intentional: Android persists user-selected channel importance. */
-    const val REQUEST_CHANNEL_ID = "hotel-alert-requests-v3"
+    /** A silent, versioned channel prevents Android from routing a second tone. */
+    const val REQUEST_CHANNEL_ID = "hotel-alert-requests-v4"
+    const val PREVIOUS_REQUEST_CHANNEL_ID = "hotel-alert-requests-v3"
+    const val LEGACY_REQUEST_CHANNEL_ID = "hotel-alert-requests-v2"
 
     fun canStartRequest(notification: RequestNotification): Boolean =
         notification.request.status == "PENDING"

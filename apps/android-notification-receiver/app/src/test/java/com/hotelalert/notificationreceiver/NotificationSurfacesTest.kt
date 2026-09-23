@@ -13,6 +13,8 @@ import com.hotelalert.notificationreceiver.notification.AlertAudioOutputDevice
 import com.hotelalert.notificationreceiver.notification.createAlertMediaPlayer
 import com.hotelalert.notificationreceiver.notification.requestBuiltInSpeakerPreference
 import com.hotelalert.notificationreceiver.notification.verifyBuiltInSpeakerRoute
+import com.hotelalert.notificationreceiver.notification.SpeakerRouteCheckResult
+import com.hotelalert.notificationreceiver.notification.requestChannelImportance
 import com.hotelalert.notificationreceiver.protocol.RequestNotification
 import com.hotelalert.notificationreceiver.R
 import org.junit.Assert.assertEquals
@@ -57,7 +59,7 @@ class NotificationSurfacesTest {
             channelRequired = true,
             channelExists = true,
             channelImportance = NotificationManager.IMPORTANCE_DEFAULT,
-            channelHasSound = true
+            channelHasSound = false
         )
 
         assertNull(AudibleAlertEligibility.blockReason(eligible))
@@ -90,8 +92,23 @@ class NotificationSurfacesTest {
             AudibleAlertEligibility.blockReason(eligible.copy(channelImportance = NotificationManager.IMPORTANCE_LOW))
         )
         assertEquals(
-            AudibleAlertBlockReason.CHANNEL_SOUND_DISABLED,
-            AudibleAlertEligibility.blockReason(eligible.copy(channelHasSound = false))
+            AudibleAlertBlockReason.CHANNEL_NOT_SILENT,
+            AudibleAlertEligibility.blockReason(eligible.copy(channelHasSound = true))
+        )
+    }
+
+    @Test
+    fun requestChannelIsVersionedSilentAndKeepsPriorImportanceWhenAvailable() {
+        assertEquals("hotel-alert-requests-v4", NotificationMapper.REQUEST_CHANNEL_ID)
+        assertEquals(NotificationManager.IMPORTANCE_HIGH, requestChannelImportance(null))
+        assertEquals(NotificationManager.IMPORTANCE_NONE, requestChannelImportance(NotificationManager.IMPORTANCE_NONE))
+        assertEquals(NotificationManager.IMPORTANCE_LOW, requestChannelImportance(NotificationManager.IMPORTANCE_LOW))
+
+        val silentChannelEligibility = eligibleChannelState()
+        assertNull(AudibleAlertEligibility.blockReason(silentChannelEligibility))
+        assertEquals(
+            AudibleAlertBlockReason.CHANNEL_NOT_SILENT,
+            AudibleAlertEligibility.blockReason(silentChannelEligibility.copy(channelHasSound = true))
         )
     }
 
@@ -196,28 +213,106 @@ class NotificationSurfacesTest {
     }
 
     @Test
-    fun effectiveRouteMustBeBuiltInSpeakerAndIsLoggedSeparatelyFromPreference() {
+    fun unknownRouteCanSettleToBuiltInSpeakerBeforeTimeout() {
         val logs = mutableListOf<String>()
 
-        assertTrue(
+        assertEquals(
+            SpeakerRouteCheckResult.PENDING,
+            verifyBuiltInSpeakerRoute(
+                actualDevice = null,
+                elapsedMs = 0,
+                timeoutMs = 900,
+                log = logs::add
+            )
+        )
+        assertEquals(
+            SpeakerRouteCheckResult.VERIFIED,
             verifyBuiltInSpeakerRoute(
                 AlertAudioOutputDevice(id = 2, type = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER),
-                logs::add
+                elapsedMs = 150,
+                timeoutMs = 900,
+                log = logs::add
             )
         )
-        assertFalse(
-            verifyBuiltInSpeakerRoute(
-                AlertAudioOutputDevice(id = 12, type = AudioDeviceInfo.TYPE_BLUETOOTH_A2DP),
-                logs::add
-            )
-        )
-        assertFalse(verifyBuiltInSpeakerRoute(actualDevice = null, log = logs::add))
 
         assertEquals(
             listOf(
-                "fallback=route_verified actual_device=built_in_speaker",
+                "fallback=route_verified actual_device=built_in_speaker"
+            ),
+            logs
+        )
+    }
+
+    @Test
+    fun routeMismatchAndPersistentUnknownFailClosed() {
+        val logs = mutableListOf<String>()
+
+        assertEquals(
+            SpeakerRouteCheckResult.REJECTED,
+            verifyBuiltInSpeakerRoute(
+                AlertAudioOutputDevice(id = 12, type = AudioDeviceInfo.TYPE_BLUETOOTH_A2DP),
+                elapsedMs = 100,
+                timeoutMs = 900,
+                log = logs::add
+            )
+        )
+        assertEquals(
+            SpeakerRouteCheckResult.PENDING,
+            verifyBuiltInSpeakerRoute(null, elapsedMs = 899, timeoutMs = 900, log = logs::add)
+        )
+        assertEquals(
+            SpeakerRouteCheckResult.TIMED_OUT,
+            verifyBuiltInSpeakerRoute(null, elapsedMs = 900, timeoutMs = 900, log = logs::add)
+        )
+        assertEquals(
+            listOf(
                 "fallback=failed reason=route_not_built_in_speaker actual_device=bluetooth_a2dp",
-                "fallback=failed reason=route_not_built_in_speaker actual_device=unknown"
+                "fallback=failed reason=route_verification_timeout actual_device=unknown"
+            ),
+            logs
+        )
+    }
+
+    @Test
+    fun routeChangeAfterSpeakerVerificationIsRejectedImmediately() {
+        val logs = mutableListOf<String>()
+        val speaker = AlertAudioOutputDevice(id = 2, type = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER)
+        val bluetooth = AlertAudioOutputDevice(id = 12, type = AudioDeviceInfo.TYPE_BLUETOOTH_A2DP)
+
+        assertEquals(
+            SpeakerRouteCheckResult.VERIFIED,
+            verifyBuiltInSpeakerRoute(
+                speaker,
+                elapsedMs = 100,
+                timeoutMs = 900,
+                log = logs::add
+            )
+        )
+        assertEquals(
+            SpeakerRouteCheckResult.REJECTED,
+            verifyBuiltInSpeakerRoute(
+                bluetooth,
+                elapsedMs = 150,
+                timeoutMs = 900,
+                previouslyVerified = true,
+                log = logs::add
+            )
+        )
+        assertEquals(
+            SpeakerRouteCheckResult.REJECTED,
+            verifyBuiltInSpeakerRoute(
+                actualDevice = null,
+                elapsedMs = 151,
+                timeoutMs = 900,
+                previouslyVerified = true,
+                log = logs::add
+            )
+        )
+        assertEquals(
+            listOf(
+                "fallback=route_verified actual_device=built_in_speaker",
+                "fallback=failed reason=route_changed_after_verification actual_device=bluetooth_a2dp",
+                "fallback=failed reason=route_changed_after_verification actual_device=unknown"
             ),
             logs
         )
@@ -233,7 +328,7 @@ class NotificationSurfacesTest {
             channelRequired = true,
             channelExists = true,
             channelImportance = NotificationManager.IMPORTANCE_DEFAULT,
-            channelHasSound = true
+            channelHasSound = false
         )
         val speaker = AlertAudioOutputDevice(id = 2, type = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER)
         assertTrue(
@@ -268,5 +363,16 @@ class NotificationSurfacesTest {
         eventSequence = 1,
         occurredAt = "2026-09-19T00:00:00Z",
         request = requestSnapshot("area-a")
+    )
+
+    private fun eligibleChannelState() = AudibleAlertEligibilityState(
+        audioManagerAvailable = true,
+        ringerModeNormal = true,
+        notificationVolume = 1,
+        dndAllowsAlerts = true,
+        channelRequired = true,
+        channelExists = true,
+        channelImportance = NotificationManager.IMPORTANCE_DEFAULT,
+        channelHasSound = false
     )
 }

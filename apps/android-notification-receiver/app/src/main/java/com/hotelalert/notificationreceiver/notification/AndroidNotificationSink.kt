@@ -3,7 +3,6 @@ package com.hotelalert.notificationreceiver.notification
 import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.media.AudioAttributes
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -76,7 +75,10 @@ class AndroidNotificationSink(
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            // The bundled player below is the only sound path. Explicitly disable
+            // builder defaults for pre-channel Android versions as well.
+            .setDefaults(0)
+            .setSound(null)
         if (content.action == NotificationAction.START_REQUEST) {
             val bubbleShortcutId = NotificationMapper.bubbleShortcutId(content)
             val bubbleIcon = IconCompat.createWithResource(context, R.drawable.ic_hotel_alert_launcher)
@@ -135,26 +137,22 @@ class AndroidNotificationSink(
     private fun createChannel() {
         if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O) return
         val manager = context.getSystemService(NotificationManager::class.java)
+        val previousChannel = manager.getNotificationChannel(NotificationMapper.PREVIOUS_REQUEST_CHANNEL_ID)
+            ?: manager.getNotificationChannel(NotificationMapper.LEGACY_REQUEST_CHANNEL_ID)
         manager.createNotificationChannel(
             NotificationChannel(
                 NotificationMapper.REQUEST_CHANNEL_ID,
                 context.getString(R.string.receiver_channel_name),
-                NotificationManager.IMPORTANCE_HIGH
+                requestChannelImportance(previousChannel?.importance)
             ).apply {
                 description = context.getString(R.string.receiver_channel_description)
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
                     setAllowBubbles(true)
                 }
-                // Channel sound is the source of truth on Android O+. The channel id is
-                // versioned so devices that already created the silent v2 channel receive
-                // the new audible defaults without overwriting the user's mute settings.
-                setSound(
-                    android.net.Uri.parse("android.resource://${context.packageName}/${R.raw.hotel_alert_bell}"),
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build()
-                )
+                // Android permanently owns sound routing for an existing channel.
+                // Keep this new channel silent; the app-owned player verifies the
+                // built-in speaker route before it unmutes the bundled alert.
+                setSound(null, null)
             }
         )
     }
@@ -181,3 +179,6 @@ class AndroidNotificationSink(
 class NotificationPermissionDeniedException : IllegalStateException("Android notification permission is not granted.") {
     val errorCode: String = "POST_NOTIFICATIONS_DENIED"
 }
+
+internal fun requestChannelImportance(previousImportance: Int?): Int =
+    previousImportance ?: NotificationManager.IMPORTANCE_HIGH
