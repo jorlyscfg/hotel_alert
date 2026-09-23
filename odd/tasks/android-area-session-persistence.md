@@ -53,7 +53,7 @@ The Android pairing already stores the device assignment and bearer token in app
 - **Route:** delegated direct writer.
 - **Checks:** Android unit tests, assemble, lint, check, `git diff --check`, and on-device smoke verification.
 - **Progress:** initial implementation and host checks passed; parent reports the SM-T220 upgrade/restart smoke restored the AREA console and foreground receiver. Follow-up now keeps `DEVICE_ID_MISMATCH` from triggering assignment cleanup, and host checks passed; post-fix tablet recheck is pending.
-- **Commit:** initial implementation `624fd11` (`fix(android): resume paired area receiver`); follow-up commit pending.
+- **Commits:** initial implementation `624fd11` (`fix(android): resume paired area receiver`); assignment-invalidation follow-up `420956d` (`fix(android): invalidate forbidden area assignment`).
 
 ## Acceptance Criteria
 
