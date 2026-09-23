@@ -54,8 +54,8 @@ The installed APK still shows its previous custom vector icon. The user supplied
 - `aapt dump badging` on `app/build/outputs/apk/debug/app-debug.apk` resolves all launcher densities and the manifest icon to `res/drawable-v26/ic_hotel_alert_launcher.xml`; `unzip -l` confirms both the adaptive XML and logo artwork are packaged.
 - `adb -s R9PT70GX3PA install -r app/build/outputs/apk/debug/app-debug.apk` returned `Success`; `-r` upgraded the APK without clearing app data. No station assignments were changed. The installed launcher appearance was not independently captured from the tablet UI.
 - Scoped `git diff --check` passed for the icon resources and task document.
-- Work-unit commit: pending.
+- Work-unit commit: `4196b74` (`feat(android): use supplied launcher logo`).
 
 ## Next Step
 
-Record the work-unit commit identity in this document. Do not register, assign, or otherwise change devices.
+Complete. No station/device assignment changes were made.
