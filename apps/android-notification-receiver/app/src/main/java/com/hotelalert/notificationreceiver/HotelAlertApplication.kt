@@ -18,6 +18,7 @@ import com.hotelalert.notificationreceiver.storage.AndroidKeyStoreDeviceTokenSto
 import com.hotelalert.notificationreceiver.storage.AndroidPairingStateStore
 import com.hotelalert.notificationreceiver.storage.AndroidReceiverConfigurationStore
 import com.hotelalert.notificationreceiver.storage.AndroidServerOriginStore
+import com.hotelalert.notificationreceiver.storage.AtomicFileAreaSnapshotPersistence
 import com.hotelalert.notificationreceiver.storage.AtomicFileCursorStore
 import com.hotelalert.notificationreceiver.storage.DeviceTokenStore
 import com.hotelalert.notificationreceiver.web.ServerOriginStore
@@ -40,9 +41,12 @@ class HotelAlertApplication : Application() {
 
 class AndroidReceiverComponent(context: Application) {
     val statusStore = ReceiverStatusStore()
-    val snapshotStore = NativeReceiverSnapshotStore()
     val configurationStore: ReceiverConfigurationStore = AndroidReceiverConfigurationStore(context)
     val tokenStore: DeviceTokenStore = AndroidKeyStoreDeviceTokenStore(context)
+    val snapshotStore = NativeReceiverSnapshotStore(
+        configurationStore = configurationStore,
+        persistence = AtomicFileAreaSnapshotPersistence(context)
+    )
     val serverOriginStore: ServerOriginStore = ValidatedServerOriginStore(AndroidServerOriginStore(context))
     private val cursorStore = AtomicFileCursorStore(context)
     private val snapshotClient = HttpDeviceSnapshotClient()

@@ -7,6 +7,8 @@ import com.hotelalert.notificationreceiver.protocol.ReceiverConfiguration
 import com.hotelalert.notificationreceiver.protocol.ReceiverConfigurationStore
 import com.hotelalert.notificationreceiver.protocol.PairingStateStore
 import com.hotelalert.notificationreceiver.protocol.PairingStateRollback
+import com.hotelalert.notificationreceiver.receiver.AreaSnapshotCacheCodec
+import com.hotelalert.notificationreceiver.receiver.AreaSnapshotPersistence
 import com.hotelalert.notificationreceiver.web.ServerOriginStore
 import com.hotelalert.notificationreceiver.web.normalizeAndValidateServerOrigin
 import java.io.File
@@ -234,5 +236,44 @@ class AtomicFileCursorStore(context: Context) : DurableCursorStore {
         } catch (error: java.io.FileNotFoundException) {
             0
         }
+    }
+}
+
+class AtomicFileAreaSnapshotPersistence(context: Context) : AreaSnapshotPersistence {
+    private val file = AtomicFile(File(context.filesDir, "hotel-alert-area-snapshot"))
+    private val lock = Any()
+
+    override fun read(expectedDeviceId: String): String? = synchronized(lock) {
+        try {
+            val raw = file.openRead().bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+            AreaSnapshotCacheCodec.decode(raw, expectedDeviceId) ?: run {
+                file.delete()
+                null
+            }
+        } catch (_: java.io.FileNotFoundException) {
+            null
+        } catch (_: Throwable) {
+            file.delete()
+            null
+        }
+    }
+
+    override fun write(deviceId: String, snapshotJson: String) = synchronized(lock) {
+        val output = file.startWrite()
+        try {
+            output.bufferedWriter(StandardCharsets.UTF_8).use { writer ->
+                writer.write(AreaSnapshotCacheCodec.encode(deviceId, snapshotJson))
+                writer.newLine()
+            }
+            file.finishWrite(output)
+        } catch (error: Throwable) {
+            file.failWrite(output)
+            throw IllegalStateException("The AREA device snapshot could not be persisted.", error)
+        }
+    }
+
+    override fun clear() = synchronized(lock) {
+        file.delete()
+        Unit
     }
 }
