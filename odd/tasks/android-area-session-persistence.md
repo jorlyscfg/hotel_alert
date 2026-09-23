@@ -38,8 +38,8 @@ The Android pairing already stores the device assignment and bearer token in app
 - Add focused tests for round-trip restoration, mismatched device IDs, malformed/inactive/non-AREA snapshots, and clear behavior.
 - **Route:** delegated direct writer.
 - **Checks:** Android unit tests, then Android host checks if the work unit affects app wiring.
-- **Progress:** implementation and Android verification passed; work-unit commit is pending.
-- **Commit:** pending.
+- **Progress:** implementation and Android verification passed; work-unit commit recorded.
+- **Commit:** `1603664` (`feat(android): persist validated area snapshots`).
 
 ### AASP-02 — Resume the configured receiver without undoing explicit Stop
 
