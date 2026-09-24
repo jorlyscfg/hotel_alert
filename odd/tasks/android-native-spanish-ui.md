@@ -12,11 +12,11 @@ The native Android app currently mixes Spanish request notifications with Englis
 - Keep dynamic room/service/area names and technical identifiers unchanged; those are data, not native labels.
 - Android-owned Settings, Home chooser, permission prompts, and other system UI remain controlled by the device's Android language. Translate only Hotel Alert's surrounding copy.
 - Use Spanish in the default Android `values/strings.xml`; this ensures the app-owned copy remains Spanish regardless of the device language without adding a language selector.
-- Do not change app behavior, Android permissions, service policy, device state, or ADB-install either test device as part of this task.
+- Do not change app behavior, Android permissions, service policy, or device settings as part of this task. After an APK improvement, install the new APK on the authorized test devices as the final step unless the user explicitly opts out.
 - Preserve unrelated working tree and shared index changes; do not push or create a pull request.
 
 ## Authorized scope
-The user's request explicitly authorizes changing the native Android app's user-facing copy to Spanish. No device/remote operation is authorized by this request.
+The user explicitly authorized changing the native Android app's user-facing copy to Spanish and established that APK improvements must end with updating the two authorized test devices unless they explicitly opt out. For this rollout, the targets were ROOM device `192.168.0.243` and operator tablet `192.168.0.214`, using the previously approved wireless and USB ADB connections.
 
 ## Task checklist
 
@@ -28,12 +28,18 @@ The user's request explicitly authorizes changing the native Android app's user-
 - [x] Run Android unit tests, assemble, lint, `check`, and whitespace validation; record actual results.
 - [x] Commit only the task's source/test/documentation hunks in a work-unit commit; leave the shared Git index untouched.
 
+### ANDR-ES-02 — Install the updated APK on authorized test devices
+- [x] Install the latest debug APK on ROOM test device `192.168.0.243` over its previously authorized wireless ADB connection.
+- [x] Install the latest debug APK on operator tablet `192.168.0.214` over its previously authorized USB ADB connection.
+- [x] Confirm both `adb install -r` operations report `Success`; do not launch the apps or change settings.
+
 ## Acceptance criteria
 - All app-authored static text visible on native Android screens and in Hotel Alert notifications/system notifications is Spanish.
 - The client/admin platform UI inside the WebView is unchanged.
 - Dynamic room/service/area names, URLs, IDs, enum/protocol values, and product name are preserved.
 - Existing notification/action behavior and maintenance/kiosk behavior remain unchanged.
 - Android test/build/lint/check and scoped whitespace checks pass.
+- The rebuilt debug APK is installed on both authorized test devices unless the user explicitly opts out.
 
 ## Applicable checks
 - TDD: OFF, inherited from current Android feature tracker.
@@ -51,9 +57,10 @@ The user's request explicitly authorizes changing the native Android app's user-
 ## Progress and verification evidence
 - Exploration: CodeGraph mapped native screens, notifications, call sites, and the WebView boundary. `strings.xml` and the manifest were inspected; Android system-owned dialogs/settings are not app-localized.
 - Implementation: completed. Setup/recovery, diagnostics state labels, PIN/maintenance, kiosk controls, notification/service copy, app label, and foreground-service metadata are Spanish. No behavior changes were made.
-- Verification: `:app:testDebugUnitTest`, `:app:assembleDebug`, `:app:lintDebug`, and `:app:check` passed (78 tasks: 39 executed, 39 up-to-date); `git diff --check` and a scoped trailing-whitespace/native-copy audit passed. No ADB/device operation was performed.
+- Verification: `:app:testDebugUnitTest`, `:app:assembleDebug`, `:app:lintDebug`, and `:app:check` passed (78 tasks: 39 executed, 39 up-to-date); `git diff --check` and a scoped trailing-whitespace/native-copy audit passed. No ADB/device operation was performed during code verification; both APK installations were completed afterward as the final rollout step.
 - Work-unit commit: `924f792` (`feat(android): localize native UI in Spanish`). Only the eight task files were committed through a temporary isolated Git index; the shared Git index SHA-256 remained unchanged.
-- Next step: none for this task. The rebuilt debug APK was not installed on either device because this request did not authorize a new device operation.
+- Rollout: installed the rebuilt debug APK with `adb install -r` on ROOM test device `192.168.0.243:40975` and operator tablet `R9PT70GX3PA` (`192.168.0.214`); both returned `Success`. No app launch or device-setting changes were made.
+- Next step: none. Future APK improvements should end with updating both authorized test devices unless the user explicitly says not to.
 
 ## Relevant files
 - `apps/android-notification-receiver/app/src/main/java/com/hotelalert/notificationreceiver/ui/RoomMaintenanceScreens.kt` — native maintenance/PIN screen.
