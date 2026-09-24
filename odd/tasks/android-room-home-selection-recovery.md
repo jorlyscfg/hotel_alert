@@ -32,12 +32,13 @@ The user approved implementing the root correction to HOME confirmation/retry an
 - [x] Keep the automatic first prompt from repeating on every resume, but provide a reliable explicit retry from native maintenance when Hotel Alert is not the actual default.
 - [x] Add focused policy/behavior tests and update the operator guide with the cold-boot/HOME distinction and retry steps.
 - [x] Run focused tests, prescribed Android verification, and whitespace checks.
-- [ ] Commit only this task's source/test/doc hunks with an isolated Git index.
+- [x] Commit only this task's source/test/doc hunks with an isolated Git index.
 
 ### ROOM-HOME-02 — Roll out the verified APK
 
-- [ ] Install the verified debug APK on ROOM device `192.168.0.243` and operator tablet `192.168.0.214` using the previously approved ADB connections.
-- [ ] Record exact device/ADB outcomes; do not change Android HOME selection or power-cycle settings.
+- [x] Install the verified debug APK on ROOM device `192.168.0.243` using the user-provided ADB connection port `38655`.
+- [x] Install the verified debug APK on operator tablet `192.168.0.214` using its previously approved USB ADB connection.
+- [x] Record exact device/ADB outcomes; do not change Android HOME selection or power-cycle settings.
 
 ## Acceptance criteria
 
@@ -67,12 +68,12 @@ The user approved implementing the root correction to HOME confirmation/retry an
 ## Progress and verification evidence
 
 - Discovery: `RoomPresenceRestoreReceiver` restores only `RoomPresenceService`; Android HOME resolution is what returns the visible Activity after boot. Role selection remains consent-based without Device Owner. Android background Activity launch restrictions make boot-receiver Activity launch an unsafe generic workaround.
-- ADB state at task start: known ROOM serial `192.168.0.243:40975` was not connected; no device state or HOME role was inspected.
+- ADB state at task start: known ROOM serial `192.168.0.243:40975` was not connected; no device state or HOME role was inspected. That old serial continued to return `device not found`. After the user provided port `38655`, connecting only to `192.168.0.243:38655` succeeded; `get-state` returned `device`.
 - Implementation: `homeRoleRequestLauncher` now ignores the chooser result code and asynchronously re-reads actual HOME role/resolver state; Spanish feedback reports confirmed, not confirmed, or unknown. The automatic one-shot marker is saved before opening the chooser to avoid retry loops, while native maintenance retains an explicit retry button whose label now says it can be chosen again. The boot receiver was not changed.
 - Checks: parent ran `:app:testDebugUnitTest`, `:app:assembleDebug`, `:app:lintDebug`, and `:app:check` successfully (78 tasks: 17 executed, 61 up-to-date); `git diff --check` and a scoped trailing-whitespace scan passed. Worker also reported both focused HOME policy test classes passed. APK SHA-256: `4ec8d8a1984b322833055d41d83b7e008910a587d37341650e21cf07ed885`.
-- Work-unit commit: pending.
-- Device rollout: pending; do this only after code verification as the final APK rollout step.
-- Next step: complete ROOM-HOME-01, then ROOM-HOME-02.
+- Work-unit commit: `17b1cab` (`fix(android): report actual room home selection`), 159 authored lines; only the scoped Android flow/policy, focused test, operator guide, and this tracker were included. The shared Git index hash remained unchanged.
+- Device rollout: the operator tablet connected as `R9PT70GX3PA` accepted the verified debug APK (`adb install -r`: `Success`); `pm path` confirms the installed package and `dumpsys package` reports `versionCode=1`, `targetSdk=35`. The ROOM device connected at user-provided transport `192.168.0.243:38655` also accepted the APK (`adb install -r`: `Success`); `pm path` confirms the installed package and `dumpsys package` reports `versionCode=1`, `targetSdk=35`. APK SHA-256 matched the verified build on both installs: `4ec8d8a1984b322833055d41d83b7e008910a587d37341650e21cf07ed885`.
+- Next step: physically validate ROOM's HOME selection and cold-boot behavior separately. Both-device APK rollout is complete; no HOME setting was changed and no cold boot was performed.
 
 ## Relevant files
 
