@@ -43,10 +43,10 @@ fun ServerOriginSetupScreen(
 
     BrandedConnectionSurface {
         ConnectionCard(
-            eyebrow = "Secure connection",
-            title = "Connect Hotel Alert",
-            description = "Enter the LAN or VPN server origin. The console will be restricted to this address.",
-            status = "Initial setup"
+            eyebrow = "Conexión segura",
+            title = "Conectar Hotel Alert",
+            description = "Introduce el origen del servidor en la red local (LAN) o mediante VPN. La consola solo se conectará a esta dirección.",
+            status = "Configuración inicial"
         ) {
             OutlinedTextField(
                 value = serverOrigin,
@@ -54,7 +54,7 @@ fun ServerOriginSetupScreen(
                     serverOrigin = it
                     errorMessage = null
                 },
-                label = { Text("Server origin") },
+                label = { Text("Dirección del servidor") },
                 placeholder = { Text("http://192.168.1.20:3000") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
@@ -67,13 +67,13 @@ fun ServerOriginSetupScreen(
                     val normalizedOrigin = try {
                         normalizeAndValidateServerOrigin(serverOrigin)
                     } catch (_: IllegalArgumentException) {
-                        errorMessage = "Enter a valid HTTP or HTTPS origin without a path, query, or credentials."
+                        errorMessage = "Introduce una dirección HTTP o HTTPS válida, sin ruta, parámetros de consulta ni credenciales."
                         return@Button
                     }
                     if (onSave(normalizedOrigin)) {
                         errorMessage = null
                     } else {
-                        errorMessage = "The server origin could not be saved. Try again."
+                        errorMessage = "No se pudo guardar la dirección del servidor. Vuelve a intentarlo."
                     }
                 },
                 enabled = serverOrigin.isNotBlank(),
@@ -84,7 +84,7 @@ fun ServerOriginSetupScreen(
                     contentColor = HotelAlertBrand.Paper
                 )
             ) {
-                Text("Save and open console", fontWeight = FontWeight.Bold)
+                Text("Guardar y abrir la consola", fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -98,9 +98,9 @@ fun ServerOriginRecoveryScreen(
 ) {
     BrandedConnectionSurface {
         ConnectionCard(
-            eyebrow = "Connection interrupted",
-            title = "The console could not open",
-            description = "The server did not respond at the configured origin. Check the network and try again.",
+            eyebrow = "Conexión interrumpida",
+            title = "No se pudo abrir la consola",
+            description = "El servidor no respondió en la dirección configurada. Comprueba la red y vuelve a intentarlo.",
             status = serverOrigin
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
@@ -113,14 +113,14 @@ fun ServerOriginRecoveryScreen(
                         contentColor = HotelAlertBrand.Paper
                     )
             ) {
-                    Text("Retry", fontWeight = FontWeight.Bold)
+                    Text("Reintentar", fontWeight = FontWeight.Bold)
             }
             OutlinedButton(
                 onClick = onChangeServer,
                     modifier = Modifier.weight(1f),
                     shape = MaterialTheme.shapes.small
             ) {
-                    Text("Change server", fontWeight = FontWeight.Bold)
+                    Text("Cambiar servidor", fontWeight = FontWeight.Bold)
                 }
             }
         }

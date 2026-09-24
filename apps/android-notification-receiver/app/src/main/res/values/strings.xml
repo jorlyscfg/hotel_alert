@@ -1,18 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Hotel Alert</string>
-    <string name="receiver_channel_name">Hotel Alert requests</string>
-    <string name="receiver_channel_description">Room-service request notifications with actions.</string>
-    <string name="receiver_service_notification">Hotel Alert receiver is running</string>
-    <string name="room_presence_service_notification">Hotel Alert room station is active</string>
-    <string name="room_presence_service_description">Maintaining the room station connection</string>
-    <string name="receiver_open_diagnostics">Open diagnostics</string>
-    <string name="receiver_start_request">Start request</string>
-    <string name="receiver_accept_start_request">Accept / start request</string>
-    <string name="receiver_action_failed_title">Request could not be started</string>
-    <string name="receiver_action_failed_generic">Refresh the area queue and try again.</string>
-    <string name="receiver_action_failed_version_conflict">The request changed already. Refresh the area queue.</string>
-    <string name="receiver_action_failed_invalid_transition">This request is no longer pending.</string>
-    <string name="receiver_action_failed_device">This station is no longer authorized. Open the app diagnostics.</string>
-    <string name="receiver_action_failed_unavailable">The station is not ready to process requests. Open the app diagnostics.</string>
+    <string name="receiver_channel_name">Solicitudes de Hotel Alert</string>
+    <string name="receiver_channel_description">Notificaciones de solicitudes de servicio de habitaciones con acciones.</string>
+    <string name="receiver_service_notification">El receptor de Hotel Alert está en ejecución</string>
+    <string name="room_presence_service_notification">La estación de habitación de Hotel Alert está activa</string>
+    <string name="room_presence_service_description">Manteniendo la conexión de la estación de habitación</string>
+    <string name="receiver_open_diagnostics">Abrir diagnósticos</string>
+    <string name="receiver_start_request">Iniciar solicitud</string>
+    <string name="receiver_accept_start_request">Aceptar e iniciar solicitud</string>
+    <string name="receiver_action_failed_title">No se pudo iniciar la solicitud</string>
+    <string name="receiver_action_failed_generic">Actualiza la cola del área y vuelve a intentarlo.</string>
+    <string name="receiver_action_failed_version_conflict">La solicitud cambió. Actualiza la cola del área.</string>
+    <string name="receiver_action_failed_invalid_transition">La solicitud ya no está pendiente.</string>
+    <string name="receiver_action_failed_device">Esta estación ya no está autorizada. Abre los diagnósticos de la aplicación.</string>
+    <string name="receiver_action_failed_unavailable">La estación no está lista para procesar solicitudes. Abre los diagnósticos de la aplicación.</string>
 </resources>

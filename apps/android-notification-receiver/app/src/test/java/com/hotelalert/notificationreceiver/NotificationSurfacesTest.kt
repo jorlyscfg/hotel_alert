@@ -16,7 +16,9 @@ import com.hotelalert.notificationreceiver.notification.verifyBuiltInSpeakerRout
 import com.hotelalert.notificationreceiver.notification.SpeakerRouteCheckResult
 import com.hotelalert.notificationreceiver.notification.requestChannelImportance
 import com.hotelalert.notificationreceiver.protocol.RequestNotification
+import com.hotelalert.notificationreceiver.protocol.ReceiverState
 import com.hotelalert.notificationreceiver.R
+import com.hotelalert.notificationreceiver.ui.receiverStateLabel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -24,6 +26,25 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NotificationSurfacesTest {
+    @Test
+    fun diagnosticsShowsSpanishLabelsInsteadOfProtocolStateNames() {
+        val labels = mapOf(
+            ReceiverState.IDLE to "Inactivo",
+            ReceiverState.FETCHING_SNAPSHOT to "Consultando el estado del dispositivo",
+            ReceiverState.CONNECTING to "Conectando con el servidor",
+            ReceiverState.CONNECTED to "Conectado con el servidor",
+            ReceiverState.SYNCHRONIZING to "Sincronizando",
+            ReceiverState.SYNCHRONIZED to "Sincronizado",
+            ReceiverState.AUTH_FAILED to "Autenticación rechazada",
+            ReceiverState.ERROR to "Error",
+            ReceiverState.STOPPED to "Detenido"
+        )
+
+        labels.forEach { (state, expectedLabel) ->
+            assertEquals(expectedLabel, receiverStateLabel(state))
+        }
+    }
+
     @Test
     fun audibleFallbackIsLimitedToBackgroundCreatedRequests() {
         val created = notification("request.created")

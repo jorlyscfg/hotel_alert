@@ -103,9 +103,9 @@ class MainActivity : ComponentActivity() {
     ) { result ->
         if (maintenanceRoute == RoomMaintenanceRoute.SETTINGS) {
             kioskControlMessage = if (result.resultCode == Activity.RESULT_OK) {
-                "Android accepted the Home-app selection."
+                "Android aceptó la selección de la aplicación de inicio."
             } else {
-                "Home-app selection was not changed."
+                "No se cambió la aplicación de inicio."
             }
             refreshMaintenanceDeviceState()
         }
@@ -445,15 +445,15 @@ class MainActivity : ComponentActivity() {
     private fun strictModeMessage(preparation: RoomLockTaskPreparation): String? = when (preparation) {
         RoomLockTaskPreparation.POLICY_READY -> null
         RoomLockTaskPreparation.DEVICE_OWNER_REQUIRED ->
-            "Strict Lock Task requires Hotel Alert to be provisioned as Device Owner. Basic mode remains available."
+            "El modo kiosco estricto requiere que Hotel Alert tenga privilegios de administración del dispositivo. El modo básico sigue disponible."
         RoomLockTaskPreparation.PACKAGE_NOT_ALLOWLISTED ->
-            "Android did not allowlist Hotel Alert for Lock Task. Strict mode is unavailable."
+            "Android no incluyó Hotel Alert entre las aplicaciones permitidas para el modo kiosco estricto. Esta función no está disponible."
         RoomLockTaskPreparation.POLICY_REJECTED ->
-            "Android rejected the Device Owner policy. Strict mode is unavailable."
+            "Android rechazó la política de administración del dispositivo. El modo kiosco estricto no está disponible."
         RoomLockTaskPreparation.ROOM_SESSION_REQUIRED ->
-            "Strict Lock Task requires an active ROOM assignment."
+            "El modo kiosco estricto requiere una asignación activa de habitación."
         RoomLockTaskPreparation.ANDROID_VERSION_UNSUPPORTED ->
-            "Strict Lock Task is unavailable on this Android version."
+            "El modo kiosco estricto no está disponible en esta versión de Android."
     }
 
     private fun updateRoomWindowMode() {
@@ -508,15 +508,15 @@ class MainActivity : ComponentActivity() {
                         refreshMaintenanceDeviceState()
                     }
                     is RoomMaintenancePinVerification.Rejected -> {
-                        maintenancePinError = "Incorrect PIN. ${result.attemptsRemaining} attempts remain."
+                        maintenancePinError = "El PIN es incorrecto. Quedan ${result.attemptsRemaining} intentos."
                     }
                     is RoomMaintenancePinVerification.Locked -> {
                         val seconds = ((result.retryAfterMillis + 999) / 1_000).coerceAtLeast(1)
-                        maintenancePinError = "Too many attempts. Try again in $seconds seconds."
+                        maintenancePinError = "Demasiados intentos. Vuelve a probar en $seconds segundos."
                     }
                 }
             }.onFailure {
-                maintenancePinError = "The configuration PIN could not be checked. Please try again."
+                maintenancePinError = "No se pudo verificar el PIN de configuración. Vuelve a intentarlo."
             }
         }
     }
@@ -527,9 +527,9 @@ class MainActivity : ComponentActivity() {
             runCatching {
                 withContext(Dispatchers.IO) { maintenancePinStore.changePin(pin) }
             }.onSuccess {
-                maintenancePinChangeMessage = "Configuration PIN updated."
+                maintenancePinChangeMessage = "Se actualizó el PIN de configuración."
             }.onFailure {
-                maintenancePinChangeMessage = "The PIN could not be saved. Please try again."
+                maintenancePinChangeMessage = "No se pudo guardar el PIN. Vuelve a intentarlo."
             }
         }
     }
@@ -544,9 +544,9 @@ class MainActivity : ComponentActivity() {
                         runCatching { roomHomePolicy.setPersistentPreferredHome() }.getOrDefault(false)
                     }
                     kioskControlMessage = if (selected) {
-                        "Hotel Alert is now the managed Home app."
+                        "Hotel Alert ahora es la aplicación de inicio administrada."
                     } else {
-                        "Android could not set Hotel Alert as the managed Home app."
+                        "Android no pudo establecer Hotel Alert como aplicación de inicio administrada."
                     }
                     refreshMaintenanceDeviceState()
                 }
@@ -565,7 +565,7 @@ class MainActivity : ComponentActivity() {
                 runCatching {
                     homeRoleRequestLauncher.launch(roleManager.createRequestRoleIntent(RoleManager.ROLE_HOME))
                 }.onFailure {
-                    kioskControlMessage = "Android could not open the Home-app consent screen."
+                    kioskControlMessage = "Android no pudo abrir la pantalla de autorización de la aplicación de inicio."
                 }
             }
             HomeSelectionAction.OPEN_HOME_SETTINGS -> openHomeSelectionSettings()
@@ -579,9 +579,9 @@ class MainActivity : ComponentActivity() {
                 runCatching { roomHomePolicy.clearPersistentPreferredHome() }.getOrDefault(false)
             }
             kioskControlMessage = if (cleared) {
-                "Hotel Alert's managed Home preference was cleared. Android's current default is shown above."
+                "Se quitó la preferencia de inicio administrada de Hotel Alert. Arriba se muestra la aplicación predeterminada actual de Android."
             } else {
-                "Android could not clear the managed Home preference."
+                "Android no pudo quitar la preferencia de inicio administrada."
             }
             refreshMaintenanceDeviceState()
         }
@@ -592,9 +592,9 @@ class MainActivity : ComponentActivity() {
         try {
             startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
         } catch (_: ActivityNotFoundException) {
-            kioskControlMessage = "Home-app settings are unavailable; opening general Android Settings instead."
+            kioskControlMessage = "La configuración de aplicaciones de inicio no está disponible. Se abrirá la configuración general de Android."
             runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
-                .onFailure { kioskControlMessage = "Android Settings could not be opened on this device." }
+                .onFailure { kioskControlMessage = "No se pudo abrir la configuración de Android en este dispositivo." }
         }
     }
 
@@ -603,14 +603,14 @@ class MainActivity : ComponentActivity() {
         runCatching {
             startActivity(Intent(Settings.ACTION_SETTINGS))
         }.onFailure {
-            kioskControlMessage = "Android Settings could not be opened on this device."
+            kioskControlMessage = "No se pudo abrir la configuración de Android en este dispositivo."
         }
     }
 
     private fun openOverlayPermissionSettings() {
         if (!isMaintenanceSettingsOpen() || !ensureRoomLockTaskExitedSafely()) return
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            kioskControlMessage = "Android 10 or later does not require overlay access for this wake-recovery path."
+            kioskControlMessage = "Esta versión de Android no requiere el permiso de superposición para el intento de recuperación al activar la pantalla."
             return
         }
         try {
@@ -621,12 +621,12 @@ class MainActivity : ComponentActivity() {
                 )
             )
         } catch (_: ActivityNotFoundException) {
-            kioskControlMessage = "Android did not provide a dedicated overlay-access screen; opening general Settings."
+            kioskControlMessage = "Android no ofreció una pantalla específica para el permiso de superposición. Se abrirá la configuración general."
             runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
-                .onFailure { kioskControlMessage = "Overlay access settings could not be opened on this device." }
+                .onFailure { kioskControlMessage = "No se pudo abrir la configuración del permiso de superposición en este dispositivo." }
         } catch (error: Exception) {
             Log.w(TAG, "Android overlay-access settings could not be opened.", error)
-            kioskControlMessage = "Overlay access settings could not be opened on this device."
+            kioskControlMessage = "No se pudo abrir la configuración del permiso de superposición en este dispositivo."
         }
     }
 
@@ -646,15 +646,15 @@ class MainActivity : ComponentActivity() {
                 return true
             }
             RoomLockTaskMaintenanceExitAction.BLOCK_SCREEN_PINNING -> {
-                kioskControlMessage = "Android screen pinning is active; exit it before opening another app."
+                kioskControlMessage = "El anclaje de pantalla de Android está activo. Desactívalo antes de abrir otra aplicación."
                 return false
             }
             RoomLockTaskMaintenanceExitAction.BLOCK_UNKNOWN_STATUS -> {
-                kioskControlMessage = "Android could not confirm the Lock Task state. Another app was not opened."
+                kioskControlMessage = "Android no pudo confirmar el estado del modo kiosco estricto. No se abrió otra aplicación."
                 return false
             }
             RoomLockTaskMaintenanceExitAction.BLOCK_UNOWNED_STRICT_LOCK_TASK -> {
-                kioskControlMessage = "Strict Lock Task is active but cannot be safely stopped without Device Owner access."
+                kioskControlMessage = "El modo kiosco estricto está activo, pero no se puede detener de forma segura sin privilegios de administración del dispositivo."
                 return false
             }
             RoomLockTaskMaintenanceExitAction.STOP_ACTIVITY_OWNED_LOCK_TASK -> {
@@ -663,7 +663,7 @@ class MainActivity : ComponentActivity() {
                     true
                 }.getOrDefault(false)
                 if (!stopped) {
-                    kioskControlMessage = "Lock Task could not be stopped safely. Another app was not opened."
+                    kioskControlMessage = "No se pudo detener el modo kiosco estricto de forma segura. No se abrió otra aplicación."
                     return false
                 }
             }
@@ -672,7 +672,7 @@ class MainActivity : ComponentActivity() {
                     roomLockTaskPolicy.removeAppFromLockTaskAllowlistForMaintenance()
                 }.getOrDefault(false)
                 if (!removed) {
-                    kioskControlMessage = "Device Owner could not safely remove Hotel Alert from Lock Task. Another app was not opened."
+                    kioskControlMessage = "La administración del dispositivo no pudo quitar Hotel Alert del modo kiosco estricto de forma segura. No se abrió otra aplicación."
                     return false
                 }
             }
@@ -687,10 +687,10 @@ class MainActivity : ComponentActivity() {
 
         kioskControlMessage = when (statusAfterExit) {
             RoomLockTaskStatus.SCREEN_PINNING ->
-                "Android screen pinning is active; exit it before opening another app."
+                "El anclaje de pantalla de Android está activo. Desactívalo antes de abrir otra aplicación."
             RoomLockTaskStatus.UNKNOWN ->
-                "Android could not confirm that Lock Task ended. Another app was not opened."
-            else -> "Strict Lock Task is still active. Another app was not opened."
+                "Android no pudo confirmar que se haya detenido el modo kiosco estricto. No se abrió otra aplicación."
+            else -> "El modo kiosco estricto sigue activo. No se abrió otra aplicación."
         }
         return false
     }
@@ -702,7 +702,7 @@ class MainActivity : ComponentActivity() {
             preferences.edit().putBoolean(STRICT_ROOM_LOCK_TASK_KEY, strictModeDraft).commit()
         }.getOrDefault(false)
         if (!saveSucceeded) {
-            kioskControlMessage = "Kiosk settings could not be saved. Stay here and try again."
+            kioskControlMessage = "No se pudo guardar la configuración del modo kiosco. Permanece aquí y vuelve a intentarlo."
             return
         }
 
@@ -751,7 +751,7 @@ class MainActivity : ComponentActivity() {
                 if (reopenMaintenanceOnFailure && roomSessionConfigured && strictModePreference) {
                     maintenanceRoute = RoomMaintenanceRoute.SETTINGS
                     strictModeAvailabilityMessage = strictModeMessage(preparation)
-                    kioskControlMessage = "Strict Lock Task is unavailable. ROOM remains in Basic mode."
+                    kioskControlMessage = "El modo kiosco estricto no está disponible. La habitación permanece en el modo básico."
                     updateRoomWindowMode()
                     refreshMaintenanceDeviceState()
                 }
@@ -764,7 +764,7 @@ class MainActivity : ComponentActivity() {
                 Log.w(TAG, "Strict Lock Task was not started because Android screen pinning is active.")
                 if (reopenMaintenanceOnFailure) {
                     maintenanceRoute = RoomMaintenanceRoute.SETTINGS
-                    kioskControlMessage = "Exit Android screen pinning before enabling strict Lock Task."
+                    kioskControlMessage = "Desactiva el anclaje de pantalla de Android antes de activar el modo kiosco estricto."
                     updateRoomWindowMode()
                     refreshMaintenanceDeviceState()
                 }
@@ -785,7 +785,7 @@ class MainActivity : ComponentActivity() {
                                 maintenanceRoute == RoomMaintenanceRoute.CLOSED
                             ) {
                                 maintenanceRoute = RoomMaintenanceRoute.SETTINGS
-                                kioskControlMessage = "Android did not confirm strict Lock Task. ROOM remains in Basic mode."
+                                kioskControlMessage = "Android no confirmó el modo kiosco estricto. La habitación permanece en el modo básico."
                                 updateRoomWindowMode()
                                 refreshMaintenanceDeviceState()
                             }
@@ -797,7 +797,7 @@ class MainActivity : ComponentActivity() {
                 Log.w(TAG, "Android did not enter strict ROOM Lock Task mode.", error)
                 if (reopenMaintenanceOnFailure && roomSessionConfigured) {
                     maintenanceRoute = RoomMaintenanceRoute.SETTINGS
-                    kioskControlMessage = "Android did not confirm strict Lock Task. ROOM remains in Basic mode."
+                    kioskControlMessage = "Android no confirmó el modo kiosco estricto. La habitación permanece en el modo básico."
                     updateRoomWindowMode()
                     refreshMaintenanceDeviceState()
                 }

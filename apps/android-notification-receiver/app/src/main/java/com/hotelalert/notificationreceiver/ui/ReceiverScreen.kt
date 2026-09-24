@@ -51,19 +51,19 @@ fun ReceiverScreen(
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text("Hotel Alert notification receiver", style = MaterialTheme.typography.headlineSmall)
+            Text("Receptor de notificaciones de Hotel Alert", style = MaterialTheme.typography.headlineSmall)
             Text(
-                "Diagnostic and setup surface only. This native app is not a hotel web kiosk replacement.",
+                "Pantalla exclusiva para diagnóstico y configuración. Esta aplicación nativa no sustituye al kiosco web del hotel.",
                 style = MaterialTheme.typography.bodyMedium
             )
-            Text("Connection: ${state.name}", style = MaterialTheme.typography.titleMedium)
+            Text("Conexión: ${receiverStateLabel(state)}", style = MaterialTheme.typography.titleMedium)
             if (openedEventId != null) {
-                Text("Opened event metadata: $openedEventId", style = MaterialTheme.typography.bodySmall)
+                Text("Metadatos del evento abierto: $openedEventId", style = MaterialTheme.typography.bodySmall)
             }
             OutlinedTextField(
                 value = serverOrigin,
                 onValueChange = { serverOrigin = it },
-                label = { Text("LAN/VPN server origin") },
+                label = { Text("Dirección del servidor (LAN/VPN)") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
@@ -71,21 +71,21 @@ fun ReceiverScreen(
             OutlinedTextField(
                 value = deviceId,
                 onValueChange = { deviceId = it },
-                label = { Text("Assigned device ID") },
+                label = { Text("ID del dispositivo asignado") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
             OutlinedTextField(
                 value = token,
                 onValueChange = { token = it },
-                label = { Text("Device token") },
+                label = { Text("Token del dispositivo") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
             )
             Text(
-                "The token is written only to Android Keystore-backed encrypted storage. It is never displayed after saving.",
+                "El token solo se guarda en almacenamiento cifrado protegido por Android. No se muestra después de guardarlo.",
                 style = MaterialTheme.typography.bodySmall
             )
             Button(
@@ -96,28 +96,40 @@ fun ReceiverScreen(
                 enabled = serverOrigin.isNotBlank() && deviceId.isNotBlank() && token.isNotBlank(),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Save credentials and start receiver")
+                Text("Guardar credenciales e iniciar el receptor")
             }
             if (!notificationPermissionGranted) {
                 OutlinedButton(
                     onClick = onRequestNotificationPermission,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Allow Android notifications")
+                    Text("Permitir notificaciones de Android")
                 }
                 Text(
-                    "Delivery is disabled until notification permission is granted.",
+                    "La entrega de notificaciones está desactivada hasta que se conceda el permiso.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                OutlinedButton(onClick = onStop) { Text("Stop receiver") }
+                OutlinedButton(onClick = onStop) { Text("Detener el receptor") }
             }
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                "Notifications are read-only. Opening one returns to diagnostics with opaque event metadata; no hotel request action is exposed.",
+                "Las notificaciones son de solo lectura. Al abrir una, se vuelve a diagnósticos con los metadatos del evento; no se muestran acciones para atender solicitudes del hotel.",
                 style = MaterialTheme.typography.bodySmall
             )
         }
     }
+}
+
+internal fun receiverStateLabel(state: ReceiverState): String = when (state) {
+    ReceiverState.IDLE -> "Inactivo"
+    ReceiverState.FETCHING_SNAPSHOT -> "Consultando el estado del dispositivo"
+    ReceiverState.CONNECTING -> "Conectando con el servidor"
+    ReceiverState.CONNECTED -> "Conectado con el servidor"
+    ReceiverState.SYNCHRONIZING -> "Sincronizando"
+    ReceiverState.SYNCHRONIZED -> "Sincronizado"
+    ReceiverState.AUTH_FAILED -> "Autenticación rechazada"
+    ReceiverState.ERROR -> "Error"
+    ReceiverState.STOPPED -> "Detenido"
 }

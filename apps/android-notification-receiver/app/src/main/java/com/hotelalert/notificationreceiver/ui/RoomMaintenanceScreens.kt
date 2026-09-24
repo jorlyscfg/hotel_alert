@@ -47,16 +47,16 @@ internal fun RoomMaintenancePinDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(dismissOnBackPress = true, dismissOnClickOutside = false),
-        title = { Text("Device maintenance") },
+        title = { Text("Mantenimiento del dispositivo") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Enter the 4-digit configuration PIN.")
+                Text("Introduce el PIN de configuración de 4 dígitos.")
                 OutlinedTextField(
                     value = pin,
                     onValueChange = { pin = it.filter { digit -> digit in '0'..'9' }.take(4) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    label = { Text("Configuration PIN") },
+                    label = { Text("PIN de configuración") },
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                     isError = errorMessage != null
@@ -66,10 +66,10 @@ internal fun RoomMaintenancePinDialog(
         },
         confirmButton = {
             Button(onClick = { onSubmit(pin) }, enabled = pin.length == 4 && !isChecking) {
-                Text(if (isChecking) "Checking…" else "Continue")
+                Text(if (isChecking) "Verificando…" else "Continuar")
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } }
     )
 }
 
@@ -106,73 +106,73 @@ internal fun RoomMaintenanceSettingsScreen(
                 modifier = Modifier.widthIn(max = 480.dp).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Text("Device maintenance", style = MaterialTheme.typography.headlineSmall)
+                Text("Mantenimiento del dispositivo", style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    "This native screen is separate from the ROOM platform. Your room session stays active while you adjust the device.",
+                    "Esta pantalla nativa es independiente de la plataforma web. La sesión de la habitación permanece activa mientras se realizan ajustes en el dispositivo.",
                     style = MaterialTheme.typography.bodyMedium
                 )
-                Text("Android device", style = MaterialTheme.typography.titleMedium)
-                Text("Home app: ${homeStatusLabel(homeStatus)}", style = MaterialTheme.typography.bodyMedium)
+                Text("Dispositivo Android", style = MaterialTheme.typography.titleMedium)
+                Text("Aplicación de inicio: ${homeStatusLabel(homeStatus)}", style = MaterialTheme.typography.bodyMedium)
                 Button(onClick = onChooseHome, modifier = Modifier.fillMaxWidth()) {
-                    Text("Choose Hotel Alert as Home")
+                    Text("Elegir Hotel Alert como aplicación de inicio")
                 }
                 if (isDeviceOwner) {
                     Text(
-                        "This app is Device Owner. Hotel Alert can set a persistent Home preference.",
+                        "Esta aplicación es propietaria del dispositivo. Hotel Alert puede establecer una preferencia de inicio permanente.",
                         style = MaterialTheme.typography.bodySmall
                     )
                     TextButton(onClick = onClearManagedHome, modifier = Modifier.fillMaxWidth()) {
-                        Text("Clear Hotel Alert's managed Home preference")
+                        Text("Quitar la preferencia de inicio administrada por Hotel Alert")
                     }
                 }
                 Button(onClick = onOpenAndroidSettings, modifier = Modifier.fillMaxWidth()) {
-                    Text("Open Android Settings")
+                    Text("Abrir la configuración de Android")
                 }
-                Text("Return to ROOM after screen wake", style = MaterialTheme.typography.titleMedium)
+                Text("Volver a la habitación al activar la pantalla", style = MaterialTheme.typography.titleMedium)
                 Text(
                     if (overlayPermissionRequired) {
                         if (overlayPermissionGranted) {
-                            "Overlay access is granted. Hotel Alert uses it only for a guarded best-effort return to ROOM after wake; it does not draw a floating window. Android or the device manufacturer may still block background launches."
+                            "El permiso para mostrarse sobre otras aplicaciones está concedido. Hotel Alert lo usa solo para intentar volver a la habitación después de activar la pantalla; no muestra ventanas flotantes. Android o el fabricante aún pueden bloquear el inicio en segundo plano."
                         } else {
-                            "Android 10 and later may block apps from reopening in the background. Granting overlay access enables Hotel Alert to attempt a guarded return to ROOM after wake. This permission is not used to draw a floating window, and Android or the device manufacturer may still block the launch."
+                            "Android 10 y versiones posteriores pueden impedir que una aplicación se abra en segundo plano. Con este permiso, Hotel Alert puede intentar volver a la habitación al activar la pantalla. No se muestran ventanas flotantes y Android o el fabricante aún pueden bloquear el inicio."
                         }
                     } else {
-                        "Hotel Alert attempts a guarded return to ROOM after wake on this Android version. Device manufacturers may still limit background launches."
+                        "Hotel Alert intenta volver a la habitación al activar la pantalla en esta versión de Android. El fabricante aún puede limitar el inicio en segundo plano."
                     },
                     style = MaterialTheme.typography.bodySmall
                 )
                 if (overlayPermissionRequired) {
                     Text(
                         if (overlayPermissionGranted) {
-                            "Overlay access: granted"
+                            "Permiso para mostrarse sobre otras aplicaciones: concedido"
                         } else {
-                            "Overlay access: not granted"
+                            "Permiso para mostrarse sobre otras aplicaciones: no concedido"
                         },
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Button(onClick = onManageOverlayPermission, modifier = Modifier.fillMaxWidth()) {
-                        Text("Manage overlay access")
+                        Text("Gestionar permiso de superposición")
                     }
                 } else {
-                    Text("Overlay access is not required on this Android version.", style = MaterialTheme.typography.bodySmall)
+                    Text("Esta versión de Android no requiere el permiso de superposición.", style = MaterialTheme.typography.bodySmall)
                 }
-                Text("Strict kiosk lock", style = MaterialTheme.typography.titleMedium)
+                Text("Bloqueo estricto del dispositivo", style = MaterialTheme.typography.titleMedium)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Enable strict Lock Task", fontWeight = FontWeight.Medium)
+                        Text("Activar el modo kiosco estricto", fontWeight = FontWeight.Medium)
                         Text(
                             when (strictModeStatus) {
-                                RoomLockTaskStatus.STRICT_LOCKED -> "Android confirms strict Lock Task is active."
-                                RoomLockTaskStatus.SCREEN_PINNING -> "Screen pinning is active; it is not strict kiosk lock."
-                                RoomLockTaskStatus.UNKNOWN -> "Android could not determine the current Lock Task state."
+                                RoomLockTaskStatus.STRICT_LOCKED -> "Android confirma que el modo kiosco estricto está activo."
+                                RoomLockTaskStatus.SCREEN_PINNING -> "El anclaje de pantalla está activo; no equivale al modo kiosco estricto."
+                                RoomLockTaskStatus.UNKNOWN -> "Android no pudo determinar el estado actual del modo kiosco estricto."
                                 RoomLockTaskStatus.INACTIVE -> when {
-                                    strictModeRequested && strictModeAvailable -> "Selected; Save & Return will apply strict Lock Task."
-                                    strictModeOptedIn && strictModeAvailable -> "Saved and available; it will resume after Save & Return."
-                                    else -> "Strict Lock Task is not currently active."
+                                    strictModeRequested && strictModeAvailable -> "Seleccionado. Al guardar y volver, se aplicará el modo kiosco estricto."
+                                    strictModeOptedIn && strictModeAvailable -> "Guardado y disponible; se reactivará al guardar y volver."
+                                    else -> "El modo kiosco estricto no está activo."
                                 }
                             },
                             style = MaterialTheme.typography.bodySmall
@@ -190,13 +190,13 @@ internal fun RoomMaintenanceSettingsScreen(
                 kioskControlMessage?.let {
                     Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
                 }
-                Text("Change configuration PIN (optional)", style = MaterialTheme.typography.titleMedium)
+                Text("Cambiar PIN de configuración (opcional)", style = MaterialTheme.typography.titleMedium)
                 OutlinedTextField(
                     value = newPin,
                     onValueChange = { newPin = it.filter { digit -> digit in '0'..'9' }.take(4) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    label = { Text("New 4-digit PIN") },
+                    label = { Text("Nuevo PIN de 4 dígitos") },
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword)
                 )
@@ -205,7 +205,7 @@ internal fun RoomMaintenanceSettingsScreen(
                     onValueChange = { confirmation = it.filter { digit -> digit in '0'..'9' }.take(4) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    label = { Text("Confirm new PIN") },
+                    label = { Text("Confirmar PIN nuevo") },
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword)
                 )
@@ -219,11 +219,11 @@ internal fun RoomMaintenanceSettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     enabled = newPin.length == 4 && newPin == confirmation
                 ) {
-                    Text("Save PIN")
+                    Text("Guardar PIN")
                 }
                 Spacer(Modifier.height(4.dp))
                 Button(onClick = onSaveAndReturn, modifier = Modifier.fillMaxWidth()) {
-                    Text("Save & Return to ROOM")
+                    Text("Guardar y volver a la habitación")
                 }
             }
         }
@@ -232,7 +232,7 @@ internal fun RoomMaintenanceSettingsScreen(
 
 @Composable
 private fun homeStatusLabel(status: RoomHomeStatus): String = when (status) {
-    RoomHomeStatus.HOTEL_ALERT_DEFAULT -> "Hotel Alert is the default launcher"
-    RoomHomeStatus.ANOTHER_APP_DEFAULT -> "Another Home app is the current default"
-    RoomHomeStatus.UNKNOWN -> "Android did not report a current default"
+    RoomHomeStatus.HOTEL_ALERT_DEFAULT -> "Hotel Alert es la aplicación de inicio predeterminada"
+    RoomHomeStatus.ANOTHER_APP_DEFAULT -> "Otra aplicación de inicio es la predeterminada"
+    RoomHomeStatus.UNKNOWN -> "Android no informó cuál es la aplicación de inicio predeterminada"
 }
