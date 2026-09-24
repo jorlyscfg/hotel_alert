@@ -3,9 +3,14 @@ package com.hotelalert.notificationreceiver
 import android.app.Application
 import com.hotelalert.notificationreceiver.network.HttpDeviceSnapshotClient
 import com.hotelalert.notificationreceiver.network.HttpDeviceRequestCommandClient
+import com.hotelalert.notificationreceiver.network.HttpRoomPresenceClient
 import com.hotelalert.notificationreceiver.network.SocketIoRealtimeSocketFactory
 import com.hotelalert.notificationreceiver.notification.AndroidNotificationSink
 import com.hotelalert.notificationreceiver.protocol.NativePairingCoordinator
+import com.hotelalert.notificationreceiver.protocol.NativeRoomSessionCoordinator
+import com.hotelalert.notificationreceiver.protocol.RoomPresenceCoordinator
+import com.hotelalert.notificationreceiver.protocol.RoomPresenceState
+import com.hotelalert.notificationreceiver.protocol.RoomPresenceStatusStore
 import com.hotelalert.notificationreceiver.protocol.NativeRequestCommandCoordinator
 import com.hotelalert.notificationreceiver.protocol.NativeRequestCommandResult
 import com.hotelalert.notificationreceiver.protocol.NativeRequestTransition
@@ -13,11 +18,13 @@ import com.hotelalert.notificationreceiver.protocol.ReceiverConfigurationStore
 import com.hotelalert.notificationreceiver.protocol.ReceiverStartupCoordinator
 import com.hotelalert.notificationreceiver.receiver.AndroidLanReceiver
 import com.hotelalert.notificationreceiver.receiver.AndroidReceiverServiceController
+import com.hotelalert.notificationreceiver.receiver.AndroidRoomPresenceServiceController
 import com.hotelalert.notificationreceiver.receiver.NativeReceiverSnapshotStore
 import com.hotelalert.notificationreceiver.receiver.ReceiverStatusStore
 import com.hotelalert.notificationreceiver.storage.AndroidKeyStoreDeviceTokenStore
 import com.hotelalert.notificationreceiver.storage.AndroidPairingStateStore
 import com.hotelalert.notificationreceiver.storage.AndroidReceiverConfigurationStore
+import com.hotelalert.notificationreceiver.storage.AndroidRoomPresenceSessionStore
 import com.hotelalert.notificationreceiver.storage.AndroidServerOriginStore
 import com.hotelalert.notificationreceiver.storage.AtomicFileAreaSnapshotPersistence
 import com.hotelalert.notificationreceiver.storage.AtomicFileCursorStore
@@ -42,6 +49,10 @@ class HotelAlertApplication : Application() {
 
 class AndroidReceiverComponent(context: Application) {
     val statusStore = ReceiverStatusStore()
+    private val roomPresenceSessionStore = AndroidRoomPresenceSessionStore(context)
+    val roomPresenceStatusStore = RoomPresenceStatusStore(
+        if (roomPresenceSessionStore.wasInvalidated()) RoomPresenceState.INVALIDATED else RoomPresenceState.IDLE
+    )
     val configurationStore: ReceiverConfigurationStore = AndroidReceiverConfigurationStore(context)
     val tokenStore: DeviceTokenStore = AndroidKeyStoreDeviceTokenStore(context)
     val snapshotStore = NativeReceiverSnapshotStore(
@@ -57,6 +68,8 @@ class AndroidReceiverComponent(context: Application) {
     private val notificationSink = AndroidNotificationSink(context)
     private val pairingStateStore = AndroidPairingStateStore(configurationStore, tokenStore)
     private val serviceController = AndroidReceiverServiceController(context)
+    private val roomPresenceServiceController = AndroidRoomPresenceServiceController(context)
+    private val roomPresenceClient = HttpRoomPresenceClient()
     private val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val pairingCoordinator = NativePairingCoordinator(
         serverOriginStore = serverOriginStore,
@@ -73,14 +86,35 @@ class AndroidReceiverComponent(context: Application) {
         snapshotStore = snapshotStore,
         client = requestCommandClient
     )
+    private val roomSessionCoordinator = NativeRoomSessionCoordinator(
+        serverOriginStore = serverOriginStore,
+        sessionStore = roomPresenceSessionStore,
+        serviceController = roomPresenceServiceController,
+        statusStore = roomPresenceStatusStore,
+        clientVersion = BuildConfig.VERSION_NAME
+    )
     val webBridge: HotelAlertWebBridge by lazy {
-        HotelAlertWebBridge(bridgeScope, pairingCoordinator, snapshotStore, statusStore, requestCommandCoordinator)
+        HotelAlertWebBridge(
+            bridgeScope,
+            pairingCoordinator,
+            snapshotStore,
+            statusStore,
+            requestCommandCoordinator,
+            roomSessionCoordinator,
+            roomPresenceStatusStore
+        )
     }
 
     suspend fun transitionRequest(request: NativeRequestTransition): NativeRequestCommandResult =
         requestCommandCoordinator.transition(request)
 
     suspend fun shouldStartReceiver(): Boolean = startupCoordinator.shouldStartReceiver()
+
+    fun createRoomPresenceCoordinator(): RoomPresenceCoordinator = RoomPresenceCoordinator(
+        sessionStore = roomPresenceSessionStore,
+        client = roomPresenceClient,
+        statusStore = roomPresenceStatusStore
+    )
 
     fun createReceiver(scope: CoroutineScope): AndroidLanReceiver = AndroidLanReceiver(
         configurationStore = configurationStore,

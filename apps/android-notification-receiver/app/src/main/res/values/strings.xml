@@ -4,6 +4,8 @@
     <string name="receiver_channel_name">Hotel Alert requests</string>
     <string name="receiver_channel_description">Room-service request notifications with actions.</string>
     <string name="receiver_service_notification">Hotel Alert receiver is running</string>
+    <string name="room_presence_service_notification">Hotel Alert room station is active</string>
+    <string name="room_presence_service_description">Maintaining the room station connection</string>
     <string name="receiver_open_diagnostics">Open diagnostics</string>
     <string name="receiver_start_request">Start request</string>
     <string name="receiver_accept_start_request">Accept / start request</string>

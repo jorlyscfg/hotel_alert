@@ -24,12 +24,14 @@ import kotlinx.coroutines.sync.withLock
 
 class AndroidKeyStoreDeviceTokenStore(
     private val context: Context,
-    private val keyAlias: String = DEFAULT_KEY_ALIAS
+    private val keyAlias: String = DEFAULT_KEY_ALIAS,
+    preferencesName: String = PREFERENCES_NAME,
+    private val tokenKey: String = TOKEN_KEY
 ) : DeviceTokenStore {
-    private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+    private val preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
 
     override suspend fun read(): String? {
-        val encoded = preferences.getString(TOKEN_KEY, null) ?: return null
+        val encoded = preferences.getString(tokenKey, null) ?: return null
         val separator = encoded.indexOf(':')
         if (separator <= 0 || separator == encoded.lastIndex) throw IllegalStateException("The protected device token is invalid.")
         val iv = decode(encoded.substring(0, separator))
@@ -47,13 +49,13 @@ class AndroidKeyStoreDeviceTokenStore(
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val ciphertext = cipher.doFinal(token.toByteArray(StandardCharsets.UTF_8))
         val encoded = "${encode(cipher.iv)}:${encode(ciphertext)}"
-        check(preferences.edit().putString(TOKEN_KEY, encoded).commit()) {
+        check(preferences.edit().putString(tokenKey, encoded).commit()) {
             "The protected device token could not be persisted."
         }
     }
 
     override suspend fun clear() {
-        check(preferences.edit().remove(TOKEN_KEY).commit()) {
+        check(preferences.edit().remove(tokenKey).commit()) {
             "The protected device token could not be cleared."
         }
     }

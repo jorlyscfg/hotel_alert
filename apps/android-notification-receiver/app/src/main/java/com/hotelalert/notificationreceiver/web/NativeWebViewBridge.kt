@@ -4,13 +4,18 @@ import android.webkit.JavascriptInterface
 import com.hotelalert.notificationreceiver.protocol.NativePairingCoordinator
 import com.hotelalert.notificationreceiver.protocol.NativePairingRequest
 import com.hotelalert.notificationreceiver.protocol.NativePairingResult
+import com.hotelalert.notificationreceiver.protocol.NativeRoomSessionCoordinator
 import com.hotelalert.notificationreceiver.protocol.NativeRequestCommandCoordinator
 import com.hotelalert.notificationreceiver.protocol.NativeRequestCommandResult
 import com.hotelalert.notificationreceiver.protocol.NativeRequestTransition
+import com.hotelalert.notificationreceiver.protocol.RoomPresenceState
+import com.hotelalert.notificationreceiver.protocol.RoomPresenceStatusStore
 import com.hotelalert.notificationreceiver.receiver.NativeReceiverSnapshotStore
 import com.hotelalert.notificationreceiver.receiver.ReceiverStatusStore
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.util.UUID
 
@@ -19,7 +24,9 @@ class HotelAlertWebBridge(
     private val pairingCoordinator: NativePairingCoordinator? = null,
     private val snapshotStore: NativeReceiverSnapshotStore? = null,
     private val statusStore: ReceiverStatusStore? = null,
-    private val commandCoordinator: NativeRequestCommandCoordinator? = null
+    private val commandCoordinator: NativeRequestCommandCoordinator? = null,
+    private val roomSessionCoordinator: NativeRoomSessionCoordinator? = null,
+    private val roomPresenceStatusStore: RoomPresenceStatusStore? = null
 ) {
     private sealed class PairingState {
         data object Pending : PairingState()
@@ -119,8 +126,51 @@ class HotelAlertWebBridge(
     @JavascriptInterface
     fun getReceiverState(): String = statusStore?.state?.value?.name ?: "UNAVAILABLE"
 
+    @JavascriptInterface
+    fun setRoomSession(rawJson: String): String {
+        val coordinator = roomSessionCoordinator ?: return roomOperationRejected("NATIVE_ROOM_PRESENCE_UNAVAILABLE")
+        val request = runCatching { NativePairingRequest.parse(rawJson) }
+            .getOrElse { return roomOperationRejected("INVALID_ROOM_SESSION") }
+        return runRoomOperation {
+            coordinator.configure(request.deviceId, request.deviceToken)
+            Unit
+        }
+    }
+
+    @JavascriptInterface
+    fun stageRoomSessionToken(token: String): String = runRoomOperation("NATIVE_ROOM_PRESENCE_UNAVAILABLE") {
+        roomSessionCoordinator?.stageToken(token) ?: throw IllegalStateException("ROOM presence is unavailable.")
+    }
+
+    @JavascriptInterface
+    fun clearRoomSession(): String = runRoomOperation("NATIVE_ROOM_PRESENCE_UNAVAILABLE") {
+        roomSessionCoordinator?.clear() ?: throw IllegalStateException("ROOM presence is unavailable.")
+    }
+
+    @JavascriptInterface
+    fun getRoomPresenceState(): String = roomPresenceStatusStore?.state?.name ?: RoomPresenceState.IDLE.name
+
     private val isEnabled: Boolean
         get() = scope != null && pairingCoordinator != null && snapshotStore != null && statusStore != null
+
+    private fun runRoomOperation(
+        unavailableCode: String = "ROOM_PRESENCE_FAILED",
+        operation: suspend () -> Unit
+    ): String {
+        if (roomSessionCoordinator == null) return roomOperationRejected(unavailableCode)
+        return try {
+            runBlocking(Dispatchers.IO) { operation() }
+            JSONObject().put("accepted", true).toString()
+        } catch (error: Throwable) {
+            val code = if (error is IllegalArgumentException) "INVALID_ROOM_SESSION" else "ROOM_PRESENCE_FAILED"
+            roomOperationRejected(code)
+        }
+    }
+
+    private fun roomOperationRejected(errorCode: String): String = JSONObject()
+        .put("accepted", false)
+        .put("errorCode", errorCode)
+        .toString()
 
     private fun setPairingState(requestId: String, state: PairingState) {
         synchronized(pairingStates) {
