@@ -84,9 +84,12 @@ internal fun RoomMaintenanceSettingsScreen(
     strictModeStatus: RoomLockTaskStatus,
     strictModeAvailabilityMessage: String?,
     kioskControlMessage: String?,
+    overlayPermissionRequired: Boolean,
+    overlayPermissionGranted: Boolean,
     onChooseHome: () -> Unit,
     onClearManagedHome: () -> Unit,
     onOpenAndroidSettings: () -> Unit,
+    onManageOverlayPermission: () -> Unit,
     onStrictModeChange: (Boolean) -> Unit,
     onChangePin: (String) -> Unit,
     onSaveAndReturn: () -> Unit
@@ -124,6 +127,34 @@ internal fun RoomMaintenanceSettingsScreen(
                 }
                 Button(onClick = onOpenAndroidSettings, modifier = Modifier.fillMaxWidth()) {
                     Text("Open Android Settings")
+                }
+                Text("Return to ROOM after screen wake", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if (overlayPermissionRequired) {
+                        if (overlayPermissionGranted) {
+                            "Overlay access is granted. Hotel Alert uses it only for a guarded best-effort return to ROOM after wake; it does not draw a floating window. Android or the device manufacturer may still block background launches."
+                        } else {
+                            "Android 10 and later may block apps from reopening in the background. Granting overlay access enables Hotel Alert to attempt a guarded return to ROOM after wake. This permission is not used to draw a floating window, and Android or the device manufacturer may still block the launch."
+                        }
+                    } else {
+                        "Hotel Alert attempts a guarded return to ROOM after wake on this Android version. Device manufacturers may still limit background launches."
+                    },
+                    style = MaterialTheme.typography.bodySmall
+                )
+                if (overlayPermissionRequired) {
+                    Text(
+                        if (overlayPermissionGranted) {
+                            "Overlay access: granted"
+                        } else {
+                            "Overlay access: not granted"
+                        },
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Button(onClick = onManageOverlayPermission, modifier = Modifier.fillMaxWidth()) {
+                        Text("Manage overlay access")
+                    }
+                } else {
+                    Text("Overlay access is not required on this Android version.", style = MaterialTheme.typography.bodySmall)
                 }
                 Text("Strict kiosk lock", style = MaterialTheme.typography.titleMedium)
                 Row(

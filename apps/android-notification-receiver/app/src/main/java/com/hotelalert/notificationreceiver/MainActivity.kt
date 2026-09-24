@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -89,6 +90,7 @@ class MainActivity : ComponentActivity() {
     private var strictModeAvailabilityMessage by mutableStateOf<String?>(null)
     private var strictModeStatus by mutableStateOf(RoomLockTaskStatus.INACTIVE)
     private var kioskControlMessage by mutableStateOf<String?>(null)
+    private var overlayPermissionGranted by mutableStateOf(false)
     private var strictModePreference = false
     private var lockTaskStartedByThisActivity = false
     private val maintenanceTapGate = RoomMaintenanceTapGate()
@@ -120,6 +122,7 @@ class MainActivity : ComponentActivity() {
         applyIntent(intent)
         maintenanceSettingsRestorePending = savedInstanceState
             ?.getBoolean(STATE_MAINTENANCE_SETTINGS_OPEN_KEY, false) == true && !diagnosticsMode
+        updateRoomWakeRecoverySuppression()
         strictModePreference = getSharedPreferences(ROOM_KIOSK_PREFERENCES, MODE_PRIVATE)
             .getBoolean(STRICT_ROOM_LOCK_TASK_KEY, false)
         strictModeDraft = strictModePreference
@@ -194,9 +197,12 @@ class MainActivity : ComponentActivity() {
                                     strictModeStatus = strictModeStatus,
                                     strictModeAvailabilityMessage = strictModeAvailabilityMessage,
                                     kioskControlMessage = kioskControlMessage,
+                                    overlayPermissionRequired = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q,
+                                    overlayPermissionGranted = overlayPermissionGranted,
                                     onChooseHome = ::chooseHotelAlertHome,
                                     onClearManagedHome = ::clearManagedHome,
                                     onOpenAndroidSettings = ::openAndroidSettings,
+                                    onManageOverlayPermission = ::openOverlayPermissionSettings,
                                     onStrictModeChange = { strictModeDraft = it },
                                     onChangePin = ::changeMaintenancePin,
                                     onSaveAndReturn = ::saveMaintenanceAndReturn
@@ -232,6 +238,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        setActivityVisible(true)
         ContextCompat.registerReceiver(
             this,
             roomSessionChangedReceiver,
@@ -242,6 +249,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        setActivityVisible(false)
         if (roomSessionReceiverRegistered) {
             unregisterReceiver(roomSessionChangedReceiver)
             roomSessionReceiverRegistered = false
@@ -274,6 +282,7 @@ class MainActivity : ComponentActivity() {
             maintenanceSettingsRestorePending = false
             maintenanceRoute = RoomMaintenanceRoute.CLOSED
         }
+        updateRoomWakeRecoverySuppression()
     }
 
     private fun requestNotificationPermission() {
@@ -400,6 +409,8 @@ class MainActivity : ComponentActivity() {
 
     private fun refreshMaintenanceDeviceState() {
         if (maintenanceRoute != RoomMaintenanceRoute.SETTINGS || !roomSessionConfigured) return
+        overlayPermissionGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+            runCatching { Settings.canDrawOverlays(this) }.getOrDefault(false)
         lifecycleScope.launch {
             val state = withContext(Dispatchers.IO) {
                 val home = runCatching { roomHomePolicy.readStatus() }.getOrNull()
@@ -446,6 +457,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateRoomWindowMode() {
+        updateRoomWakeRecoverySuppression()
         val immersive = shouldUseRoomImmersiveMode(
             hasRoomSession = roomSessionConfigured,
             hasServerOrigin = runCatching { component.serverOriginStore.read() != null }.getOrDefault(false),
@@ -592,6 +604,29 @@ class MainActivity : ComponentActivity() {
             startActivity(Intent(Settings.ACTION_SETTINGS))
         }.onFailure {
             kioskControlMessage = "Android Settings could not be opened on this device."
+        }
+    }
+
+    private fun openOverlayPermissionSettings() {
+        if (!isMaintenanceSettingsOpen() || !ensureRoomLockTaskExitedSafely()) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            kioskControlMessage = "Android 10 or later does not require overlay access for this wake-recovery path."
+            return
+        }
+        try {
+            startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+            )
+        } catch (_: ActivityNotFoundException) {
+            kioskControlMessage = "Android did not provide a dedicated overlay-access screen; opening general Settings."
+            runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+                .onFailure { kioskControlMessage = "Overlay access settings could not be opened on this device." }
+        } catch (error: Exception) {
+            Log.w(TAG, "Android overlay-access settings could not be opened.", error)
+            kioskControlMessage = "Overlay access settings could not be opened on this device."
         }
     }
 
@@ -806,12 +841,31 @@ class MainActivity : ComponentActivity() {
 
         @Volatile
         private var appInForeground = false
+        @Volatile
+        private var activityVisible = false
+        @Volatile
+        private var maintenanceActiveForWakeRecovery = false
+        @Volatile
+        private var diagnosticsModeForWakeRecovery = false
 
         internal fun isAppInForeground(): Boolean = appInForeground
+        internal fun isActivityVisible(): Boolean = activityVisible
+        internal fun isMaintenanceActiveForWakeRecovery(): Boolean = maintenanceActiveForWakeRecovery
+        internal fun isDiagnosticsModeForWakeRecovery(): Boolean = diagnosticsModeForWakeRecovery
 
         private fun setAppInForeground(value: Boolean) {
             appInForeground = value
         }
+
+        private fun setActivityVisible(value: Boolean) {
+            activityVisible = value
+        }
+    }
+
+    private fun updateRoomWakeRecoverySuppression() {
+        maintenanceActiveForWakeRecovery = maintenanceRoute != RoomMaintenanceRoute.CLOSED ||
+            maintenanceSettingsRestorePending
+        diagnosticsModeForWakeRecovery = diagnosticsMode
     }
 }
 
