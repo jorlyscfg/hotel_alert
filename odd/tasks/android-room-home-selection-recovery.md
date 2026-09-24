@@ -50,9 +50,9 @@ The user approved implementing a separate native button that opens Android's HOM
 
 ### ROOM-HOME-04 — Roll out the direct HOME settings APK
 
-- [ ] Install the verified APK on ROOM device `192.168.0.243` using the authorized ADB transport available for this rollout.
-- [ ] Install the same verified APK on operator tablet `192.168.0.214` using its previously approved USB ADB connection.
-- [ ] Record exact installation and package verification outcomes; do not change HOME selection or power-cycle either device.
+- [x] Install the verified APK on ROOM device `192.168.0.243` using the authorized ADB transport `192.168.0.243:38655`.
+- [x] Install the same verified APK on operator tablet `192.168.0.214` via its previously approved ADB device `R9PT70GX3PA`.
+- [x] Record exact installation and package verification outcomes; do not change HOME selection or power-cycle either device.
 
 ## Acceptance criteria
 
@@ -95,6 +95,7 @@ The user approved implementing a separate native button that opens Android's HOM
 - ROOM-HOME-03 implementation: added the separate “Cambiar aplicación de inicio en Android” action and wired it to `Settings.ACTION_HOME_SETTINGS`; if Android cannot open that system page, the app offers its existing consent-based RoleManager flow and a safe general-Settings fallback. No HOME preference is set or cleared by Hotel Alert.
 - ROOM-HOME-03 verification: `:app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:check` passed (BUILD SUCCESSFUL; 78 actionable tasks, 21 executed, 57 up-to-date). `git diff --check` passed. The shared Git index remains unchanged at tree `de340c670a8e120c7db6f10dd48656f96f712286`.
 - ROOM-HOME-03 work-unit commit: `251317e` (`feat(android): open Home selection settings`), 56 insertions and 8 deletions across the two native files and this task tracker. The commit was created from an isolated index; the shared Git index remains unchanged.
+- ROOM-HOME-04 rollout: built APK SHA-256 `3d8b1621b508ffebc0fee73fb8a0ad5173486a443334e40b95f1158d91f74d3d` installed successfully (`adb install -r`: `Success`) on ROOM `192.168.0.243:38655` and tablet `R9PT70GX3PA`. Both `pm path` queries returned the installed package and both report `versionCode=1`, `minSdk=26`, `targetSdk=35`. No HOME setting was changed and no device was rebooted.
 
 ## Relevant files
 
