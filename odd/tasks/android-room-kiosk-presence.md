@@ -52,14 +52,39 @@ ROOM assignment and live presence currently depend on the WebView's browser stor
 
 ### ARKP-02 — Make assigned ROOM devices boot into an operator-maintainable kiosk
 
-- Make the APK eligible for Android HOME selection and request/select HOME after ROOM onboarding where supported; use a documented operator fallback on older/OEM-specific Android versions.
-- Apply edge-to-edge immersive fullscreen only to assigned ROOM mode; restore HOME/ROOM view after reboot/app update and avoid imposing kiosk behavior on AREA/Admin devices.
-- Add optional same-app Device Owner/DeviceAdmin support for strict Lock Task, allowlist the APK only when owner policy is active, and never mistake user-exitable screen pinning for strict lockdown.
-- Add a hidden repeated-tap maintenance entry, local device-specific PIN verification, safe unlock/exit controls, and a recovery route through existing admin authentication. Do not hardcode a fleet PIN.
-- Add tests and operator documentation covering Basic vs strict setup, Android version/OEM variance, PIN recovery, and the fact that device operation/ADB must be performed by the operator outside this code task.
-- Route: delegated direct writer. Scope owner: MainActivity/kiosk/admin/manifest/docs and focused tests; preserve ARKP-01 and unrelated changes.
-- Checks: Android unit tests, assemble/lint/check runner, manifest/launcher behavior tests where feasible, and `git diff --check`. Physical multi-OEM behavior remains pending until operator-run device-matrix testing.
-- Progress: ☐ Not started.
+**Forecast:** approximately 700–1,100 authored lines across Android implementation, focused tests, and operator documentation. Delivery remains `stacked-to-main` on the existing feature branch; this forecast is split by behavior boundary, not to satisfy a line-count limit.
+
+**Route:** delegated direct. Mapping trigger evidence: lifecycle spans MainActivity, Android manifest/receivers, native ROOM session storage/service, DevicePolicyManager, tests, and operator documentation. `/root/map_arkp01_commit_hunks` completed the read-only map using CodeGraph and committed-source evidence. Writer trigger evidence: each behavior crosses multiple non-trivial Android, test, manifest, and documentation files. Effective TDD is OFF; runner is the Android Gradle command recorded above.
+
+#### ARKP-02A — Restore the ROOM HOME/immersive experience
+
+- Add Android HOME eligibility and request HOME role with user consent after successful ROOM onboarding where the platform supports it; provide a clear manual operator fallback otherwise.
+- Restore only a persisted ROOM station after boot and app replacement, including native ROOM presence, without sending AREA/Admin users into kiosk mode.
+- Apply immersive fullscreen only while a valid native ROOM assignment is active; keep setup, recovery, diagnostics, AREA, and Admin behavior available as appropriate.
+- Add focused tests for HOME/restoration/fullscreen policy and update operator guidance.
+- Route: delegated direct writer `/root/map_arkp01_commit_hunks`; scope owner is Android kiosk/HOME/lifecycle code, manifest, focused tests, and new `docs/android-room-kiosk.md`. Keep the pre-existing unstaged browser-only `docs/android-kiosk.md` edits untouched.
+- Checks: focused Android tests, Android assemble/lint/check runner, manifest/lifecycle checks where feasible, `git diff --check`. Physical OEM/device verification remains pending.
+- Verification observed: focused `RoomKioskPolicyTest` passed; prescribed Gradle `:app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:check` passed (78 tasks: 23 executed, 55 up-to-date); `git diff --check` passed. No device, emulator, or ADB was used.
+- Work-unit committed: `fbf67b9` (`feat(android): restore room kiosk after reboot`), 257 authored lines across Android lifecycle/HOME restoration, focused tests, and the native ROOM operator guide.
+- Progress: ☑ ARKP-02A complete: HOME role consent/manual fallback, ROOM-only immersive UI, and session-gated service restoration are implemented and automated checks pass. Physical OEM/device verification remains pending.
+
+#### ARKP-02B — Add optional strict Device Owner Lock Task
+
+- Add a same-app DeviceAdminReceiver and Device Owner-only Lock Task allowlist/configuration; query Android policy before entering, and never fall back to screen pinning as if it were strict mode.
+- Provide explicit operator-facing activation/removal instructions; do not configure a device or execute ADB during this code task.
+- Add policy decision tests and documentation. Preserve a working Basic mode without Device Owner.
+- Route: delegated direct writer; ownership assigned after ARKP-02A is verified.
+- Checks: focused policy tests, Android assemble/lint/check runner, and `git diff --check`. Device Owner provisioning remains operator/device-matrix verification.
+- Progress: ☐ not started.
+
+#### ARKP-02C — Protect maintenance access with a device-specific PIN
+
+- Add a concealed repeated-tap maintenance entry, device-specific PIN setup/verification during ROOM commissioning, safe exit/unlock controls, and recovery through existing admin authentication; never embed a fleet PIN.
+- Persist the verifier with Android-protected storage and test setup, verification, failure/rate-limit, and recovery rules.
+- Document commissioning and maintenance steps.
+- Route: delegated direct writer; ownership assigned after ARKP-02B is verified.
+- Checks: focused Android tests, Android assemble/lint/check runner, and `git diff --check`. Physical interaction testing remains pending.
+- Progress: ☐ not started.
 
 ## Acceptance Criteria
 
@@ -74,6 +99,8 @@ ROOM assignment and live presence currently depend on the WebView's browser stor
 
 - FreeKiosk's current installation/features documentation distinguishes Basic auto-start/partial lock from Device Owner strict Lock Task. Its setup guide documents `dpm set-device-owner` and says factory reset is typically not needed when account/device state allows; some OEM/device states may still require remediation.
 - Android official Lock Task documentation confirms only DPC-allowlisted apps can enter real Lock Task; screen pinning is user-exitable: https://developer.android.com/work/dpc/dedicated-devices/lock-task-mode.
+- Android `RoleManager` is available from API 29; the system checks HOME-role availability, requires a qualifying HOME intent filter, and presents a user-consent request. Older versions need a manual operator fallback: https://developer.android.com/reference/android/app/role/RoleManager.
+- Android 15 target-35 boot restrictions explicitly prohibit boot-starting selected FGS types (including `dataSync`) but list no generic Activity launch allowance; the app must not start its fullscreen Activity directly from a boot receiver: https://developer.android.com/about/versions/15/behavior-changes-15.
 - Android target-35 documentation prohibits launching `dataSync` FGS from `BOOT_COMPLETED` and imposes a six-hour-per-day `dataSync` cap; FGS starts also have background restrictions. Do not reuse AREA's `dataSync` service for ROOM presence: https://developer.android.com/about/versions/15/changes/foreground-service-types ; https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start.
 - Android `specialUse` FGS requires manifest subtype disclosure and may be subject to Play review; verify the exact service classification before implementation and document it: https://developer.android.com/about/versions/14/changes/fgs-types-required.
 - CodeGraph confirmed current app `MainActivity` has no HOME/kiosk handling; ROOM bootstrap stores credentials in WebView state while native pairing is AREA-specific. Server supports bearer-authenticated `/api/v1/device/heartbeat` and role-aware `/api/v1/device/session`; preserve these contracts and the AREA-only parser/command guards.
@@ -82,11 +109,15 @@ ROOM assignment and live presence currently depend on the WebView's browser stor
 
 ## Next Step
 
-ARKP-01 is complete on the existing feature branch in two dependency-closed commits: web onboarding/bridges `d5d8e87`, then Android ROOM presence `790ed96`. Next, begin ARKP-02 mapping for generic HOME/boot restoration, ROOM-only immersive behavior, optional Device Owner Lock Task, and operator maintenance; preserve AREA/Admin behavior and add documentation/tests. Do not run ADB or configure a device, create another branch, push, or open a PR. No on-device verification is claimed.
+ARKP-01 is complete on the existing feature branch in two dependency-closed commits: web onboarding/bridges `d5d8e87`, then Android ROOM presence `790ed96`; tracker evidence is committed as `cbebab0`. ARKP-02A is complete and committed as `fbf67b9`; its operator guide is `docs/android-room-kiosk.md`. Next implement ARKP-02B, optional Device Owner Lock Task. Preserve AREA/Admin behavior. Do not run ADB or configure a device, create another branch, push, or open a PR. No on-device verification is claimed.
 
 ## Relevant Files
 
 - `apps/android-notification-receiver/app/src/main/AndroidManifest.xml` — Android app/Activity/service/component declarations.
+- `apps/android-notification-receiver/app/src/main/java/com/hotelalert/notificationreceiver/RoomKioskPolicy.kt` — pure ROOM fullscreen/HOME/boot restoration predicates.
+- `apps/android-notification-receiver/app/src/main/java/com/hotelalert/notificationreceiver/receiver/RoomPresenceRestoreReceiver.kt` — gated ROOM service restoration after boot/package replacement.
+- `apps/android-notification-receiver/app/src/test/java/com/hotelalert/notificationreceiver/RoomKioskPolicyTest.kt` — HOME/fullscreen/restoration policy tests.
+- `docs/android-room-kiosk.md` — operator guide for the native ROOM HOME/boot/immersive flow (ARKP-02A).
 - `apps/android-notification-receiver/app/src/main/java/com/hotelalert/notificationreceiver/MainActivity.kt` — WebView Activity and lifecycle.
 - `apps/android-notification-receiver/app/src/main/java/com/hotelalert/notificationreceiver/web/NativeWebViewBridge.kt` — native bridge called from web onboarding.
 - `apps/android-notification-receiver/app/src/main/java/com/hotelalert/notificationreceiver/protocol/RoomPresence.kt` — ROOM lifecycle, heartbeat, and token-rotation protocol.
