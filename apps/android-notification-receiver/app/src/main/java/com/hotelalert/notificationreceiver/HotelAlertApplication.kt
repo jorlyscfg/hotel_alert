@@ -110,6 +110,8 @@ class AndroidReceiverComponent(context: Application) {
 
     suspend fun shouldStartReceiver(): Boolean = startupCoordinator.shouldStartReceiver()
 
+    suspend fun hasConfiguredRoomPresenceSession(): Boolean = roomPresenceSessionStore.read() != null
+
     fun createRoomPresenceCoordinator(): RoomPresenceCoordinator = RoomPresenceCoordinator(
         sessionStore = roomPresenceSessionStore,
         client = roomPresenceClient,

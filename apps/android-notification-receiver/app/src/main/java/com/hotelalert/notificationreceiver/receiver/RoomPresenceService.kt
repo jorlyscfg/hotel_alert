@@ -79,6 +79,7 @@ class RoomPresenceService : Service() {
                 }
                 RoomPresenceCycle.Invalidated -> {
                     Log.i(TAG, "ROOM assignment was invalidated; local credentials were cleared.")
+                    notifyRoomSessionChanged(this@RoomPresenceService)
                     stopSelfResult(startId)
                     return
                 }
@@ -139,20 +140,27 @@ class RoomPresenceService : Service() {
         private const val SERVICE_CHANNEL_ID = "hotel-alert-room-presence"
         private const val NOTIFICATION_ID = 10_002
         private const val ACTION_STOP = "com.hotelalert.notificationreceiver.ROOM_PRESENCE_STOP"
+        const val ACTION_ROOM_SESSION_CHANGED = "com.hotelalert.notificationreceiver.ROOM_SESSION_CHANGED"
 
-        fun start(context: Context) {
+        fun start(context: Context, notifyActivity: Boolean = false) {
             ContextCompat.startForegroundService(context, Intent(context, RoomPresenceService::class.java))
+            if (notifyActivity) notifyRoomSessionChanged(context)
         }
 
         fun stop(context: Context) {
             context.stopService(Intent(context, RoomPresenceService::class.java).setAction(ACTION_STOP))
+            notifyRoomSessionChanged(context)
+        }
+
+        private fun notifyRoomSessionChanged(context: Context) {
+            context.sendBroadcast(Intent(ACTION_ROOM_SESSION_CHANGED).setPackage(context.packageName))
         }
     }
 }
 
 class AndroidRoomPresenceServiceController(private val context: Context) :
     com.hotelalert.notificationreceiver.protocol.RoomPresenceServiceController {
-    override fun start() = RoomPresenceService.start(context)
+    override fun start() = RoomPresenceService.start(context, notifyActivity = true)
 
     override fun stop() = RoomPresenceService.stop(context)
 }
