@@ -46,7 +46,7 @@ The user approved implementing a separate native button that opens Android's HOM
 - [x] Preserve user control: do not programmatically select/clear a preferred launcher or request Device Owner; fall back to the existing consent-based chooser with understandable feedback if the system settings action cannot be opened.
 - [x] Re-read and display the actual HOME status after returning from Android settings; confirmed the existing `onResume`/maintenance refresh path performs this check.
 - [x] Run the Android unit-test/build/lint/check suite and `git diff --check`.
-- [ ] Commit only the scoped source and tracker changes.
+- [x] Commit only the scoped source and tracker changes.
 
 ### ROOM-HOME-04 — Roll out the direct HOME settings APK
 
@@ -94,6 +94,7 @@ The user approved implementing a separate native button that opens Android's HOM
 - Follow-up diagnosis: `dumpsys role` reports `com.hotelalert.notificationreceiver` as the ROOM's `android.app.role.HOME` holder, while `cmd package resolve-activity` still resolves the HOME intent to `com.akubela.panel/.activity.init.InitActivity` with `isDefault=true`. This task adds a direct settings entry point for the operator to correct/inspect that mismatch; the system setting itself remains user-controlled.
 - ROOM-HOME-03 implementation: added the separate “Cambiar aplicación de inicio en Android” action and wired it to `Settings.ACTION_HOME_SETTINGS`; if Android cannot open that system page, the app offers its existing consent-based RoleManager flow and a safe general-Settings fallback. No HOME preference is set or cleared by Hotel Alert.
 - ROOM-HOME-03 verification: `:app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:check` passed (BUILD SUCCESSFUL; 78 actionable tasks, 21 executed, 57 up-to-date). `git diff --check` passed. The shared Git index remains unchanged at tree `de340c670a8e120c7db6f10dd48656f96f712286`.
+- ROOM-HOME-03 work-unit commit: `251317e` (`feat(android): open Home selection settings`), 56 insertions and 8 deletions across the two native files and this task tracker. The commit was created from an isolated index; the shared Git index remains unchanged.
 
 ## Relevant files
 
