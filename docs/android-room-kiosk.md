@@ -22,6 +22,30 @@ Android 10+ (API 29+) uses the system HOME-role consent flow when available. A d
 
 ## Lockdown boundary
 
-HOME selection and immersive fullscreen provide a convenient Basic mode, not a security boundary. This release does not configure Device Owner or Lock Task. Android screen pinning is user-exitable and must not be described as strict kiosk lockdown. Optional Device Owner/Lock Task setup is a separate operator procedure and is not required for normal ROOM use.
+HOME selection and immersive fullscreen provide a convenient Basic mode, not a security boundary. They do not require Device Owner and remain the default for ROOM stations. Android screen pinning is user-exitable and must not be described as strict kiosk lockdown.
+
+This release registers Hotel Alert as a possible same-app Device Policy Controller and includes a guarded ROOM Lock Task policy wrapper. It does not provision Device Owner, invoke that wrapper from the app flow, enable strict mode, or call `startLockTask()`. Strict mode stays unavailable until a later release adds and verifies a local maintenance exit. The device-admin metadata requests no legacy Device Admin policies; Lock Task policy is only available to the app when Android has provisioned it as Device Owner.
+
+## Optional Device Owner commissioning
+
+Device Owner is optional and is not needed for ordinary ROOM use. Only an authorized operator should provision it on a dedicated ROOM device. Device Owner is a powerful, device-wide management state; the app cannot grant itself that role after installation.
+
+For a production fleet, use the organization's approved fully managed-device provisioning flow (for example, QR enrollment during Android setup or an EMM). Device support and eligibility depend on the Android/OEM setup state. Do not enable Device Owner on a production room device with this release: it has no local maintenance exit yet.
+
+For an isolated development device running Android 9 (API 28) or later only, Android's DPM shell command can provision the receiver after installing the APK when the device/account state permits it. Android's development instructions require removing device accounts first; this command is not the production enrollment workflow:
+
+```sh
+adb shell dpm set-device-owner com.hotelalert.notificationreceiver/.admin.HotelAlertDeviceAdminReceiver
+```
+
+This command is documentation only; it was not run as part of this change. A successful Device Owner provisioning does not start Lock Task in this release. If invoked by a future commissioning flow, the policy wrapper will allowlist only the Hotel Alert package after confirming a persisted ROOM session and Device Owner authority; it does not start the app in Lock Task or change lock-task system UI features.
+
+## Device Owner removal and recovery
+
+This release has no in-app Device Owner relinquish flow. Do not treat uninstalling Hotel Alert as a removal procedure: Android protects the Device Owner package from ordinary deactivation/uninstall. The DPM `remove-active-admin` shell command is restricted to test-only admin apps, and this production manifest is not marked `android:testOnly`. For a production device, use the organization's approved EMM/provisioning recovery procedure; if it cannot relinquish ownership, factory-reset the device before reusing it. Do not use the deprecated `clearDeviceOwnerApp()` API as a production recovery mechanism.
+
+Strict Lock Task must remain disabled until ARKP-02C supplies the local PIN-protected maintenance exit. In particular, do not add automatic Lock Task entry to HOME, boot, package-replacement, or ROOM session callbacks before that exit exists and has been tested.
+
+Android platform references: [Lock Task mode](https://developer.android.com/work/dpc/dedicated-devices/lock-task-mode), [DeviceAdminReceiver](https://developer.android.com/reference/android/app/admin/DeviceAdminReceiver), [DPM shell commands](https://developer.android.com/tools/adb).
 
 Test each supported manufacturer and Android release with boot, app replacement, screen-off presence, HOME selection, and manual recovery. No device-specific behavior is guaranteed by this guide.
