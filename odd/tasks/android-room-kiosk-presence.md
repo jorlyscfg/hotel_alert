@@ -131,7 +131,7 @@ ROOM assignment and live presence currently depend on the WebView's browser stor
 - Checks: focused wake/HOME/maintenance unit tests, prescribed Android assemble/lint/check runner, and `git diff --check`. Device/OEM wake behavior remains pending unless separately authorized.
 - Implemented: the active ROOM foreground service registers a dynamic screen on/off receiver only while native ROOM presence is configured, uses a per-wake one-shot gate, rechecks the live session/screen/visibility/maintenance/diagnostics state before launching, and unregisters on session invalidation/service stop. Native maintenance reports and deep-links to user-managed overlay access on Android 10+; no overlay is drawn and no Usage Access or full-screen notification is used.
 - Verification observed: focused `RoomKioskPolicyTest` passed; the prescribed Android `:app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:check` runner passed (78 tasks, 21 executed and 57 up-to-date); `git diff --check` and scoped whitespace check passed. No ADB, emulator, or physical device was used; OEM wake behavior remains pending.
-- Progress: ☑ implementation and automated verification complete. Work-unit commit identity will be recorded after the isolated commit; no device install was attempted.
+- Progress: ☑ complete. Work-unit committed as `45095cd` (`fix(android): restore room screen after wake`), 346 authored lines across guarded ROOM screen-wake recovery, native overlay-consent status/action, focused tests, operator guidance, and tracker evidence. No device install was attempted; OEM wake behavior remains pending.
 
 ## Acceptance Criteria
 
@@ -167,7 +167,7 @@ ROOM assignment and live presence currently depend on the WebView's browser stor
 
 ## Next Step
 
-ARKP-01 is complete on the existing feature branch in two dependency-closed commits: web onboarding/bridges `d5d8e87`, then Android ROOM presence `790ed96`; tracker evidence is committed as `cbebab0`. ARKP-02A is complete and committed as `fbf67b9`. ARKP-02B is complete in `dccd79a` with tracker evidence `06812da`. ARKP-02C.1 and C.2 are complete and committed as `39bee81` and `a2d112b` respectively. ARKP-02D implementation and automated checks are complete; create the isolated work-unit commit and record its identity, then report that OEM wake behavior still needs physical testing. The native configuration screen and PIN remain separate from the web ROOM session. Preserve AREA/Admin behavior and the shared index. Do not run ADB or configure a device, create another branch, push, or open a PR. No on-device wake/OEM verification is claimed.
+ARKP-01 is complete on the existing feature branch in two dependency-closed commits: web onboarding/bridges `d5d8e87`, then Android ROOM presence `790ed96`; tracker evidence is committed as `cbebab0`. ARKP-02A is complete and committed as `fbf67b9`. ARKP-02B is complete in `dccd79a` with tracker evidence `06812da`. ARKP-02C.1 and C.2 are complete and committed as `39bee81` and `a2d112b` respectively. ARKP-02D is committed as `45095cd`; automated verification passed, with only physical device/OEM wake testing pending. The native configuration screen and PIN remain separate from the web ROOM session. Preserve AREA/Admin behavior and the shared index. Do not run ADB or configure a device, create another branch, push, or open a PR. No on-device wake/OEM verification is claimed.
 
 ## Relevant Files
 
