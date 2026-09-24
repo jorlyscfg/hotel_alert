@@ -26,7 +26,7 @@ The user's request explicitly authorizes changing the native Android app's user-
 - [x] Add focused assertions for Spanish receiver status labels; existing notification-surface assertions preserve dynamic server-provided names.
 - [x] Audit app-owned user-visible native strings for leftover English; product names, acronyms, IDs/URLs, dynamic server data, internal logs/identifiers, and Android-owned system UI are excluded.
 - [x] Run Android unit tests, assemble, lint, `check`, and whitespace validation; record actual results.
-- [ ] Commit only the task's source/test/documentation hunks in a work-unit commit; leave the shared Git index untouched.
+- [x] Commit only the task's source/test/documentation hunks in a work-unit commit; leave the shared Git index untouched.
 
 ## Acceptance criteria
 - All app-authored static text visible on native Android screens and in Hotel Alert notifications/system notifications is Spanish.
@@ -52,8 +52,8 @@ The user's request explicitly authorizes changing the native Android app's user-
 - Exploration: CodeGraph mapped native screens, notifications, call sites, and the WebView boundary. `strings.xml` and the manifest were inspected; Android system-owned dialogs/settings are not app-localized.
 - Implementation: completed. Setup/recovery, diagnostics state labels, PIN/maintenance, kiosk controls, notification/service copy, app label, and foreground-service metadata are Spanish. No behavior changes were made.
 - Verification: `:app:testDebugUnitTest`, `:app:assembleDebug`, `:app:lintDebug`, and `:app:check` passed (78 tasks: 39 executed, 39 up-to-date); `git diff --check` and a scoped trailing-whitespace/native-copy audit passed. No ADB/device operation was performed.
-- Work-unit commit: pending isolated-index commit; the shared Git index is unchanged.
-- Next step: create the work-unit commit with only ANDR-ES-01 hunks, then record its identity here.
+- Work-unit commit: `924f792` (`feat(android): localize native UI in Spanish`). Only the eight task files were committed through a temporary isolated Git index; the shared Git index SHA-256 remained unchanged.
+- Next step: none for this task. The rebuilt debug APK was not installed on either device because this request did not authorize a new device operation.
 
 ## Relevant files
 - `apps/android-notification-receiver/app/src/main/java/com/hotelalert/notificationreceiver/ui/RoomMaintenanceScreens.kt` — native maintenance/PIN screen.
