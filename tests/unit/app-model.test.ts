@@ -112,6 +112,20 @@ describe('web application model helpers', () => {
     expect(parseAdminSession('{"result":{"admin":{"id":"admin-1","username":"admin","expiresAt":"2026-09-01T00:00:00.000Z"},"csrfToken":"csrf-token"},"installationId":42}')).toBeNull();
   });
 
+  it('persists a pending station role while onboarding survives a reload', () => {
+    const session = {
+      result: {
+        admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+        csrfToken: 'csrf-token'
+      },
+      installationId: 'installation-1',
+      pendingStationRole: 'AREA'
+    } as Parameters<typeof serializeAdminSession>[0] & { pendingStationRole: 'AREA' };
+
+    expect(parseAdminSession(serializeAdminSession(session))).toEqual(session);
+    expect(parseAdminSession(`${serializeAdminSession(session).slice(0, -1)},"pendingStationRole":"ADMIN"}`)).toBeNull();
+  });
+
   it('continues automatic startup retries with capped exponential delays', () => {
     expect(resolveStartupRetryDelayMs(0)).toBe(250);
     expect(resolveStartupRetryDelayMs(1)).toBe(500);
@@ -271,10 +285,10 @@ describe('web application model helpers', () => {
         calls.push(`acknowledge:${rotationId}:${token}`);
         expect(storage.getItem(DEVICE_PENDING_TOKEN_ROTATION_STORAGE_KEY)).toBe(JSON.stringify(replacement));
       }
-    }, storage);
+    }, storage, async (token) => { calls.push(`stage-native:${token}`); });
 
     expect(result).toBe('new-token');
-    expect(calls).toEqual(['claim:rotation-1:old-token', 'acknowledge:rotation-1:new-token']);
+    expect(calls).toEqual(['claim:rotation-1:old-token', 'stage-native:new-token', 'acknowledge:rotation-1:new-token']);
     expect(values.get(DEVICE_TOKEN_STORAGE_KEY)).toBe('new-token');
     expect(values.has(DEVICE_PENDING_TOKEN_ROTATION_STORAGE_KEY)).toBe(false);
   });
@@ -321,6 +335,25 @@ describe('web application model helpers', () => {
       acknowledge: async () => { throw new Error('acknowledgement failed'); }
     }, storage)).rejects.toThrow('acknowledgement failed');
 
+    expect(values.get(DEVICE_TOKEN_STORAGE_KEY)).toBe('old-token');
+    expect(values.get(DEVICE_PENDING_TOKEN_ROTATION_STORAGE_KEY)).toBe(JSON.stringify({ rotationId: 'rotation-1', deviceToken: 'new-token' }));
+  });
+
+  it('does not acknowledge a rotation until the native ROOM replacement is staged', async () => {
+    const values = new Map<string, string>([[DEVICE_TOKEN_STORAGE_KEY, 'old-token']]);
+    const storage = {
+      getItem: (key: string): string | null => values.get(key) ?? null,
+      setItem: (key: string, value: string): void => { values.set(key, value); },
+      removeItem: (key: string): void => { values.delete(key); }
+    };
+    const acknowledge = vi.fn(async () => undefined);
+
+    await expect(completeDeviceTokenRotation({ rotationId: 'rotation-1' }, 'old-token', {
+      claim: async () => ({ rotationId: 'rotation-1', deviceToken: 'new-token' }),
+      acknowledge
+    }, storage, async () => { throw new Error('native secure store unavailable'); })).rejects.toThrow('native secure store unavailable');
+
+    expect(acknowledge).not.toHaveBeenCalled();
     expect(values.get(DEVICE_TOKEN_STORAGE_KEY)).toBe('old-token');
     expect(values.get(DEVICE_PENDING_TOKEN_ROTATION_STORAGE_KEY)).toBe(JSON.stringify({ rotationId: 'rotation-1', deviceToken: 'new-token' }));
   });

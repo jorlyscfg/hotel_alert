@@ -61,10 +61,11 @@ describe('web API error helpers', () => {
     ]);
   });
 
-  it('recognizes only HTTP 403 DEVICE_INACTIVE as device invalidation', () => {
+  it('recognizes confirmed inactive and revoked device credentials as invalidation', () => {
     expect(isDeviceInvalidationError(new ApiError(403, { error: { code: 'DEVICE_INACTIVE' } }))).toBe(true);
     expect(isDeviceInvalidationError(new ApiError(403, { error: { code: 'FORBIDDEN_ASSIGNMENT' } }))).toBe(false);
     expect(isDeviceInvalidationError(new ApiError(401, { error: { code: 'DEVICE_INACTIVE' } }))).toBe(false);
+    expect(isDeviceInvalidationError(new ApiError(401, { error: { code: 'DEVICE_TOKEN_REVOKED' } }))).toBe(true);
   });
 
   it('treats 401 and only the inactive-device 403 as device auth failures', () => {

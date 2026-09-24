@@ -11,6 +11,11 @@ import {
 import { createTranslator } from '../../apps/web/src/i18n';
 
 describe('admin login error semantics', () => {
+  it('explains invalid credentials clearly without identifying which field failed', () => {
+    expect(createTranslator('en')('errors.authInvalid')).toBe('Incorrect username or password.');
+    expect(createTranslator('es')('errors.authInvalid')).toBe('Usuario o contraseña incorrectos.');
+  });
+
   it('associates the form error with both fields and marks rejected credentials invalid', () => {
     expect(resolveAdminLoginFieldAccessibility(null, false)).toEqual({
       describedBy: undefined,
@@ -65,5 +70,30 @@ describe('admin login password visibility', () => {
     expect(english('auth.hidePassword')).toBe('Hide password');
     expect(spanish('auth.showPassword')).toBe('Mostrar contraseña');
     expect(spanish('auth.hidePassword')).toBe('Ocultar contraseña');
+    expect(english('auth.roleAdmin')).toBe('Admin');
+    expect(english('auth.roleRoom')).toBe('Room');
+    expect(english('auth.roleArea')).toBe('Area');
+    expect(spanish('auth.roleAdmin')).toBe('Admin');
+    expect(spanish('auth.roleRoom')).toBe('Habitación');
+    expect(spanish('auth.roleArea')).toBe('Área');
+  });
+});
+
+describe('station role selection', () => {
+  it('renders the three station roles only when station onboarding is enabled', () => {
+    const adminMarkup = renderToStaticMarkup(createElement(AdminLoginForm, { onSuccess: () => undefined }));
+    const stationMarkup = renderToStaticMarkup(createElement(AdminLoginForm, { allowStationRoles: true, onSuccess: () => undefined }));
+
+    expect(adminMarkup).not.toContain('station-role-picker');
+    expect(stationMarkup).toContain('station-role-picker');
+    expect(stationMarkup).toContain('role="group"');
+    expect(stationMarkup).toContain('aria-pressed="true"');
+    expect(stationMarkup).toContain('station-role-option__label">Admin</span>');
+    expect(stationMarkup).toContain('station-role-option__label">Room</span>');
+    expect(stationMarkup).toContain('station-role-option__label">Area</span>');
+    expect(stationMarkup).not.toContain('name="station-role"');
+    expect(stationMarkup).not.toContain('lucide-shield-check');
+    expect(stationMarkup).not.toContain('lucide-tv');
+    expect(stationMarkup).not.toContain('lucide-monitor');
   });
 });

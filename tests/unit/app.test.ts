@@ -1,10 +1,13 @@
 import type * as React from 'react';
 import type { DeviceSyncSnapshot } from '@hotel/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { RealtimeRefreshResult } from '../../apps/web/src/realtime';
+import type { ConnectionStatus, RealtimeRefreshResult } from '../../apps/web/src/realtime';
 
 interface RealtimeOptionsForTest {
+  enabled: boolean;
+  hasSnapshot: boolean;
   onEvent: (eventName?: string, payload?: unknown) => Promise<RealtimeRefreshResult | void>;
+  onStatus: (status: ConnectionStatus) => void;
 }
 
 interface DeviceScreenPropsForTest {
@@ -15,6 +18,21 @@ interface DeviceScreenPropsForTest {
 interface AdminScreenPropsForTest {
   csrfToken?: string;
   installationId?: string | null;
+  connectionStatus?: ConnectionStatus;
+  onUseDeviceToken?: (pairing: { deviceId: string; deviceToken: string; assignmentMode: 'ROOM' | 'AREA' }) => Promise<void>;
+}
+
+interface BootstrapScreenPropsForTest {
+  onRetry?: () => void;
+  onAdminLogin?: (result: { admin: { id: string; username: string; expiresAt: string }; csrfToken: string }, role: 'ADMIN' | 'ROOM' | 'AREA') => Promise<void>;
+}
+
+interface AssignmentScreenPropsForTest {
+  role?: 'ROOM' | 'AREA';
+  snapshot?: { rooms?: unknown[]; areas?: unknown[] };
+  onSelect?: (target: unknown) => void;
+  onAdmin?: () => void;
+  error?: string | null;
 }
 
 interface TestElement {
@@ -25,6 +43,8 @@ interface TestElement {
     onClearRoomRequestNotifications?: () => void;
     csrfToken?: string;
     installationId?: string | null;
+    connectionStatus?: ConnectionStatus;
+    onRetry?: () => void;
   };
 }
 
@@ -53,8 +73,27 @@ const apiMocks = vi.hoisted(() => ({
   patch: vi.fn()
 }));
 
+const errorMessageMock = vi.hoisted(() => vi.fn((error: unknown, fallback: string, locale?: string) =>
+  locale === 'es' ? fallback : `English fallback: ${fallback}`
+));
+
+const nativeBridgeMocks = vi.hoisted(() => ({
+  getNativeWebViewBridge: vi.fn(() => null),
+  pairNativeDevice: vi.fn(async () => undefined),
+  configureNativeRoomSession: vi.fn(async () => undefined),
+  stageNativeRoomToken: vi.fn(),
+  clearNativeRoomSession: vi.fn(),
+  supportsNativeRoomPresence: vi.fn((bridge: { setRoomSession?: unknown } | null) => bridge !== null && typeof bridge.setRoomSession === 'function'),
+  readNativeRoomPresenceState: vi.fn((bridge: { getRoomPresenceState?: () => string } | null) => bridge?.getRoomPresenceState?.() ?? 'IDLE'),
+  readNativeSnapshot: vi.fn(() => null),
+  resolveNativeReceiverStatus: vi.fn(() => 'offline' as const),
+  supportsNativeDeviceCommands: vi.fn(() => false)
+}));
+const nativeRoomBridgeGetter = vi.hoisted(() => ({ get: vi.fn(() => null as unknown) }));
+
 let sessionValues = new Map<string, string>();
 const windowEventListeners = new Map<string, Set<(event: unknown) => void>>();
+const intervalCallbacks: Array<() => void> = [];
 
 const roomAudioMocks = vi.hoisted(() => ({
   constructor: vi.fn(),
@@ -110,8 +149,15 @@ vi.mock('../../apps/web/src/api', () => ({
   api: apiMocks,
   acknowledgeDeviceTokenRotation: vi.fn(),
   claimDeviceTokenRotation: vi.fn(),
-  isApiError: () => false,
-  isDeviceInvalidationError: () => false,
+  errorMessage: errorMessageMock,
+  isApiError: (error: unknown, status?: number) => {
+    if (typeof error !== 'object' || error === null || (error as { _apiError?: boolean })._apiError !== true) return false;
+    return status === undefined || (error as { status?: number }).status === status;
+  },
+  isDeviceInvalidationError: (error: unknown) => typeof error === 'object' && error !== null
+    && (error as { _apiError?: boolean })._apiError === true
+    && (((error as { status?: number; code?: string }).status === 403 && (error as { code?: string }).code === 'DEVICE_INACTIVE')
+      || ((error as { status?: number; code?: string }).status === 401 && (error as { code?: string }).code === 'DEVICE_TOKEN_REVOKED')),
   startupErrorMessage: () => 'Local service unavailable.'
 }));
 
@@ -122,12 +168,40 @@ vi.mock('../../apps/web/src/app-model', () => ({
   DEVICE_SNAPSHOT_STORAGE_KEY: 'hotel-local-device-snapshot',
   DEVICE_SYNC_STATE_STORAGE_KEY: 'hotel-local-device-sync-state',
   DEVICE_TOKEN_STORAGE_KEY: 'hotel-local-device-token',
+  clearPersistedDeviceState: (storage: { removeItem: (key: string) => void }) => {
+    for (const key of [
+      'hotel-local-device-token',
+      'hotel-local-device-id',
+      'hotel-local-pending-token-rotation',
+      'hotel-local-device-sync-state',
+      'hotel-local-device-snapshot',
+      'hotel-local-installation-id',
+      'hotel-local-client-instance-id',
+      'hotel-local-room-request-queue',
+      'hotel-local-locale'
+    ]) storage.removeItem(key);
+  },
   buildLocalDeviceSyncState: (deviceId: string, values: Record<string, unknown>) => ({ deviceId, ...values }),
   completeDeviceTokenRotation: vi.fn(),
   getOrCreateInstallationId: () => 'installation-1',
+  rotateInstallationId: () => 'installation-2',
   makeMutationKey: () => 'mutation-1',
   parseAdminSession: (raw: string) => JSON.parse(raw),
   readLocalDeviceSnapshot: () => null,
+  readPendingDeviceTokenRotation: (storage: { getItem: (key: string) => string | null }) => {
+    const raw = storage.getItem('hotel-local-pending-token-rotation');
+    if (raw === null) return null;
+    try {
+      const rotation: unknown = JSON.parse(raw);
+      return typeof rotation === 'object' && rotation !== null
+        && typeof (rotation as { rotationId?: unknown }).rotationId === 'string'
+        && typeof (rotation as { deviceToken?: unknown }).deviceToken === 'string'
+        ? rotation
+        : null;
+    } catch {
+      return null;
+    }
+  },
   resolveStartupRetryDelayMs: () => 250,
   serializeLocalDeviceSnapshot: (snapshot: DeviceSyncSnapshot) => JSON.stringify(snapshot),
   serializeLocalDeviceSyncState: (state: unknown) => JSON.stringify(state),
@@ -137,6 +211,12 @@ vi.mock('../../apps/web/src/app-model', () => ({
 
 vi.mock('../../apps/web/src/i18n', () => ({
   useI18n: () => ({ locale: 'en', t: (key: string) => key }),
+  createTranslator: (locale: string) => (key: string) => locale === 'es'
+    ? ({
+      'errors.serviceUnavailable': 'El servicio local no está disponible. El reintento automático continuará con una espera limitada.',
+      'errors.deviceProvisionFailed': 'No se pudo registrar la estación. Revisa el destino seleccionado e inténtalo de nuevo.'
+    } as Record<string, string>)[key] ?? key
+    : key,
   SpanishI18nProvider: ({ children }: { children: React.ReactNode }) => children
 }));
 
@@ -146,11 +226,36 @@ vi.mock('../../apps/web/src/realtime', () => ({
   }
 }));
 
+vi.mock('../../apps/web/src/native-station-bridge', () => ({
+  getNativeStationBridge: () => nativeBridgeMocks.getNativeWebViewBridge(),
+  pairNativeStation: nativeBridgeMocks.pairNativeDevice,
+  readNativeStationSnapshot: nativeBridgeMocks.readNativeSnapshot,
+  resolveNativeStationReceiverStatus: nativeBridgeMocks.resolveNativeReceiverStatus
+}));
+vi.mock('../../apps/web/src/native-room-bridge', () => ({
+  getNativeRoomPresenceBridge: () => nativeRoomBridgeGetter.get(),
+  clearNativeRoomSession: nativeBridgeMocks.clearNativeRoomSession,
+  configureNativeRoomSession: nativeBridgeMocks.configureNativeRoomSession,
+  readNativeRoomPresenceState: nativeBridgeMocks.readNativeRoomPresenceState,
+  stageNativeRoomToken: nativeBridgeMocks.stageNativeRoomToken,
+  supportsNativeRoomPresence: nativeBridgeMocks.supportsNativeRoomPresence
+}));
+
 vi.mock('../../apps/web/src/components/LanguageSelector', () => ({ LanguageSelector: 'language-selector' }));
 vi.mock('../../apps/web/src/components/Modal', () => ({ Modal: 'modal' }));
 vi.mock('../../apps/web/src/features/auth/AdminLoginForm', () => ({ AdminLoginForm: 'admin-login-form' }));
 vi.mock('../../apps/web/src/features/admin/AdminScreen', () => ({ AdminScreen: 'admin-screen' }));
 vi.mock('../../apps/web/src/features/bootstrap/BootstrapScreen', () => ({ BootstrapScreen: 'bootstrap-screen' }));
+vi.mock('../../apps/web/src/features/bootstrap/DeviceRoleAssignmentScreen', () => ({
+  DeviceRoleAssignmentScreen: 'device-role-assignment-screen',
+  buildDeviceBootstrapInput: (installationId: string, role: 'ROOM' | 'AREA', target: { id: string; displayName: string }) => ({
+    installationId,
+    displayName: target.displayName,
+    assignmentMode: role,
+    roomId: role === 'ROOM' ? target.id : null,
+    areaId: role === 'AREA' ? target.id : null
+  })
+}));
 vi.mock('../../apps/web/src/features/device/DeviceScreen', () => ({ DeviceScreen: 'device-screen' }));
 
 const { App } = await import('../../apps/web/src/App');
@@ -158,10 +263,12 @@ const { App } = await import('../../apps/web/src/App');
 describe('App room request notification lifecycle', () => {
   beforeEach(() => {
     hookHarness.reset();
+    errorMessageMock.mockClear();
     const audioContext = createFakeAudioContext();
     roomAudioMocks.constructor.mockImplementation(() => audioContext);
     sessionValues = new Map();
     windowEventListeners.clear();
+    intervalCallbacks.length = 0;
     vi.stubGlobal('window', {
       AudioContext: roomAudioMocks.constructor,
       addEventListener: (eventName: string, listener: (event: unknown) => void): void => {
@@ -172,6 +279,11 @@ describe('App room request notification lifecycle', () => {
       removeEventListener: (eventName: string, listener: (event: unknown) => void): void => {
         windowEventListeners.get(eventName)?.delete(listener);
       },
+      setInterval: (callback: () => void): number => {
+        intervalCallbacks.push(callback);
+        return intervalCallbacks.length;
+      },
+      clearInterval: vi.fn(),
       sessionStorage: {
         getItem: (key: string): string | null => sessionValues.get(key) ?? null,
         setItem: (key: string, value: string): void => { sessionValues.set(key, value); },
@@ -196,10 +308,22 @@ describe('App room request notification lifecycle', () => {
   afterEach(() => {
     for (const effect of hookHarness.effects) effect?.cleanup?.();
     windowEventListeners.clear();
+    intervalCallbacks.length = 0;
     hookHarness.reset();
     apiMocks.get.mockReset();
     apiMocks.post.mockReset();
     apiMocks.patch.mockReset();
+    nativeBridgeMocks.getNativeWebViewBridge.mockReset().mockReturnValue(null);
+    nativeBridgeMocks.pairNativeDevice.mockReset().mockResolvedValue(undefined);
+    nativeBridgeMocks.configureNativeRoomSession.mockReset().mockResolvedValue(undefined);
+    nativeBridgeMocks.stageNativeRoomToken.mockReset();
+    nativeBridgeMocks.clearNativeRoomSession.mockReset();
+    nativeBridgeMocks.supportsNativeRoomPresence.mockReset().mockImplementation((bridge) => bridge !== null && typeof bridge.setRoomSession === 'function');
+    nativeBridgeMocks.readNativeRoomPresenceState.mockReset().mockImplementation((bridge) => bridge?.getRoomPresenceState?.() ?? 'IDLE');
+    nativeBridgeMocks.readNativeSnapshot.mockReset().mockReturnValue(null);
+    nativeBridgeMocks.resolveNativeReceiverStatus.mockReset().mockReturnValue('offline');
+    nativeBridgeMocks.supportsNativeDeviceCommands.mockReset().mockReturnValue(false);
+    nativeRoomBridgeGetter.get.mockReset().mockImplementation(() => nativeBridgeMocks.getNativeWebViewBridge());
     roomAudioMocks.constructor.mockReset();
     roomAudioMocks.oscillator = undefined;
     roomAudioMocks.gain = undefined;
@@ -238,6 +362,580 @@ describe('App room request notification lifecycle', () => {
     const admin = getAdminScreenProps(renderApp());
     expect(admin).toMatchObject({ csrfToken: 'csrf-token', installationId: 'installation-1' });
     expect(apiMocks.get.mock.calls.map(([path]) => path)).toEqual(['/auth/admin/me', '/system/snapshot']);
+  });
+
+  it('routes the selected login role to station assignment before provisioning', async () => {
+    clearBrowserDeviceCredentials();
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path.startsWith('/devices/bootstrap-state')) return { data: { installationId: 'installation-1', configured: false, displayHint: null }, requestId: 'request-bootstrap-state' };
+      if (path === '/system/snapshot') return { data: {}, requestId: 'request-admin-snapshot' };
+      return { data: createRoomSnapshot(), requestId: 'request-device' };
+    });
+
+    renderApp();
+    await flushPromises();
+    await flushPromises();
+    const bootstrap = getBootstrapScreenProps(renderApp());
+    await bootstrap.onAdminLogin?.({
+      admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+      csrfToken: 'csrf-token'
+    }, 'ROOM');
+
+    const assignmentProvider = renderApp() as TestElement;
+    const assignment = assignmentProvider.props.children as TestElement;
+    expect(assignment.type).toBe('device-role-assignment-screen');
+    expect((assignment.props as AssignmentScreenPropsForTest).role).toBe('ROOM');
+    expect(JSON.parse(sessionValues.get('hotel-local-admin-session') ?? '{}').pendingStationRole).toBe('ROOM');
+
+    (assignment.props as AssignmentScreenPropsForTest).onAdmin?.();
+    expect(getAdminScreenProps(renderApp())).toBeDefined();
+    expect(JSON.parse(sessionValues.get('hotel-local-admin-session') ?? '{}')).not.toHaveProperty('pendingStationRole');
+  });
+
+  it('restores a pending AREA station assignment instead of opening Admin', async () => {
+    sessionValues.set('hotel-local-admin-session', JSON.stringify({
+      result: {
+        admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+        csrfToken: 'csrf-token'
+      },
+      installationId: 'installation-1',
+      pendingStationRole: 'AREA'
+    }));
+    const activeArea = {
+      id: 'area-2', code: 'housekeeping', displayName: 'Housekeeping', description: null,
+      displayOrder: 1, active: true, createdAt: '', updatedAt: ''
+    };
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/auth/admin/me') return { data: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' }, requestId: 'request-admin-me' };
+      if (path === '/system/snapshot') return { data: { ...createAreaSnapshot(), areas: [] }, requestId: 'request-admin-snapshot' };
+      if (path === '/areas') return { data: [activeArea], requestId: 'request-areas' };
+      return { data: createAreaSnapshot(), requestId: 'request-device' };
+    });
+
+    renderApp();
+    await flushPromises();
+    await flushPromises();
+    const assignment = (renderApp() as TestElement).props.children as TestElement;
+    const props = assignment.props as AssignmentScreenPropsForTest;
+    expect(assignment.type).toBe('device-role-assignment-screen');
+    expect(props.role).toBe('AREA');
+    expect(props.snapshot?.areas).toHaveLength(1);
+  });
+
+  it('restores a pending AREA assignment with a Spanish error when ROOM preference is English', async () => {
+    sessionValues.set('hotel-local-admin-session', JSON.stringify({
+      result: {
+        admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+        csrfToken: 'csrf-token'
+      },
+      installationId: 'installation-1',
+      pendingStationRole: 'AREA'
+    }));
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/auth/admin/me') return { data: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' }, requestId: 'request-admin-me' };
+      if (path === '/system/snapshot') return { data: { ...createAreaSnapshot(), areas: [] }, requestId: 'request-admin-snapshot' };
+      if (path === '/areas') throw new Error('areas endpoint unavailable');
+      return { data: createAreaSnapshot(), requestId: 'request-device' };
+    });
+
+    renderApp();
+    await flushPromises();
+    await flushPromises();
+
+    const assignment = (renderApp() as TestElement).props.children as TestElement;
+    const props = assignment.props as AssignmentScreenPropsForTest;
+    const expectedMessage = 'El servicio local no está disponible. El reintento automático continuará con una espera limitada.';
+    expect(assignment.type).toBe('device-role-assignment-screen');
+    expect(props.error).toBe(expectedMessage);
+    expect(errorMessageMock).toHaveBeenCalledWith(expect.any(Error), expectedMessage, 'es');
+  });
+
+  it('hydrates missing AREA targets from the authenticated areas endpoint', async () => {
+    clearBrowserDeviceCredentials();
+    const activeArea = {
+      id: 'area-2',
+      code: 'housekeeping',
+      displayName: 'Housekeeping',
+      description: null,
+      displayOrder: 1,
+      active: true,
+      createdAt: '',
+      updatedAt: ''
+    };
+    const incompleteSnapshot = { ...createAreaSnapshot(), areas: [{ ...activeArea, active: false }] };
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path.startsWith('/devices/bootstrap-state')) return { data: { installationId: 'installation-1', configured: false, displayHint: null }, requestId: 'request-bootstrap-state' };
+      if (path === '/system/snapshot') return { data: incompleteSnapshot, requestId: 'request-admin-snapshot' };
+      if (path === '/areas') return { data: [activeArea], requestId: 'request-areas' };
+      return { data: createAreaSnapshot(), requestId: 'request-device' };
+    });
+
+    renderApp();
+    await flushPromises();
+    await flushPromises();
+    const bootstrap = getBootstrapScreenProps(renderApp());
+    await bootstrap.onAdminLogin?.({
+      admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+      csrfToken: 'csrf-token'
+    }, 'AREA');
+
+    const assignment = (renderApp() as TestElement).props.children as TestElement;
+    const props = assignment.props as AssignmentScreenPropsForTest;
+    expect(apiMocks.get).toHaveBeenCalledWith('/areas', { cache: 'no-store' });
+    expect(props.snapshot?.areas).toHaveLength(1);
+    expect(props.snapshot?.areas?.[0]).toEqual(activeArea);
+  });
+
+  it('keeps the AREA assignment picker actionable when target hydration fails', async () => {
+    clearBrowserDeviceCredentials();
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path.startsWith('/devices/bootstrap-state')) return { data: { installationId: 'installation-1', configured: false, displayHint: null }, requestId: 'request-bootstrap-state' };
+      if (path === '/system/snapshot') return { data: { ...createAreaSnapshot(), areas: [] }, requestId: 'request-admin-snapshot' };
+      if (path === '/areas') throw new Error('areas endpoint unavailable');
+      return { data: createAreaSnapshot(), requestId: 'request-device' };
+    });
+
+    renderApp();
+    await flushPromises();
+    await flushPromises();
+    const bootstrap = getBootstrapScreenProps(renderApp());
+    await bootstrap.onAdminLogin?.({
+      admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+      csrfToken: 'csrf-token'
+    }, 'AREA');
+
+    const assignment = (renderApp() as TestElement).props.children as TestElement;
+    expect(assignment.type).toBe('device-role-assignment-screen');
+    expect((assignment.props as AssignmentScreenPropsForTest).error).toBe('El servicio local no está disponible. El reintento automático continuará con una espera limitada.');
+  });
+
+  it('normalizes missing AREA targets when hydration fails', async () => {
+    clearBrowserDeviceCredentials();
+    const { areas: _areas, ...snapshotWithoutAreas } = createAreaSnapshot();
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path.startsWith('/devices/bootstrap-state')) return { data: { installationId: 'installation-1', configured: false, displayHint: null }, requestId: 'request-bootstrap-state' };
+      if (path === '/system/snapshot') return { data: snapshotWithoutAreas, requestId: 'request-admin-snapshot' };
+      if (path === '/areas') throw new Error('areas endpoint unavailable');
+      return { data: createAreaSnapshot(), requestId: 'request-device' };
+    });
+
+    renderApp();
+    await flushPromises();
+    await flushPromises();
+    const bootstrap = getBootstrapScreenProps(renderApp());
+    await bootstrap.onAdminLogin?.({
+      admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+      csrfToken: 'csrf-token'
+    }, 'AREA');
+
+    const assignment = (renderApp() as TestElement).props.children as TestElement;
+    const props = assignment.props as AssignmentScreenPropsForTest;
+    expect(assignment.type).toBe('device-role-assignment-screen');
+    expect(props.snapshot?.areas).toEqual([]);
+    expect(props.error).toBe('El servicio local no está disponible. El reintento automático continuará con una espera limitada.');
+  });
+
+  it('does not replace the AREA assignment picker while native pairing is unpaired', async () => {
+    clearBrowserDeviceCredentials();
+    const nativeBridge = { getReceiverState: vi.fn(() => 'FETCHING_SNAPSHOT') };
+    nativeBridgeMocks.getNativeWebViewBridge.mockReturnValue(nativeBridge);
+    nativeBridgeMocks.readNativeSnapshot.mockReturnValue(null);
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path.startsWith('/devices/bootstrap-state')) return { data: { installationId: 'installation-1', configured: false, displayHint: null }, requestId: 'request-bootstrap-state' };
+      if (path === '/system/snapshot') return { data: {}, requestId: 'request-admin-snapshot' };
+      return { data: createAreaSnapshot(), requestId: 'request-device' };
+    });
+
+    renderApp();
+    await flushPromises();
+    await flushPromises();
+    const bootstrap = getBootstrapScreenProps(renderApp());
+    await bootstrap.onAdminLogin?.({
+      admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+      csrfToken: 'csrf-token'
+    }, 'AREA');
+
+    renderApp();
+    const refreshNativeSnapshot = intervalCallbacks.at(-1);
+    if (refreshNativeSnapshot === undefined) throw new Error('Native refresh interval was not registered.');
+    refreshNativeSnapshot();
+
+    const rendered = renderApp() as TestElement;
+    const assignment = rendered.props.children as TestElement;
+    expect(assignment.type).toBe('device-role-assignment-screen');
+    expect((assignment.props as AssignmentScreenPropsForTest).role).toBe('AREA');
+  });
+
+  it('keeps the AREA assignment picker when a pending native startup retry fires', async () => {
+    vi.useFakeTimers();
+    try {
+      clearBrowserDeviceCredentials();
+      const nativeBridge = { getReceiverState: vi.fn(() => 'FETCHING_SNAPSHOT') };
+      nativeBridgeMocks.getNativeWebViewBridge.mockReturnValue(nativeBridge);
+      nativeBridgeMocks.readNativeSnapshot.mockReturnValue(null);
+      apiMocks.get.mockImplementation(async (path: string) => {
+        if (path === '/system/snapshot') return { data: {}, requestId: 'request-admin-snapshot' };
+        if (path === '/auth/admin/me') return { data: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' }, requestId: 'request-admin-me' };
+        return { data: { configured: false, installationId: 'installation-1', displayHint: null }, requestId: 'request-bootstrap-state' };
+      });
+
+      renderApp();
+      await flushPromises();
+      const bootstrap = getBootstrapScreenProps(renderApp());
+      await bootstrap.onAdminLogin?.({
+        admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+        csrfToken: 'csrf-token'
+      }, 'AREA');
+      const assignmentBeforeRetry = renderApp() as TestElement;
+      expect((assignmentBeforeRetry.props.children as TestElement).type).toBe('device-role-assignment-screen');
+
+      vi.advanceTimersByTime(250);
+      await flushPromises();
+      const rendered = renderApp() as TestElement;
+      const assignment = rendered.props.children as TestElement;
+      expect(assignment.type).toBe('device-role-assignment-screen');
+      expect((assignment.props as AssignmentScreenPropsForTest).role).toBe('AREA');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('auto-registers a selected room through the shared device bootstrap endpoint', async () => {
+    clearBrowserDeviceCredentials();
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path.startsWith('/devices/bootstrap-state')) return { data: { installationId: 'installation-1', configured: false, displayHint: null }, requestId: 'request-bootstrap-state' };
+      if (path === '/system/snapshot') return { data: {}, requestId: 'request-admin-snapshot' };
+      if (path === '/device/session') return { data: createRoomSnapshot(), requestId: 'request-room-session' };
+      return { data: createRoomSnapshot(), requestId: 'request-device' };
+    });
+    apiMocks.post.mockImplementation(async (path: string) => {
+      if (path === '/devices/bootstrap') {
+        return { data: { device: { id: 'device-room-2', assignmentMode: 'ROOM' }, deviceToken: 'room-secret' }, requestId: 'request-bootstrap' };
+      }
+      return { data: {}, requestId: 'request-logout' };
+    });
+
+    renderApp();
+    await flushPromises();
+    await flushPromises();
+    const bootstrap = getBootstrapScreenProps(renderApp());
+    await bootstrap.onAdminLogin?.({
+      admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+      csrfToken: 'csrf-token'
+    }, 'ROOM');
+    const assignment = (renderApp() as TestElement).props.children as TestElement;
+    const assignmentProps = assignment.props as AssignmentScreenPropsForTest;
+    assignmentProps.onSelect?.({ id: 'room-2', displayName: 'Room 102' });
+    await flushPromises();
+    await flushPromises();
+
+    expect(apiMocks.post).toHaveBeenCalledWith('/devices/bootstrap', {
+      installationId: 'installation-1',
+      displayName: 'Room 102',
+      assignmentMode: 'ROOM',
+      roomId: 'room-2',
+      areaId: null
+    }, expect.anything());
+    const bootstrapCall = apiMocks.post.mock.calls.find(([path]) => path === '/devices/bootstrap');
+    expect(bootstrapCall?.[2]).toMatchObject({
+      headers: { 'Idempotency-Key': 'station-onboarding-ROOM-installation-1-room-2' }
+    });
+    expect(localStorage.getItem('hotel-local-device-token')).toBe('room-secret');
+    expect(sessionValues.get('hotel-local-admin-session')).toBeUndefined();
+    expect(getDeviceScreenProps(renderApp())).toBeDefined();
+  });
+
+  it('replays the same AREA bootstrap mutation after native handoff fails', async () => {
+    clearBrowserDeviceCredentials();
+    const nativeBridge = { getReceiverState: vi.fn(() => 'IDLE') };
+    nativeBridgeMocks.getNativeWebViewBridge.mockReturnValue(nativeBridge);
+    nativeBridgeMocks.readNativeSnapshot.mockReturnValue(null);
+    let pairAttempts = 0;
+    nativeBridgeMocks.pairNativeDevice.mockImplementation(async () => {
+      pairAttempts += 1;
+      if (pairAttempts === 1) throw new Error('PAIRING_START_FAILED');
+      nativeBridgeMocks.readNativeSnapshot.mockReturnValue(createAreaSnapshot());
+    });
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path.startsWith('/devices/bootstrap-state')) return { data: { installationId: 'installation-1', configured: false, displayHint: null }, requestId: 'request-bootstrap-state' };
+      if (path === '/system/snapshot') return { data: createAreaSnapshot(), requestId: 'request-admin-snapshot' };
+      return { data: createAreaSnapshot(), requestId: 'request-device' };
+    });
+    apiMocks.post.mockImplementation(async (path: string) => {
+      if (path === '/devices/bootstrap') return { data: { device: { id: 'device-area-2', assignmentMode: 'AREA' }, deviceToken: 'area-secret' }, requestId: 'request-bootstrap' };
+      return { data: {}, requestId: 'request-logout' };
+    });
+
+    renderApp();
+    await flushPromises();
+    await flushPromises();
+    await getBootstrapScreenProps(renderApp()).onAdminLogin?.({
+      admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+      csrfToken: 'csrf-token'
+    }, 'AREA');
+    const firstAssignment = (renderApp() as TestElement).props.children as TestElement;
+    (firstAssignment.props as AssignmentScreenPropsForTest).onSelect?.({ id: 'area-2', displayName: 'Housekeeping' });
+    await flushPromises();
+    await flushPromises();
+
+    const retryAssignment = (renderApp() as TestElement).props.children as TestElement;
+    expect((retryAssignment.props as AssignmentScreenPropsForTest).error).toBe('No se pudo registrar la estación. Revisa el destino seleccionado e inténtalo de nuevo.');
+    (retryAssignment.props as AssignmentScreenPropsForTest).onSelect?.({ id: 'area-2', displayName: 'Housekeeping' });
+    await flushPromises();
+    await flushPromises();
+
+    const bootstrapCalls = apiMocks.post.mock.calls.filter(([path]) => path === '/devices/bootstrap');
+    expect(bootstrapCalls).toHaveLength(2);
+    expect((bootstrapCalls[0]?.[2] as { headers: { 'Idempotency-Key': string } }).headers['Idempotency-Key'])
+      .toBe('station-onboarding-AREA-installation-1-area-2');
+    expect((bootstrapCalls[1]?.[2] as { headers: { 'Idempotency-Key': string } }).headers['Idempotency-Key'])
+      .toBe('station-onboarding-AREA-installation-1-area-2');
+    expect(getDeviceScreenProps(renderApp())).toBeDefined();
+  });
+
+  it.each([
+    ['ROOM', 'room-2', 'Room 102', createRoomSnapshot],
+    ['AREA', 'area-2', 'Housekeeping', createAreaSnapshot]
+  ] as const)('rotates a retired installation before retrying %s provisioning', async (role, targetId, displayName, snapshotFactory) => {
+    clearBrowserDeviceCredentials();
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path.startsWith('/devices/bootstrap-state')) return { data: { installationId: 'installation-1', configured: false, displayHint: null }, requestId: 'request-bootstrap-state' };
+      if (path === '/system/snapshot') return { data: {}, requestId: 'request-admin-snapshot' };
+      if (path === '/device/session') return { data: snapshotFactory(), requestId: 'request-device-session' };
+      return { data: snapshotFactory(), requestId: 'request-device' };
+    });
+    apiMocks.post.mockImplementation(async (path: string, body?: { installationId?: string }) => {
+      if (path === '/devices/bootstrap' && body?.installationId === 'installation-1') {
+        throw { _apiError: true, status: 409, code: 'RESOURCE_CONFLICT', details: { reason: 'RETIRED_INSTALLATION' } };
+      }
+      if (path === '/devices/bootstrap') {
+        return { data: { device: { id: `device-${role.toLowerCase()}`, assignmentMode: role }, deviceToken: `${role.toLowerCase()}-secret` }, requestId: 'request-bootstrap-retry' };
+      }
+      return { data: {}, requestId: 'request-logout' };
+    });
+
+    renderApp();
+    await flushPromises();
+    await flushPromises();
+    await getBootstrapScreenProps(renderApp()).onAdminLogin?.({
+      admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+      csrfToken: 'csrf-token'
+    }, role);
+    const assignment = (renderApp() as TestElement).props.children as TestElement;
+    (assignment.props as AssignmentScreenPropsForTest).onSelect?.({ id: targetId, displayName });
+    await flushPromises();
+    await flushPromises();
+
+    const bootstrapCalls = apiMocks.post.mock.calls.filter(([path]) => path === '/devices/bootstrap');
+    expect(bootstrapCalls).toHaveLength(2);
+    expect(bootstrapCalls[0]?.[1]).toMatchObject({ installationId: 'installation-1' });
+    expect(bootstrapCalls[1]?.[1]).toMatchObject({ installationId: 'installation-2' });
+    expect(getDeviceScreenProps(renderApp())).toBeDefined();
+  });
+
+  it('does not rotate or retry an active installation conflict', async () => {
+    clearBrowserDeviceCredentials();
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path.startsWith('/devices/bootstrap-state')) return { data: { installationId: 'installation-1', configured: false, displayHint: null }, requestId: 'request-bootstrap-state' };
+      if (path === '/system/snapshot') return { data: {}, requestId: 'request-admin-snapshot' };
+      return { data: createRoomSnapshot(), requestId: 'request-device' };
+    });
+    apiMocks.post.mockImplementation(async (path: string) => {
+      if (path === '/devices/bootstrap') throw { _apiError: true, status: 409, code: 'RESOURCE_CONFLICT' };
+      return { data: {}, requestId: 'request-logout' };
+    });
+
+    renderApp();
+    await flushPromises();
+    await flushPromises();
+    await getBootstrapScreenProps(renderApp()).onAdminLogin?.({
+      admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+      csrfToken: 'csrf-token'
+    }, 'ROOM');
+    const assignment = (renderApp() as TestElement).props.children as TestElement;
+    (assignment.props as AssignmentScreenPropsForTest).onSelect?.({ id: 'room-2', displayName: 'Room 102' });
+    await flushPromises();
+    await flushPromises();
+
+    expect(apiMocks.post.mock.calls.filter(([path]) => path === '/devices/bootstrap')).toHaveLength(1);
+    const finalAssignment = (renderApp() as TestElement).props.children as TestElement;
+    expect((finalAssignment.props as AssignmentScreenPropsForTest).error).toBe('No se pudo registrar la estación. Revisa el destino seleccionado e inténtalo de nuevo.');
+  });
+
+  it('clears a ROOM assignment after the native runtime confirms revocation', async () => {
+    localStorage.setItem('hotel-local-device-snapshot', JSON.stringify(createRoomSnapshot()));
+    const nativeBridge = {
+      setRoomSession: vi.fn(),
+      clearRoomSession: vi.fn(),
+      getRoomPresenceState: vi.fn(() => 'INVALIDATED')
+    };
+    nativeBridgeMocks.getNativeWebViewBridge.mockReturnValue(null);
+    nativeRoomBridgeGetter.get.mockReturnValue(nativeBridge);
+    nativeBridgeMocks.readNativeRoomPresenceState.mockReturnValue('INVALIDATED');
+
+    renderApp();
+    await flushPromises();
+
+    const rendered = renderApp() as TestElement;
+    const bootstrap = rendered.props.children as TestElement;
+    expect(bootstrap.type).toBe('bootstrap-screen');
+    expect((bootstrap.props as { installationId?: string }).installationId).toBe('installation-2');
+    expect(localStorage.getItem('hotel-local-device-token')).toBeNull();
+    expect(localStorage.getItem('hotel-local-device-id')).toBeNull();
+    expect(localStorage.getItem('hotel-local-device-snapshot')).toBeNull();
+    expect(nativeBridgeMocks.clearNativeRoomSession).toHaveBeenCalledWith(nativeBridge);
+  });
+
+  it('recovers a ROOM reload from a revoked browser token using the persisted rotation replacement', async () => {
+    localStorage.setItem('hotel-local-pending-token-rotation', JSON.stringify({ rotationId: 'rotation-1', deviceToken: 'replacement-token' }));
+    const nativeBridge = { setRoomSession: vi.fn() };
+    nativeBridgeMocks.getNativeWebViewBridge.mockReturnValue(null);
+    nativeRoomBridgeGetter.get.mockReturnValue(nativeBridge);
+    apiMocks.get.mockImplementation(async (path: string, options?: { token?: string }) => {
+      if (path === '/device/session' && options?.token === 'device-token') {
+        throw Object.assign(new Error('revoked'), { _apiError: true, status: 401, code: 'DEVICE_TOKEN_REVOKED' });
+      }
+      if (path === '/device/session') return { data: createRoomSnapshot(), requestId: 'request-room-recovered' };
+      return { data: createRoomSnapshot(), requestId: 'request-device' };
+    });
+
+    renderApp();
+    await flushPromises();
+    renderApp();
+
+    expect(localStorage.getItem('hotel-local-device-token')).toBe('replacement-token');
+    expect(localStorage.getItem('hotel-local-pending-token-rotation')).toBeNull();
+    expect(nativeBridgeMocks.configureNativeRoomSession).toHaveBeenCalledWith(nativeBridge, {
+      deviceId: 'device-1', deviceToken: 'replacement-token'
+    });
+    expect(nativeBridgeMocks.pairNativeDevice).not.toHaveBeenCalled();
+  });
+
+  it('hands an administrator pairing token to native without persisting browser device credentials', async () => {
+    const nativeBridge = { getReceiverState: vi.fn(() => 'SYNCHRONIZED') };
+    nativeBridgeMocks.getNativeWebViewBridge.mockReturnValue(nativeBridge);
+    nativeBridgeMocks.readNativeSnapshot.mockReturnValue(createAreaSnapshot());
+    nativeBridgeMocks.resolveNativeReceiverStatus.mockReturnValue('online');
+    sessionValues.set('hotel-local-admin-session', JSON.stringify({
+      result: {
+        admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+        csrfToken: 'csrf-token'
+      },
+      installationId: 'installation-1'
+    }));
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/auth/admin/me') return { data: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' }, requestId: 'request-admin-me' };
+      return { data: {}, requestId: 'request-admin-snapshot' };
+    });
+
+    renderApp();
+    await flushPromises();
+    const admin = getAdminScreenProps(renderApp());
+
+    await admin.onUseDeviceToken?.({ deviceId: 'device-1', deviceToken: 'native-secret', assignmentMode: 'AREA' });
+    renderApp();
+
+    expect(nativeBridgeMocks.pairNativeDevice).toHaveBeenCalledWith(nativeBridge, { deviceId: 'device-1', deviceToken: 'native-secret' });
+    expect(nativeBridgeMocks.configureNativeRoomSession).not.toHaveBeenCalled();
+    expect(apiMocks.post).toHaveBeenCalledWith('/auth/admin/logout', undefined, expect.anything());
+    expect(localStorage.getItem('hotel-local-device-token')).toBeNull();
+    expect(getRealtimeOptions()).toMatchObject({ enabled: false, hasSnapshot: true });
+  });
+
+  it('waits for the native AREA snapshot after pairing succeeds', async () => {
+    const nativeBridge = { getReceiverState: vi.fn(() => 'SYNCHRONIZED') };
+    nativeBridgeMocks.getNativeWebViewBridge.mockReturnValue(nativeBridge);
+    nativeBridgeMocks.readNativeSnapshot
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce(createAreaSnapshot());
+    nativeBridgeMocks.resolveNativeReceiverStatus.mockReturnValue('online');
+    sessionValues.set('hotel-local-admin-session', JSON.stringify({
+      result: {
+        admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+        csrfToken: 'csrf-token'
+      },
+      installationId: 'installation-1'
+    }));
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/auth/admin/me') return { data: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' }, requestId: 'request-admin-me' };
+      return { data: {}, requestId: 'request-admin-snapshot' };
+    });
+
+    renderApp();
+    await flushPromises();
+    const admin = getAdminScreenProps(renderApp());
+
+    await admin.onUseDeviceToken?.({ deviceId: 'device-1', deviceToken: 'native-secret', assignmentMode: 'AREA' });
+    const rendered = renderApp();
+    const children = Array.isArray((rendered as TestElement).props.children)
+      ? (rendered as TestElement).props.children
+      : [(rendered as TestElement).props.children];
+
+    expect(getDeviceScreenProps(rendered)).toBeDefined();
+    expect(children).not.toEqual(expect.arrayContaining([expect.objectContaining({ type: 'device-role-assignment-screen' })]));
+    expect(children).not.toEqual(expect.arrayContaining([expect.objectContaining({ type: 'bootstrap-screen' })]));
+    expect(nativeBridgeMocks.readNativeSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it('restores stored browser ROOM credentials before a native snapshot on reload', async () => {
+    const nativeBridge = { getReceiverState: vi.fn(() => 'SYNCHRONIZED') };
+    nativeBridgeMocks.getNativeWebViewBridge.mockReturnValue(nativeBridge);
+    nativeBridgeMocks.readNativeSnapshot.mockReturnValue(createAreaSnapshot());
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/device/session') return { data: createRoomSnapshot(), requestId: 'request-room-session' };
+      return { data: createRoomSnapshot(), requestId: 'request-device' };
+    });
+
+    renderApp();
+    await flushPromises();
+    renderApp();
+
+    expect(getDeviceScreenProps(renderApp())).not.toHaveProperty('deviceCommandsSupported');
+    expect(getDeviceScreenProps(renderApp())).not.toHaveProperty('nativeBridge');
+    expect(getRealtimeOptions()).toMatchObject({ enabled: true, hasSnapshot: true, deviceId: 'device-1', deviceToken: 'device-token' });
+    expect(nativeBridgeMocks.readNativeSnapshot).not.toHaveBeenCalled();
+    expect(intervalCallbacks).toHaveLength(0);
+  });
+
+  it('keeps ROOM provisioning in the browser even when the native bridge is present', async () => {
+    const nativeBridge = {
+      getReceiverState: vi.fn(() => 'SYNCHRONIZED'),
+      setRoomSession: vi.fn()
+    };
+    nativeBridgeMocks.getNativeWebViewBridge.mockReturnValue(nativeBridge);
+    nativeRoomBridgeGetter.get.mockReturnValue(nativeBridge);
+    nativeBridgeMocks.readNativeSnapshot.mockReturnValue(createAreaSnapshot());
+    sessionValues.set('hotel-local-admin-session', JSON.stringify({
+      result: {
+        admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+        csrfToken: 'csrf-token'
+      },
+      installationId: 'installation-1'
+    }));
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/auth/admin/me') return { data: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' }, requestId: 'request-admin-me' };
+      if (path === '/system/snapshot') return { data: {}, requestId: 'request-admin-snapshot' };
+      if (path === '/device/session') return { data: createRoomSnapshot(), requestId: 'request-room-session' };
+      return { data: createRoomSnapshot(), requestId: 'request-device' };
+    });
+
+    renderApp();
+    await flushPromises();
+    const admin = getAdminScreenProps(renderApp());
+
+    await admin.onUseDeviceToken?.({ deviceId: 'device-1', deviceToken: 'room-secret', assignmentMode: 'ROOM' });
+    renderApp();
+
+    expect(nativeBridgeMocks.pairNativeDevice).not.toHaveBeenCalled();
+    expect(nativeBridgeMocks.configureNativeRoomSession).toHaveBeenCalledWith(nativeBridge, {
+      deviceId: 'device-1', deviceToken: 'room-secret'
+    });
+    expect(nativeBridgeMocks.readNativeSnapshot).not.toHaveBeenCalled();
+    expect(localStorage.getItem('hotel-local-device-token')).toBe('room-secret');
+    expect(getDeviceScreenProps(renderApp())).not.toHaveProperty('deviceCommandsSupported');
+    expect(getDeviceScreenProps(renderApp())).not.toHaveProperty('nativeBridge');
+    expect(getRealtimeOptions()).toMatchObject({ enabled: true, hasSnapshot: true, deviceToken: 'room-secret' });
+    expect(intervalCallbacks).toHaveLength(1);
   });
 
   it('marks the bell unread for room-scoped request creation and update events', async () => {
@@ -396,6 +1094,17 @@ function getAdminScreenProps(rendered: unknown): AdminScreenPropsForTest {
   return admin.props;
 }
 
+function getBootstrapScreenProps(rendered: unknown): BootstrapScreenPropsForTest {
+  const root = rendered as TestElement;
+  const children = Array.isArray(root.props.children) ? root.props.children : [root.props.children];
+  const bootstrap = children.find((child): child is TestElement => {
+    if (typeof child !== 'object' || child === null) return false;
+    return (child as TestElement).type === 'bootstrap-screen';
+  });
+  if (bootstrap === undefined) throw new Error('The BootstrapScreen was not rendered.');
+  return bootstrap.props;
+}
+
 function sameDependencies(left: readonly unknown[], right: readonly unknown[]): boolean {
   return left.length === right.length && left.every((value, index) => Object.is(value, right[index]));
 }
@@ -445,6 +1154,20 @@ function createRoomSnapshot(): DeviceSyncSnapshot {
     },
     activeRequests: [],
     pendingTokenRotation: null
+  };
+}
+
+function clearBrowserDeviceCredentials(): void {
+  localStorage.removeItem('hotel-local-device-token');
+  localStorage.removeItem('hotel-local-device-id');
+}
+
+function createAreaSnapshot(): DeviceSyncSnapshot {
+  const snapshot = createRoomSnapshot();
+  return {
+    ...snapshot,
+    device: { ...snapshot.device, assignmentMode: 'AREA', roomId: null, areaId: 'area-1' },
+    config: { ...snapshot.config, mode: 'AREA', room: null, area: { id: 'area-1', code: 'housekeeping', displayName: 'Housekeeping' } }
   };
 }
 

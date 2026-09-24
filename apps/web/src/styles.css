@@ -16,11 +16,12 @@
   --sage: #759581;
   --blue: #7896a1;
   --shadow: 0 18px 50px rgba(40, 45, 39, 0.08);
+  --app-viewport-height: 100vh;
 }
 
 * { box-sizing: border-box; }
 
-body { margin: 0; min-width: 320px; min-height: 100vh; background: #e9e5db; }
+body { margin: 0; min-width: 320px; min-height: var(--app-viewport-height); background: #e9e5db; }
 
 button, input, select { font: inherit; }
 button { cursor: pointer; }
@@ -37,8 +38,8 @@ h1 { font-size: clamp(2.2rem, 4vw, 4.25rem); line-height: 0.98; }
 h2 { font-size: clamp(1.35rem, 2vw, 1.8rem); line-height: 1.05; }
 h3 { font-size: 1.1rem; line-height: 1.1; }
 
-.app-frame { min-height: 100vh; padding: 28px 42px 34px; position: relative; width: 100%; }
-.app-frame--centered { display: flex; flex-direction: column; justify-content: center; min-height: 100vh; }
+.app-frame { min-height: var(--app-viewport-height); padding: 28px 42px 34px; position: relative; width: 100%; }
+.app-frame--centered { display: flex; flex-direction: column; justify-content: center; min-height: var(--app-viewport-height); }
 .app-frame--device { background: #e9e5db; }
 .app-frame--room {
   --room-bg: #0d1315;
@@ -125,6 +126,33 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
 
 .surface-card { background: var(--paper); border: 1px solid rgba(29, 42, 39, 0.09); border-radius: 14px; box-shadow: var(--shadow); }
 .bootstrap-card { padding: 34px; position: relative; }
+.bootstrap-login-screen { align-items: center; overflow: hidden; padding: clamp(16px, 4vw, 42px); }
+.bootstrap-login-card { margin: auto; max-width: 480px; width: min(100%, 480px); }
+.bootstrap-login-card .station-role-picker { border: 0; margin: 20px 0 0; padding: 0; }
+.bootstrap-login-card .station-role-picker legend { color: var(--ink-soft); font-size: 0.72rem; font-weight: 800; margin-bottom: 8px; }
+.bootstrap-login-card .station-role-picker__options { display: grid; gap: 8px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.bootstrap-login-card .station-role-option { align-items: center; background: var(--paper-deep); border: 1px solid var(--line); border-radius: 8px; color: var(--ink); cursor: pointer; display: flex; font-size: 0.72rem; font-weight: 800; justify-content: center; min-height: 48px; padding: 10px 8px; text-align: center; width: 100%; }
+.bootstrap-login-card .station-role-option:hover:not(:disabled) { border-color: var(--coral); }
+.bootstrap-login-card .station-role-option--selected { background: rgba(215, 109, 84, 0.1); border-color: var(--coral); box-shadow: 0 0 0 2px rgba(190, 88, 66, 0.12); }
+.bootstrap-login-card .station-role-option__label { display: block; line-height: 1.2; }
+.station-assignment-screen { align-items: center; justify-content: center; padding: 16px; }
+.station-assignment-card { display: flex; flex-direction: column; height: calc(var(--app-viewport-height) - 32px); margin: auto; max-height: calc(var(--app-viewport-height) - 32px); max-width: 620px; overflow: hidden; padding: 20px; width: 100%; }
+.station-assignment-header { align-items: start; display: grid; gap: 12px; grid-template-columns: auto minmax(0, 1fr) auto; }
+.station-assignment-card__icon { align-items: center; background: var(--amber); border-radius: 50%; color: var(--ink); display: inline-flex; height: 40px; justify-content: center; width: 40px; }
+.station-assignment-header__copy { min-width: 0; }
+.station-assignment-header .eyebrow { font-size: 0.6rem; margin-bottom: 3px; }
+.station-assignment-header h1 { font-size: clamp(1.55rem, 3vw, 2.3rem); line-height: 1; margin-bottom: 5px; }
+.station-assignment-header .card-copy { font-size: 0.78rem; line-height: 1.3; margin-bottom: 0; }
+.station-assignment-list { align-content: start; display: grid; flex: 1 1 auto; gap: 8px; grid-auto-rows: minmax(64px, max-content); grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 12px; max-height: none; min-height: 0; overflow-y: auto; }
+.station-assignment-target { align-items: center; background: var(--paper-deep); border: 1px solid var(--line); border-radius: 8px; color: var(--ink); display: flex; gap: 12px; justify-content: space-between; min-height: 64px; padding: 12px 14px; text-align: left; width: 100%; }
+.station-assignment-target:hover, .station-assignment-target:focus-visible { border-color: var(--coral); }
+.station-assignment-target:disabled { cursor: wait; opacity: 0.65; }
+.station-assignment-target__copy { display: grid; gap: 4px; min-width: 0; }
+.station-assignment-target__copy strong { font-family: Georgia, serif; font-size: 0.95rem; font-weight: 500; }
+.station-assignment-target__copy small { color: var(--muted); font-size: 0.65rem; }
+.station-assignment-target > span:last-child { color: var(--coral); font-size: 0.65rem; font-weight: 800; white-space: nowrap; }
+.station-assignment-empty { align-items: center; background: var(--paper-deep); color: var(--muted); display: flex; gap: 10px; margin-top: 12px; padding: 16px; }
+.station-assignment-admin { align-self: start; border: 1px solid var(--line); border-radius: 50%; margin-top: 0; width: 48px; }
 .card-heading, .panel-card__heading, .section-heading, .page-heading { align-items: flex-start; display: flex; justify-content: space-between; gap: 20px; }
 .card-heading h2, .panel-card__heading h2, .section-heading h2 { margin-bottom: 0; }
 .card-copy { color: var(--ink-soft); font-size: 0.92rem; line-height: 1.6; }
@@ -671,6 +699,10 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
   50% { opacity: 1; }
 }
 
+@media (min-width: 1101px) {
+  .station-assignment-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
 @media (max-width: 980px) {
   .app-frame { padding-left: 24px; padding-right: 24px; }
   .auth-layout { gap: 42px; grid-template-columns: minmax(0, 1fr) minmax(300px, 390px); }
@@ -742,6 +774,9 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
   .secret-card__actions { width: 100%; }
   .audit-row { gap: 8px; grid-template-columns: 35px 1fr; }
   .audit-row time { grid-column: 2; }
+  .bootstrap-login-screen { padding: 16px; }
+  .bootstrap-card { padding: 23px; }
+  .station-assignment-card { padding: 18px; }
 }
 
 @media (min-width: 521px) and (max-width: 1100px) and (max-height: 900px) {
@@ -774,6 +809,34 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
    .app-frame--room .service-tile__body strong { display: block; font-size: 1.125rem; line-height: 1.1; overflow: hidden; text-overflow: ellipsis; }
    .app-frame--room .room-bottom-controls { gap: 4px; }
   .app-frame--room .room-bottom-controls__actions { min-height: 48px; }
+  .bootstrap-login-screen { min-height: var(--app-viewport-height); padding: 8px; }
+  .bootstrap-login-card { border-radius: 10px; padding: 14px; }
+  .bootstrap-login-card .auth-form { gap: 9px; }
+  .bootstrap-login-card .form-field { gap: 4px; }
+  .bootstrap-login-card .form-field label { font-size: 0.62rem; }
+  .bootstrap-login-card .form-field input { min-height: 42px; padding: 8px 10px; }
+  .bootstrap-login-card .station-role-picker { margin-top: 7px; }
+  .bootstrap-login-card .station-role-picker legend { margin-bottom: 5px; }
+  .bootstrap-login-card .station-role-picker__options { gap: 4px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .bootstrap-login-card .station-role-option { min-height: 48px; padding: 5px 2px; }
+  .bootstrap-login-card .station-role-option__label { font-size: 0.62rem; line-height: 1.1; }
+  .bootstrap-login-card .form-actions .button { min-height: 42px; width: 100%; }
+  .bootstrap-login-card .inline-alert { font-size: 0.68rem; margin: 10px 0 0; padding: 8px; }
+  .station-assignment-screen { padding: 8px; }
+  .station-assignment-card { height: calc(var(--app-viewport-height) - 16px); max-height: calc(var(--app-viewport-height) - 16px); padding: 12px; }
+  .station-assignment-header { gap: 8px; }
+  .station-assignment-card__icon { height: 36px; width: 36px; }
+  .station-assignment-header .eyebrow { margin-bottom: 2px; }
+  .station-assignment-header h1 { font-size: 1.4rem; margin-bottom: 3px; }
+  .station-assignment-header .card-copy { font-size: 0.7rem; line-height: 1.2; }
+  .station-assignment-list { gap: 6px; grid-template-columns: 1fr; margin-top: 8px; }
+  .station-assignment-target { min-height: 56px; padding: 9px 11px; }
+}
+
+@media (min-width: 721px) {
+  .bootstrap-login-screen { padding: 32px; }
+  .bootstrap-login-card { padding: 34px; }
+  .bootstrap-login-card .station-role-picker__options { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -22,6 +22,7 @@ interface RequestOptions {
   token?: string;
   headers?: HeadersInit;
   signal?: AbortSignal;
+  cache?: RequestCache;
 }
 
 const SAFE_REQUEST_REFERENCE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -74,7 +75,10 @@ export function isApiError(error: unknown, status?: number): error is ApiError {
 }
 
 export function isDeviceInvalidationError(error: unknown): error is ApiError {
-  return isApiError(error, 403) && error.code === 'DEVICE_INACTIVE';
+  return isApiError(error) && (
+    (error.status === 403 && error.code === 'DEVICE_INACTIVE')
+    || (error.status === 401 && error.code === 'DEVICE_TOKEN_REVOKED')
+  );
 }
 
 export function isDeviceAuthFailure(error: unknown): error is ApiError {
@@ -117,6 +121,7 @@ async function request<T>(path: string, init: RequestInit = {}, options: Request
     headers
   };
   if (options.signal !== undefined) requestInit.signal = options.signal;
+  if (options.cache !== undefined) requestInit.cache = options.cache;
   const response = await fetch(`/api/v1${path}`, requestInit);
 
   if (response.status === 204) {

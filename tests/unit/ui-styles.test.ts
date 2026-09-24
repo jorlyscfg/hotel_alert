@@ -3,8 +3,56 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const styles = readFileSync(fileURLToPath(new URL('../../apps/web/src/styles.css', import.meta.url)), 'utf8');
+const mainEntry = readFileSync(fileURLToPath(new URL('../../apps/web/src/main.tsx', import.meta.url)), 'utf8');
+const assignmentScreen = readFileSync(fileURLToPath(new URL('../../apps/web/src/features/bootstrap/DeviceRoleAssignmentScreen.tsx', import.meta.url)), 'utf8');
 
 describe('accessible UI styles', () => {
+  it('publishes a measured viewport height for WebViews that report zero viewport units', () => {
+    expect(mainEntry).toContain("--app-viewport-height");
+    expect(mainEntry).toContain('window.innerHeight');
+    expect(mainEntry).toContain("addEventListener('resize'");
+    expect(styles).toMatch(/:root \{[^}]*--app-viewport-height: 100vh;/s);
+    expect(styles).toMatch(/\.app-frame \{[^}]*min-height: var\(--app-viewport-height\);/s);
+    expect(styles).toMatch(/\.bootstrap-login-screen \{[^}]*min-height: var\(--app-viewport-height\);/s);
+    expect(styles).toMatch(/\.station-assignment-card \{[^}]*height: calc\(var\(--app-viewport-height\) - 32px\);/s);
+  });
+
+  it('keeps station targets primary and exposes Admin as a compact accessible header action', () => {
+    expect(assignmentScreen).toContain('className="station-assignment-header"');
+    expect(assignmentScreen).toMatch(/className="icon-button station-assignment-admin"[^>]*aria-label=\{t\('stationAssignment\.openAdmin'\)\}[^>]*title=\{t\('stationAssignment\.openAdmin'\)\}/s);
+    expect(assignmentScreen).toMatch(/<Settings2[^>]*aria-hidden="true"/s);
+
+    const cardRule = styles.match(/\.station-assignment-card \{[^}]*\}/s)?.[0] ?? '';
+    const headerRule = styles.match(/\.station-assignment-header \{[^}]*\}/s)?.[0] ?? '';
+    const listRule = styles.match(/\.station-assignment-list \{[^}]*\}/s)?.[0] ?? '';
+    const adminRule = styles.match(/\.station-assignment-admin \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(cardRule).toContain('display: flex;');
+    expect(cardRule).toContain('height: calc(var(--app-viewport-height) - 32px);');
+    expect(headerRule).toContain('grid-template-columns: auto minmax(0, 1fr) auto;');
+    expect(listRule).toContain('flex: 1 1 auto;');
+    expect(listRule).toContain('min-height: 0;');
+    expect(adminRule).toContain('margin-top: 0;');
+    expect(adminRule).toContain('width: 48px;');
+  });
+
+  it('lays station targets out as a responsive grid without crowding the square kiosk', () => {
+    expect(styles).toMatch(/\.station-assignment-list \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/s);
+    expect(styles).toMatch(/@media \(min-width: 1101px\) \{[\s\S]*?\.station-assignment-list \{[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/s);
+    expect(styles).toMatch(/@media \(max-width: 520px\) and \(max-height: 520px\) \{[\s\S]*?\.station-assignment-list \{[^}]*grid-template-columns: 1fr;/s);
+
+    const targetRule = styles.match(/\.station-assignment-target \{[^}]*\}/s)?.[0] ?? '';
+    expect(targetRule).toContain('min-height: 64px;');
+    expect(targetRule).toContain('width: 100%;');
+  });
+
+  it('keeps station role cards scoped to the bootstrap login and touch-friendly', () => {
+    expect(styles).toMatch(/\.bootstrap-login-card \.station-role-option \{[^}]*align-items: center;[^}]*justify-content: center;[^}]*min-height: 48px;/s);
+    expect(styles).toMatch(/\.bootstrap-login-card \.station-role-option \{[^}]*text-align: center;/s);
+    expect(styles).toMatch(/@media \(max-width: 520px\) and \(max-height: 520px\) \{[\s\S]*?\.bootstrap-login-card \.station-role-option \{[^}]*min-height: 48px;/s);
+    expect(styles).toMatch(/@media \(min-width: 721px\) \{[\s\S]*?\.bootstrap-login-card \.station-role-picker__options \{[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/s);
+  });
+
   it('keeps primary interactive controls at touch-friendly sizes', () => {
     expect(styles).toMatch(/\.button \{[^}]*min-height: 48px;/s);
     expect(styles).toMatch(/\.text-button \{[^}]*min-height: 48px;/s);

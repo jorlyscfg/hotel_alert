@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AdminLoginResult, AdminMe, AdminSystemSnapshot, BootstrapState, DeviceSyncSnapshot } from '@hotel/shared';
+import type { AdminLoginResult, AdminMe, AdminSystemSnapshot, BootstrapState, DeviceAssignmentMode, DeviceBootstrapResult, DeviceSyncSnapshot } from '@hotel/shared';
 import {
   acknowledgeDeviceTokenRotation,
   api,
+  errorMessage,
   claimDeviceTokenRotation,
   isApiError,
   isDeviceInvalidationError,
@@ -18,22 +19,26 @@ import {
   DEVICE_TOKEN_STORAGE_KEY,
   parseAdminSession,
   buildLocalDeviceSyncState,
+  clearPersistedDeviceState,
   getOrCreateInstallationId,
   makeMutationKey,
   readLocalDeviceSnapshot,
+  readPendingDeviceTokenRotation,
   resolveStartupRetryDelayMs,
+  rotateInstallationId,
   serializeLocalDeviceSnapshot,
   serializeLocalDeviceSyncState,
   serializeAdminSession,
   type LocalAdminSession,
   shouldRetryStartup
 } from './app-model';
-import { AdminLoginForm } from './features/auth/AdminLoginForm';
+import { AdminLoginForm, type AdminLoginRole } from './features/auth/AdminLoginForm';
 import { AdminScreen } from './features/admin/AdminScreen';
 import { BootstrapScreen } from './features/bootstrap/BootstrapScreen';
+import { buildDeviceBootstrapInput, DeviceRoleAssignmentScreen, type DeviceRoleAssignmentTarget } from './features/bootstrap/DeviceRoleAssignmentScreen';
 import { DeviceScreen } from './features/device/DeviceScreen';
 import { Modal } from './components/Modal';
-import { resolveRouteLocale, SpanishI18nProvider, syncDocumentMetadata, useI18n } from './i18n';
+import { createTranslator, resolveRouteLocale, SpanishI18nProvider, syncDocumentMetadata, useI18n } from './i18n';
 import {
   closeNotificationAudioContext,
   createNotificationAudioContext,
@@ -41,15 +46,69 @@ import {
   replaceNotificationAudioContext
 } from './notification-audio';
 import { useRealtimeConnection, type ConnectionStatus, type RealtimeRefreshResult } from './realtime';
+import {
+  clearNativeRoomSession,
+  configureNativeRoomSession,
+  getNativeRoomPresenceBridge,
+  readNativeRoomPresenceState,
+  stageNativeRoomToken,
+  supportsNativeRoomPresence
+} from './native-room-bridge';
+import {
+  getNativeStationBridge,
+  pairNativeStation,
+  readNativeStationSnapshot,
+  resolveNativeStationReceiverStatus,
+  type NativeStationBridge
+} from './native-station-bridge';
 
 type ViewState =
   | { kind: 'loading' }
   | { kind: 'bootstrap'; installationId: string; bootstrapState: BootstrapState | null; error: string | null }
+  | { kind: 'assignment'; role: Exclude<AdminLoginRole, 'ADMIN'>; snapshot: AdminSystemSnapshot; session: AdminLoginResult; installationId: string; error: string | null; busy: boolean }
   | { kind: 'device'; snapshot: DeviceSyncSnapshot }
   | { kind: 'admin'; snapshot: AdminSystemSnapshot; session: AdminLoginResult; installationId: string | null };
 
 const TOKEN_ROTATION_RETRY_INTERVAL_MS = 5_000;
 const MAX_ROOM_NOTIFICATION_EVENT_IDS = 2048;
+const spanishT = createTranslator('es');
+
+function isRetiredInstallationConflict(error: unknown): boolean {
+  if (!isApiError(error, 409) || typeof error !== 'object' || error === null) return false;
+  const details = (error as { details?: unknown }).details;
+  return typeof details === 'object'
+    && details !== null
+    && (details as { reason?: unknown }).reason === 'RETIRED_INSTALLATION';
+}
+
+async function hydrateAssignmentTargets(snapshot: AdminSystemSnapshot, role: Exclude<AdminLoginRole, 'ADMIN'>): Promise<AdminSystemSnapshot> {
+  if (role === 'AREA' && Array.isArray(snapshot.areas) && snapshot.areas.some(isUsableAreaTarget)) return snapshot;
+  if (role === 'ROOM' && Array.isArray(snapshot.rooms) && snapshot.rooms.length > 0) return snapshot;
+
+  if (role === 'AREA') {
+    const result = await api.get<AdminSystemSnapshot['areas']>('/areas', { cache: 'no-store' });
+    return Array.isArray(result.data) ? { ...snapshot, areas: result.data } : snapshot;
+  }
+  const result = await api.get<AdminSystemSnapshot['rooms']>('/rooms', { cache: 'no-store' });
+  return Array.isArray(result.data) ? { ...snapshot, rooms: result.data } : snapshot;
+}
+
+function isUsableAreaTarget(value: unknown): value is AdminSystemSnapshot['areas'][number] {
+  if (typeof value !== 'object' || value === null) return false;
+  const area = value as Record<string, unknown>;
+  return area['active'] === true
+    && typeof area['id'] === 'string' && area['id'].trim().length > 0
+    && typeof area['code'] === 'string' && area['code'].trim().length > 0
+    && typeof area['displayName'] === 'string' && area['displayName'].trim().length > 0;
+}
+
+function normalizeAssignmentSnapshot(snapshot: AdminSystemSnapshot): AdminSystemSnapshot {
+  return {
+    ...snapshot,
+    areas: Array.isArray(snapshot.areas) ? snapshot.areas : [],
+    rooms: Array.isArray(snapshot.rooms) ? snapshot.rooms : []
+  };
+}
 
 interface RoomNotificationDeduplication {
   scope: string | null;
@@ -57,10 +116,25 @@ interface RoomNotificationDeduplication {
   seenEventIds: Set<string>;
 }
 
+interface DeviceTokenPairing {
+  deviceId: string;
+  deviceToken: string;
+  assignmentMode: DeviceAssignmentMode;
+}
+
+async function waitForNativeSnapshot(bridge: NativeStationBridge): Promise<DeviceSyncSnapshot | null> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const snapshot = readNativeStationSnapshot(bridge);
+    if (snapshot !== null) return snapshot;
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+  return null;
+}
+
 export function App() {
-  const [installationId] = useState(getOrCreateInstallationId);
+  const [installationId, setInstallationId] = useState(getOrCreateInstallationId);
   const [view, setView] = useState<ViewState>({ kind: 'loading' });
-  const { locale: roomLocale } = useI18n();
+  const { locale: roomLocale, t } = useI18n();
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [adminLoginOpen, setAdminLoginOpen] = useState(false);
   const [roomRequestNotificationsUnread, setRoomRequestNotificationsUnread] = useState(false);
@@ -77,7 +151,8 @@ export function App() {
     seenEventIds: new Set<string>()
   });
   viewRef.current = view;
-  const route = view.kind === 'device' ? view.snapshot.config.mode === 'ROOM' ? 'room' : 'area' : view.kind;
+  const route = view.kind === 'device' ? view.snapshot.config.mode === 'ROOM' ? 'room' : 'area' : view.kind === 'assignment' ? 'bootstrap' : view.kind;
+  const nativeStationBridgeAvailable = getNativeStationBridge() !== null;
   const roomAudioUnlockScope = view.kind === 'device' && view.snapshot.config.mode === 'ROOM'
     ? `${view.snapshot.device.id}:${view.snapshot.config.room?.id ?? ''}`
     : null;
@@ -150,8 +225,28 @@ export function App() {
     if (storedSession === null) return false;
     try {
       const session = await api.get<AdminMe>('/auth/admin/me');
-      const snapshot = await api.get<AdminSystemSnapshot>('/system/snapshot');
+      const snapshot = await api.get<AdminSystemSnapshot>('/system/snapshot', { cache: 'no-store' });
       cancelStartupRetry();
+      if (storedSession.pendingStationRole !== undefined) {
+        let assignmentSnapshot = snapshot.data;
+        let assignmentError: string | null = null;
+        try {
+          assignmentSnapshot = await hydrateAssignmentTargets(snapshot.data, storedSession.pendingStationRole);
+        } catch (error) {
+          assignmentError = errorMessage(error, spanishT('errors.serviceUnavailable'), 'es');
+        }
+        assignmentSnapshot = normalizeAssignmentSnapshot(assignmentSnapshot);
+        setView({
+          kind: 'assignment',
+          role: storedSession.pendingStationRole,
+          snapshot: assignmentSnapshot,
+          session: { admin: session.data, csrfToken: storedSession.result.csrfToken },
+          installationId: storedSession.installationId ?? installationId,
+          error: assignmentError,
+          busy: false
+        });
+        return true;
+      }
       setView({
         kind: 'admin',
         snapshot: snapshot.data,
@@ -163,6 +258,65 @@ export function App() {
       if (isApiError(error, 401)) clearPersistedAdminSession();
       return false;
     }
+  }, [cancelStartupRetry, installationId]);
+
+  const restoreStoredRoomSession = useCallback(async (): Promise<boolean> => {
+    const storedToken = localStorage.getItem(DEVICE_TOKEN_STORAGE_KEY);
+    if (storedToken === null) return false;
+    const storedDeviceId = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    const restoreRoomSnapshot = async (snapshot: DeviceSyncSnapshot, token: string, recoveredRotation = false): Promise<boolean> => {
+      if (snapshot.config.mode !== 'ROOM') {
+        try { clearNativeRoomSession(getNativeRoomPresenceBridge()); } catch { /* The server remains authoritative. */ }
+        clearPersistedDeviceState(localStorage);
+        const nextInstallationId = rotateInstallationId();
+        setInstallationId(nextInstallationId);
+        setView({ kind: 'bootstrap', installationId: nextInstallationId, bootstrapState: null, error: null });
+        setConnectionStatus('offline');
+        return true;
+      }
+      cancelStartupRetry();
+      localStorage.setItem(DEVICE_ID_STORAGE_KEY, snapshot.device.id);
+      if (token !== storedToken) localStorage.setItem(DEVICE_TOKEN_STORAGE_KEY, token);
+      if (recoveredRotation) localStorage.removeItem(DEVICE_PENDING_TOKEN_ROTATION_STORAGE_KEY);
+      persistDeviceSyncState(snapshot);
+      const bridge = getNativeRoomPresenceBridge();
+      if (supportsNativeRoomPresence(bridge)) {
+        await configureNativeRoomSession(bridge, { deviceId: snapshot.device.id, deviceToken: token });
+      }
+      setView({ kind: 'device', snapshot });
+      return true;
+    };
+    try {
+      const result = await api.get<DeviceSyncSnapshot>('/device/session', { token: storedToken });
+      return restoreRoomSnapshot(result.data, storedToken);
+    } catch (error) {
+      if (isDeviceInvalidationError(error)) {
+        const pendingRotation = readPendingDeviceTokenRotation(localStorage);
+        if (pendingRotation !== null) {
+          try {
+            const replacement = await api.get<DeviceSyncSnapshot>('/device/session', { token: pendingRotation.deviceToken });
+            if (storedDeviceId !== null && replacement.data.device.id === storedDeviceId) {
+              return restoreRoomSnapshot(replacement.data, pendingRotation.deviceToken, true);
+            }
+          } catch (replacementError) {
+            if (!isDeviceInvalidationError(replacementError)) return false;
+          }
+        }
+        try { clearNativeRoomSession(getNativeRoomPresenceBridge()); } catch { /* The server remains authoritative. */ }
+        clearPersistedAdminSession();
+        clearPersistedDeviceState(localStorage);
+        const nextInstallationId = rotateInstallationId();
+        setInstallationId(nextInstallationId);
+        setView({ kind: 'bootstrap', installationId: nextInstallationId, bootstrapState: null, error: null });
+        setConnectionStatus('offline');
+        return true;
+      }
+      if (isApiError(error, 401)) {
+        localStorage.removeItem(DEVICE_TOKEN_STORAGE_KEY);
+        if (storedDeviceId !== null) localStorage.removeItem(DEVICE_ID_STORAGE_KEY);
+      }
+      return false;
+    }
   }, [cancelStartupRetry]);
 
   const initialize = useCallback(async (preserveCurrentView = false) => {
@@ -171,6 +325,49 @@ export function App() {
       setConnectionStatus('connecting');
     }
     if (await restoreAdminSession()) return;
+    const nativeRoomBridge = getNativeRoomPresenceBridge();
+    const nativeRoomPresenceAvailable = supportsNativeRoomPresence(nativeRoomBridge);
+    if (nativeRoomPresenceAvailable && readNativeRoomPresenceState(nativeRoomBridge) === 'INVALIDATED') {
+      clearPersistedAdminSession();
+      clearPersistedDeviceState(localStorage);
+      try { clearNativeRoomSession(nativeRoomBridge); } catch { /* Credentials are already revoked server-side. */ }
+      const nextInstallationId = rotateInstallationId();
+      setInstallationId(nextInstallationId);
+      setView({ kind: 'bootstrap', installationId: nextInstallationId, bootstrapState: null, error: null });
+      setConnectionStatus('offline');
+      cancelStartupRetry();
+      return;
+    }
+    const nativeStationBridge = getNativeStationBridge();
+    if (nativeRoomPresenceAvailable || nativeStationBridge !== null) {
+      if (await restoreStoredRoomSession()) return;
+      const storedRoomToken = localStorage.getItem(DEVICE_TOKEN_STORAGE_KEY);
+      const storedRoomDeviceId = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+      const cachedRoomSnapshot = storedRoomToken === null
+        ? null
+        : readLocalDeviceSnapshot(localStorage, storedRoomDeviceId);
+      if (cachedRoomSnapshot?.config.mode === 'ROOM') {
+        setView({ kind: 'device', snapshot: cachedRoomSnapshot });
+        setConnectionStatus('stale');
+        scheduleStartupRetry(() => { void initialize(true); });
+        return;
+      }
+    }
+    if (nativeStationBridge !== null) {
+      const nativeSnapshot = readNativeStationSnapshot(nativeStationBridge);
+      if (nativeSnapshot !== null) {
+        localStorage.removeItem(DEVICE_TOKEN_STORAGE_KEY);
+        localStorage.removeItem(DEVICE_ID_STORAGE_KEY);
+        cancelStartupRetry();
+        setView({ kind: 'device', snapshot: nativeSnapshot });
+        setConnectionStatus(resolveNativeStationReceiverStatus(nativeStationBridge.getReceiverState(), true));
+        return;
+      }
+      setView({ kind: 'bootstrap', installationId, bootstrapState: null, error: null });
+      setConnectionStatus('offline');
+      scheduleStartupRetry(() => { void initialize(true); });
+      return;
+    }
     const storedToken = localStorage.getItem(DEVICE_TOKEN_STORAGE_KEY);
     const storedDeviceId = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
     if (storedToken !== null) {
@@ -195,6 +392,15 @@ export function App() {
           scheduleStartupRetry(() => { void initialize(true); });
           return;
         }
+        if (isDeviceInvalidationError(error)) {
+          clearPersistedAdminSession();
+          clearPersistedDeviceState(localStorage);
+          const nextInstallationId = rotateInstallationId();
+          setInstallationId(nextInstallationId);
+          setView({ kind: 'bootstrap', installationId: nextInstallationId, bootstrapState: null, error: null });
+          setConnectionStatus('offline');
+          return;
+        }
         localStorage.removeItem(DEVICE_TOKEN_STORAGE_KEY);
       }
     }
@@ -209,7 +415,34 @@ export function App() {
       setConnectionStatus('offline');
       scheduleStartupRetry(() => { void initialize(true); });
     }
-  }, [cancelStartupRetry, installationId, loadBootstrapState, restoreAdminSession, scheduleStartupRetry]);
+  }, [cancelStartupRetry, installationId, loadBootstrapState, restoreAdminSession, restoreStoredRoomSession, scheduleStartupRetry]);
+
+  const handleAuthFailure = useCallback((error?: unknown, forceInvalidate = false) => {
+    cancelStartupRetry();
+    const invalidated = forceInvalidate
+      || isDeviceInvalidationError(error)
+      || error === 'DEVICE_INACTIVE'
+      || error === 'DEVICE_TOKEN_REVOKED';
+    if (invalidated) {
+      const currentView = viewRef.current;
+      if (currentView.kind === 'device' && currentView.snapshot.config.mode === 'ROOM') {
+        try { clearNativeRoomSession(getNativeRoomPresenceBridge()); } catch { /* The server remains authoritative. */ }
+      }
+      clearPersistedAdminSession();
+      clearPersistedDeviceState(localStorage);
+      const nextInstallationId = rotateInstallationId();
+      setInstallationId(nextInstallationId);
+      setView({ kind: 'bootstrap', installationId: nextInstallationId, bootstrapState: null, error: null });
+      setConnectionStatus('offline');
+      void initialize(true);
+      return;
+    } else if (viewRef.current.kind === 'admin') {
+      clearPersistedAdminSession();
+    } else {
+      localStorage.removeItem(DEVICE_TOKEN_STORAGE_KEY);
+    }
+    void initialize();
+  }, [cancelStartupRetry, initialize]);
 
   useEffect(() => {
     void initialize();
@@ -217,15 +450,51 @@ export function App() {
   }, [cancelStartupRetry, initialize]);
 
   useEffect(() => {
+    if (view.kind !== 'device' || view.snapshot.config.mode !== 'ROOM') return undefined;
+    const bridge = getNativeRoomPresenceBridge();
+    if (!supportsNativeRoomPresence(bridge)) return undefined;
+    let invalidationHandled = false;
+    const checkRoomAssignment = (): void => {
+      if (invalidationHandled || readNativeRoomPresenceState(bridge) !== 'INVALIDATED') return;
+      invalidationHandled = true;
+      handleAuthFailure('DEVICE_INACTIVE', true);
+    };
+    checkRoomAssignment();
+    const timer = window.setInterval(checkRoomAssignment, 1_000);
+    return () => window.clearInterval(timer);
+  }, [handleAuthFailure, view.kind, view.kind === 'device' ? view.snapshot.config.mode : undefined]);
+
+  useEffect(() => {
     if (view.kind !== 'device' || view.snapshot.config.mode !== 'ROOM') setRoomRequestNotificationsUnread(false);
   }, [view]);
 
-  const handleAuthFailure = useCallback(() => {
-    cancelStartupRetry();
-    if (viewRef.current.kind === 'admin') clearPersistedAdminSession();
-    else localStorage.removeItem(DEVICE_TOKEN_STORAGE_KEY);
-    void initialize();
-  }, [cancelStartupRetry, initialize]);
+  useEffect(() => {
+    if (!nativeStationBridgeAvailable || view.kind === 'loading' || view.kind === 'admin' || view.kind === 'assignment' || (view.kind === 'device' && view.snapshot.config.mode === 'ROOM')) return undefined;
+    const refreshNativeSnapshot = (): void => {
+      if (viewRef.current.kind === 'assignment') return;
+      const nativeStationBridge = getNativeStationBridge();
+      if (nativeStationBridge === null) {
+        setConnectionStatus('offline');
+        return;
+      }
+      const nativeSnapshot = readNativeStationSnapshot(nativeStationBridge);
+      if (nativeSnapshot === null) {
+        if (viewRef.current.kind === 'device') {
+          handleAuthFailure(undefined, true);
+          return;
+        }
+        setView((current) => current.kind === 'admin' ? current : { kind: 'bootstrap', installationId, bootstrapState: null, error: null });
+        setConnectionStatus('offline');
+        scheduleStartupRetry(() => { void initialize(true); });
+        return;
+      }
+      cancelStartupRetry();
+      setView((current) => current.kind === 'admin' ? current : { kind: 'device', snapshot: nativeSnapshot });
+      setConnectionStatus(resolveNativeStationReceiverStatus(nativeStationBridge.getReceiverState(), true));
+    };
+    const timer = window.setInterval(refreshNativeSnapshot, 1_000);
+    return () => window.clearInterval(timer);
+  }, [cancelStartupRetry, handleAuthFailure, initialize, installationId, nativeStationBridgeAvailable, scheduleStartupRetry, view.kind, view.kind === 'device' ? view.snapshot.config.mode : undefined]);
 
   const refreshDeviceSnapshot = useCallback(async (): Promise<DeviceSyncSnapshot | null> => {
     const token = localStorage.getItem(DEVICE_TOKEN_STORAGE_KEY);
@@ -240,7 +509,7 @@ export function App() {
       setView((current) => current.kind === 'device' ? { kind: 'device', snapshot: result.data } : current);
       return result.data;
     } catch (error) {
-      if (isApiError(error, 401) || isDeviceInvalidationError(error)) handleAuthFailure();
+      if (isApiError(error, 401) || isDeviceInvalidationError(error)) handleAuthFailure(error);
       else setConnectionStatus('stale');
       return null;
     }
@@ -268,11 +537,19 @@ export function App() {
       if (currentToken === null) return;
       tokenRotationInFlightRef.current = true;
       try {
+        const currentView = viewRef.current;
+        const roomBridge = currentView.kind === 'device' && currentView.snapshot.config.mode === 'ROOM'
+          ? getNativeRoomPresenceBridge()
+          : null;
+        const nativeRoomBridge = supportsNativeRoomPresence(roomBridge) ? roomBridge : null;
         await completeDeviceTokenRotation(
           { rotationId: pendingTokenRotationId },
           currentToken,
           { claim: claimDeviceTokenRotation, acknowledge: acknowledgeDeviceTokenRotation },
-          localStorage
+          localStorage,
+          nativeRoomBridge !== null
+            ? async (replacementToken) => stageNativeRoomToken(nativeRoomBridge, replacementToken)
+            : undefined
         );
         completedTokenRotationIdRef.current = pendingTokenRotationId;
         if (!disposed) await refreshDeviceSnapshot();
@@ -301,7 +578,7 @@ export function App() {
 
   const refreshAdminSnapshot = useCallback(async (): Promise<boolean> => {
     try {
-      const result = await api.get<AdminSystemSnapshot>('/system/snapshot');
+      const result = await api.get<AdminSystemSnapshot>('/system/snapshot', { cache: 'no-store' });
       setView((current) => current.kind === 'admin' ? { ...current, snapshot: result.data } : current);
       return true;
     } catch (error) {
@@ -335,9 +612,15 @@ export function App() {
     return { synchronized: false };
   }, [playRoomArrivalTone, refreshAdminSnapshot, refreshDeviceSnapshot]);
 
-  const realtimeView = view.kind === 'device'
+  const isAdminView = view.kind === 'admin';
+  const isRoomDeviceView = view.kind === 'device' && view.snapshot.config.mode === 'ROOM';
+  const realtimeView = isAdminView
+    ? { enabled: true, hasSnapshot: true }
+    : nativeStationBridgeAvailable && !isRoomDeviceView
+    ? { enabled: false, hasSnapshot: view.kind === 'device' }
+    : view.kind === 'device'
     ? { enabled: true, hasSnapshot: true, deviceId: view.snapshot.device.id, deviceToken: localStorage.getItem(DEVICE_TOKEN_STORAGE_KEY) ?? undefined, deviceConfigVersion: view.snapshot.deviceConfigVersion, lastSeenEventSequence: view.snapshot.currentEventSequence, heartbeatIntervalMs: view.snapshot.config.heartbeatIntervalMs }
-    : { enabled: view.kind === 'admin', hasSnapshot: view.kind === 'admin' };
+    : { enabled: false, hasSnapshot: false };
 
   const clearRoomRequestNotifications = useCallback(() => {
     setRoomRequestNotificationsUnread(false);
@@ -347,19 +630,40 @@ export function App() {
     ...realtimeView,
     onEvent: handleRealtimeEvent,
     onAuthFailure: handleAuthFailure,
-    onStatus: setConnectionStatus
+    onStatus: isAdminView || !nativeStationBridgeAvailable || isRoomDeviceView ? setConnectionStatus : () => undefined
   });
 
-  async function completeAdminLogin(result: AdminLoginResult) {
-    const snapshot = await api.get<AdminSystemSnapshot>('/system/snapshot');
+  async function completeAdminLogin(result: AdminLoginResult, role: AdminLoginRole = 'ADMIN') {
+    cancelStartupRetry();
     const source = viewRef.current.kind;
-    persistAdminSession({ result, installationId: source === 'bootstrap' ? installationId : null });
+    const snapshot = await api.get<AdminSystemSnapshot>('/system/snapshot', { cache: 'no-store' });
+    let assignmentSnapshot = snapshot.data;
+    let assignmentError: string | null = null;
+    if (source === 'bootstrap' && role !== 'ADMIN') {
+      try {
+        assignmentSnapshot = await hydrateAssignmentTargets(snapshot.data, role);
+      } catch (error) {
+        assignmentError = errorMessage(error, spanishT('errors.serviceUnavailable'), 'es');
+      }
+      assignmentSnapshot = normalizeAssignmentSnapshot(assignmentSnapshot);
+    }
+    persistAdminSession({
+      result,
+      installationId: source === 'bootstrap' ? installationId : null,
+      ...(source === 'bootstrap' && role !== 'ADMIN' ? { pendingStationRole: role } : {})
+    });
     setAdminLoginOpen(false);
-    setView({ kind: 'admin', snapshot: snapshot.data, session: result, installationId: source === 'bootstrap' ? installationId : null });
+    setView(source === 'bootstrap' && role !== 'ADMIN'
+      ? { kind: 'assignment', role, snapshot: assignmentSnapshot, session: result, installationId, error: assignmentError, busy: false }
+      : { kind: 'admin', snapshot: snapshot.data, session: result, installationId: source === 'bootstrap' ? installationId : null });
   }
 
   async function retryBootstrap() {
     cancelStartupRetry();
+    if (getNativeStationBridge() !== null) {
+      await initialize(true);
+      return;
+    }
     try {
       const bootstrapState = await loadBootstrapState();
       setView({ kind: 'bootstrap', installationId, bootstrapState, error: null });
@@ -379,19 +683,92 @@ export function App() {
     }
   }
 
-  async function useDeviceToken(token: string) {
-    if (view.kind !== 'admin') return;
+  async function useDeviceToken(pairing: DeviceTokenPairing) {
+    if (view.kind !== 'admin' && view.kind !== 'assignment') return;
+    const nativeStationBridge = getNativeStationBridge();
+    if (pairing.assignmentMode === 'ROOM') {
+      localStorage.setItem(DEVICE_TOKEN_STORAGE_KEY, pairing.deviceToken);
+      localStorage.setItem(DEVICE_ID_STORAGE_KEY, pairing.deviceId);
+      const roomBridge = getNativeRoomPresenceBridge();
+      if (supportsNativeRoomPresence(roomBridge)) {
+        await configureNativeRoomSession(roomBridge, { deviceId: pairing.deviceId, deviceToken: pairing.deviceToken });
+      }
+      try {
+        await api.post('/auth/admin/logout', undefined, { headers: { 'x-csrf-token': view.session.csrfToken, 'Idempotency-Key': makeMutationKey('logout') } });
+      } catch {
+        // A completed room assignment is owned by the device session; logout is best effort.
+      }
+      clearPersistedAdminSession();
+      await initialize();
+      return;
+    }
+    if (nativeStationBridge !== null) {
+      await pairNativeStation(nativeStationBridge, { deviceId: pairing.deviceId, deviceToken: pairing.deviceToken });
+      const nativeSnapshot = await waitForNativeSnapshot(nativeStationBridge);
+      if (nativeSnapshot === null) throw new Error('NATIVE_SNAPSHOT_UNAVAILABLE');
+      try {
+        await api.post('/auth/admin/logout', undefined, { headers: { 'x-csrf-token': view.session.csrfToken, 'Idempotency-Key': makeMutationKey('logout') } });
+      } catch {
+        // Native pairing already owns the device session; browser logout is best effort.
+      }
+      clearPersistedAdminSession();
+      localStorage.removeItem(DEVICE_TOKEN_STORAGE_KEY);
+      localStorage.removeItem(DEVICE_ID_STORAGE_KEY);
+      cancelStartupRetry();
+      setConnectionStatus(resolveNativeStationReceiverStatus(nativeStationBridge.getReceiverState(), true));
+      setView({ kind: 'device', snapshot: nativeSnapshot });
+      return;
+    }
     await api.post('/auth/admin/logout', undefined, { headers: { 'x-csrf-token': view.session.csrfToken, 'Idempotency-Key': makeMutationKey('logout') } });
     clearPersistedAdminSession();
-    localStorage.setItem(DEVICE_TOKEN_STORAGE_KEY, token);
+    localStorage.setItem(DEVICE_TOKEN_STORAGE_KEY, pairing.deviceToken);
+    localStorage.setItem(DEVICE_ID_STORAGE_KEY, pairing.deviceId);
     await initialize();
+  }
+
+  async function provisionSelectedTarget(target: DeviceRoleAssignmentTarget): Promise<void> {
+    if (view.kind !== 'assignment') return;
+    const assignment = view;
+    setView((current) => current.kind === 'assignment' ? { ...current, busy: true, error: null } : current);
+    let currentInstallationId = assignment.installationId;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const result = await api.post<DeviceBootstrapResult>('/devices/bootstrap', buildDeviceBootstrapInput(currentInstallationId, assignment.role, target), {
+          headers: {
+            'x-csrf-token': assignment.session.csrfToken,
+            // Keep the onboarding mutation key stable for this installation/target.
+            // If native pairing fails after the server creates the device, the next
+            // tap must replay the same idempotent bootstrap result instead of
+            // attempting to create a second device for the same installation.
+            'Idempotency-Key': `station-onboarding-${assignment.role}-${currentInstallationId}-${target.id}`
+          }
+        });
+        await useDeviceToken({ deviceId: result.data.device.id, deviceToken: result.data.deviceToken, assignmentMode: result.data.device.assignmentMode });
+        return;
+      } catch (provisioningError) {
+        if (attempt === 0 && isRetiredInstallationConflict(provisioningError)) {
+          currentInstallationId = rotateInstallationId();
+          setInstallationId(currentInstallationId);
+          persistAdminSession({ result: assignment.session, installationId: currentInstallationId, pendingStationRole: assignment.role });
+          setView((current) => current.kind === 'assignment'
+            ? { ...current, installationId: currentInstallationId, busy: true, error: null }
+            : current);
+          continue;
+        }
+        setView((current) => current.kind === 'assignment'
+          ? { ...current, busy: false, error: errorMessage(provisioningError, spanishT('errors.deviceProvisionFailed'), 'es') }
+          : current);
+        return;
+      }
+    }
   }
 
   if (view.kind === 'loading') return <SpanishI18nProvider><LoadingScreen /></SpanishI18nProvider>;
   if (view.kind === 'bootstrap') return <SpanishI18nProvider><BootstrapScreen installationId={installationId} bootstrapState={view.bootstrapState} error={view.error} onRetry={() => void retryBootstrap()} onAdminLogin={completeAdminLogin} /></SpanishI18nProvider>;
+  if (view.kind === 'assignment') return <SpanishI18nProvider><DeviceRoleAssignmentScreen role={view.role} snapshot={view.snapshot} busy={view.busy} error={view.error} onSelect={(target) => void provisionSelectedTarget(target)} onAdmin={() => { persistAdminSession({ result: view.session, installationId: view.installationId }); setView({ kind: 'admin', snapshot: view.snapshot, session: view.session, installationId: view.installationId }); }} /></SpanishI18nProvider>;
   if (view.kind === 'device') {
     const deviceScreen = <DeviceScreen snapshot={view.snapshot} deviceToken={localStorage.getItem(DEVICE_TOKEN_STORAGE_KEY) ?? ''} connectionStatus={connectionStatus} onRefresh={refreshDevice} onOpenAdmin={() => setAdminLoginOpen(true)} onAuthFailure={handleAuthFailure} roomRequestNotificationsUnread={roomRequestNotificationsUnread} onClearRoomRequestNotifications={clearRoomRequestNotifications} />;
-    const adminLoginDialog = adminLoginOpen && <AdminLoginDialog onSuccess={completeAdminLogin} onCancel={() => setAdminLoginOpen(false)} />;
+    const adminLoginDialog = adminLoginOpen && <AdminLoginDialog onSuccess={(result) => completeAdminLogin(result, 'ADMIN')} onCancel={() => setAdminLoginOpen(false)} />;
     if (view.snapshot.config.mode === 'ROOM') return <>{deviceScreen}<SpanishI18nProvider>{adminLoginDialog}</SpanishI18nProvider></>;
     return <SpanishI18nProvider>{deviceScreen}{adminLoginDialog}</SpanishI18nProvider>;
   }

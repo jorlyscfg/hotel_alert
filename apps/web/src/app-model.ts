@@ -39,6 +39,18 @@ export const DEVICE_SNAPSHOT_STORAGE_KEY = 'hotel-local-device-snapshot';
 const INSTALLATION_ID_STORAGE_KEY = 'hotel-local-installation-id';
 const CLIENT_INSTANCE_ID_STORAGE_KEY = 'hotel-local-client-instance-id';
 
+const DEVICE_SESSION_STORAGE_KEYS = [
+  DEVICE_TOKEN_STORAGE_KEY,
+  DEVICE_ID_STORAGE_KEY,
+  DEVICE_PENDING_TOKEN_ROTATION_STORAGE_KEY,
+  DEVICE_SYNC_STATE_STORAGE_KEY,
+  DEVICE_SNAPSHOT_STORAGE_KEY,
+  INSTALLATION_ID_STORAGE_KEY,
+  CLIENT_INSTANCE_ID_STORAGE_KEY,
+  'hotel-local-room-request-queue',
+  'hotel-local-locale'
+] as const;
+
 export interface LocalDeviceSyncState {
   deviceId: string;
   lastSeenEventSequence: number;
@@ -49,7 +61,10 @@ export interface LocalDeviceSyncState {
 export interface LocalAdminSession {
   result: AdminLoginResult;
   installationId: string | null;
+  pendingStationRole?: PendingStationRole;
 }
+
+export type PendingStationRole = 'ROOM' | 'AREA';
 
 export interface PendingDeviceTokenRotation {
   rotationId: string;
@@ -122,7 +137,8 @@ export function parseAdminSession(raw: string): LocalAdminSession | null {
     const username = admin['username'];
     const expiresAt = admin['expiresAt'];
     const installationId = value['installationId'];
-    if (!isNonEmptyString(csrfToken) || !isNonEmptyString(adminId) || !isNonEmptyString(username) || !isNonEmptyString(expiresAt) || !isNullableString(installationId)) return null;
+    const pendingStationRole = value['pendingStationRole'];
+    if (!isNonEmptyString(csrfToken) || !isNonEmptyString(adminId) || !isNonEmptyString(username) || !isNonEmptyString(expiresAt) || !isNullableString(installationId) || (pendingStationRole !== undefined && !isPendingStationRole(pendingStationRole))) return null;
     return {
       result: {
         admin: { id: adminId, username, expiresAt },
@@ -136,10 +152,14 @@ export function parseAdminSession(raw: string): LocalAdminSession | null {
 }
 
 export function parseLocalDeviceSnapshot(raw: string, expectedDeviceId: string): DeviceSyncSnapshot | null {
+  const snapshot = parseDeviceSyncSnapshot(raw);
+  return snapshot?.device.id === expectedDeviceId ? snapshot : null;
+}
+
+export function parseDeviceSyncSnapshot(raw: string): DeviceSyncSnapshot | null {
   try {
     const value: unknown = JSON.parse(raw);
-    if (!isDeviceSyncSnapshot(value) || value.device.id !== expectedDeviceId) return null;
-    return value;
+    return isDeviceSyncSnapshot(value) ? value : null;
   } catch {
     return null;
   }
@@ -154,11 +174,26 @@ export interface LocalStorageWriter extends LocalStorageReader {
   removeItem(key: string): void;
 }
 
+/** Removes browser-owned session and device state while leaving native origin storage untouched. */
+export function clearPersistedDeviceState(storage: LocalStorageWriter): void {
+  for (const key of DEVICE_SESSION_STORAGE_KEYS) storage.removeItem(key);
+  const indexedStorage = storage as LocalStorageWriter & {
+    length?: number;
+    key?: (index: number) => string | null;
+  };
+  if (indexedStorage.key === undefined || indexedStorage.length === undefined) return;
+  for (let index = indexedStorage.length - 1; index >= 0; index -= 1) {
+    const key = indexedStorage.key(index);
+    if (key?.startsWith('hotel-local-')) storage.removeItem(key);
+  }
+}
+
 export async function completeDeviceTokenRotation(
   rotation: Pick<PendingTokenRotation, 'rotationId'>,
   currentToken: string,
   client: DeviceTokenRotationClient,
-  storage: LocalStorageWriter
+  storage: LocalStorageWriter,
+  onReplacementClaimed?: (replacementToken: string) => Promise<void>
 ): Promise<string> {
   const stored = readPendingDeviceTokenRotation(storage);
   const replacementValue: unknown = stored?.rotationId === rotation.rotationId
@@ -176,6 +211,7 @@ export async function completeDeviceTokenRotation(
   if (stored?.rotationId !== rotation.rotationId) {
     storage.setItem(DEVICE_PENDING_TOKEN_ROTATION_STORAGE_KEY, serializePendingDeviceTokenRotation(replacement));
   }
+  await onReplacementClaimed?.(replacement.deviceToken);
   await client.acknowledge(rotation.rotationId, replacement.deviceToken);
   storage.setItem(DEVICE_TOKEN_STORAGE_KEY, replacement.deviceToken);
   storage.removeItem(DEVICE_PENDING_TOKEN_ROTATION_STORAGE_KEY);
@@ -231,6 +267,11 @@ export function makeMutationKey(operation: string): string {
 
 export function getOrCreateInstallationId(): string {
   return getOrCreateBrowserId(INSTALLATION_ID_STORAGE_KEY, 'install');
+}
+
+export function rotateInstallationId(): string {
+  localStorage.removeItem(INSTALLATION_ID_STORAGE_KEY);
+  return getOrCreateInstallationId();
 }
 
 export function getOrCreateClientInstanceId(): string {
@@ -387,6 +428,10 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === 'string';
+}
+
+function isPendingStationRole(value: unknown): value is PendingStationRole {
+  return value === 'ROOM' || value === 'AREA';
 }
 
 function isNonNegativeInteger(value: unknown): value is number {

@@ -5,10 +5,13 @@ import { api, errorMessage, isApiError } from '../../api';
 import { useI18n } from '../../i18n';
 
 interface AdminLoginFormProps {
-  onSuccess: (result: AdminLoginResult) => Promise<void> | void;
+  onSuccess: (result: AdminLoginResult, role: AdminLoginRole) => Promise<void> | void;
   onCancel?: () => void;
   compact?: boolean;
+  allowStationRoles?: boolean;
 }
+
+export type AdminLoginRole = 'ADMIN' | 'ROOM' | 'AREA';
 
 export const ADMIN_LOGIN_ERROR_ID = 'admin-login-error';
 
@@ -30,7 +33,7 @@ export function AdminLoginError({ message }: { message: string }) {
   return <p id={ADMIN_LOGIN_ERROR_ID} className="form-error" role="alert" aria-live="assertive">{message}</p>;
 }
 
-export function AdminLoginForm({ onSuccess, onCancel, compact = false }: AdminLoginFormProps) {
+export function AdminLoginForm({ onSuccess, onCancel, compact = false, allowStationRoles = false }: AdminLoginFormProps) {
   const { locale, t } = useI18n();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -38,6 +41,7 @@ export function AdminLoginForm({ onSuccess, onCancel, compact = false }: AdminLo
   const [error, setError] = useState<string | null>(null);
   const [credentialsRejected, setCredentialsRejected] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [role, setRole] = useState<AdminLoginRole>('ADMIN');
   const fieldAccessibility = resolveAdminLoginFieldAccessibility(error, credentialsRejected);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -47,7 +51,7 @@ export function AdminLoginForm({ onSuccess, onCancel, compact = false }: AdminLo
     setSubmitting(true);
     try {
       const result = await api.post<AdminLoginResult>('/auth/admin/login', { username, password });
-      await onSuccess(result.data);
+      await onSuccess(result.data, role);
     } catch (submissionError) {
       setCredentialsRejected(isApiError(submissionError) && submissionError.code === 'AUTH_INVALID');
       setError(errorMessage(submissionError, t('errors.signInFailed'), locale));
@@ -100,6 +104,29 @@ export function AdminLoginForm({ onSuccess, onCancel, compact = false }: AdminLo
            </button>
          </div>
       </div>
+      {allowStationRoles && (
+        <fieldset className="station-role-picker">
+          <legend id="station-role-label">{t('auth.stationRole')}</legend>
+          <div className="station-role-picker__options" role="group" aria-labelledby="station-role-label">
+            {([
+              ['ADMIN', 'auth.roleAdmin'],
+              ['ROOM', 'auth.roleRoom'],
+              ['AREA', 'auth.roleArea']
+            ] as const).map(([value, labelKey]) => (
+              <button
+                className={`station-role-option${role === value ? ' station-role-option--selected' : ''}`}
+                key={value}
+                type="button"
+                aria-pressed={role === value}
+                onClick={() => setRole(value)}
+                disabled={submitting}
+              >
+                <span className="station-role-option__label">{t(labelKey)}</span>
+              </button>
+            ))}
+          </div>
+        </fieldset>
+      )}
       {error !== null && <AdminLoginError message={error} />}
       <div className="form-actions">
         {onCancel !== undefined && (
