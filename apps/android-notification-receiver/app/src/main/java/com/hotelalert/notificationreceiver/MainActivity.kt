@@ -193,6 +193,7 @@ class MainActivity : ComponentActivity() {
                                     overlayPermissionRequired = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q,
                                     overlayPermissionGranted = overlayPermissionGranted,
                                     onChooseHome = ::chooseHotelAlertHome,
+                                    onOpenHomeSelectionSettings = ::openHomeSelectionSettings,
                                     onClearManagedHome = ::clearManagedHome,
                                     onOpenAndroidSettings = ::openAndroidSettings,
                                     onManageOverlayPermission = ::openOverlayPermissionSettings,
@@ -609,11 +610,30 @@ class MainActivity : ComponentActivity() {
         if (!isMaintenanceSettingsOpen() || !ensureRoomLockTaskExitedSafely()) return
         try {
             startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
-        } catch (_: ActivityNotFoundException) {
-            kioskControlMessage = "La configuración de aplicaciones de inicio no está disponible. Se abrirá la configuración general de Android."
-            runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
-                .onFailure { kioskControlMessage = "No se pudo abrir la configuración de Android en este dispositivo." }
+        } catch (_: Exception) {
+            val fallbackMessage = "Los ajustes de la aplicación de inicio no están disponibles. Android abrirá la autorización de Hotel Alert; confirma allí si quieres seleccionarla."
+            if (requestHomeRoleWithConsent(fallbackMessage)) {
+                kioskControlMessage = fallbackMessage
+                Toast.makeText(this, fallbackMessage, Toast.LENGTH_LONG).show()
+            } else {
+                kioskControlMessage = "No se pudieron abrir los ajustes de inicio ni la autorización de Hotel Alert. Usa la configuración general de Android para elegir la aplicación de inicio."
+                runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+                    .onFailure { kioskControlMessage = "No se pudo abrir la configuración de Android en este dispositivo." }
+            }
         }
+    }
+
+    private fun requestHomeRoleWithConsent(fallbackMessage: String): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
+        val roleManager = getSystemService(RoleManager::class.java) ?: return false
+        if (!roleManager.isRoleAvailable(RoleManager.ROLE_HOME)) return false
+        kioskControlMessage = fallbackMessage
+        markHomeRoleRequestAttempted()
+        return runCatching {
+            homeRoleRequestLauncher.launch(roleManager.createRequestRoleIntent(RoleManager.ROLE_HOME))
+        }.onFailure {
+            kioskControlMessage = "Android no pudo abrir la autorización de la aplicación de inicio."
+        }.isSuccess
     }
 
     private fun openAndroidSettings() {

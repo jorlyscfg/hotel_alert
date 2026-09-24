@@ -2,15 +2,15 @@
 
 ## Objective
 
-Make it clear whether Android has actually selected Hotel Alert as the HOME app, and let an operator safely resume HOME selection when Android did not grant it, so cold-boot behavior is diagnosable rather than assumed.
+Make it clear whether Android has actually selected Hotel Alert as the HOME app, and let an operator safely resume or directly open Android's HOME-app selection settings when that selection is inconsistent, so cold-boot behavior is diagnosable rather than assumed.
 
 ## Problem and why
 
-The ROOM boot receiver restores the native presence service but does not launch the visible Activity. The visible ROOM screen after a reboot depends on Android resolving Hotel Alert as HOME. The current automatic role prompt records that it was attempted immediately after launching Android's chooser; a canceled/denied prompt is not retried automatically. The current device's HOME role is not yet verified because its authorized ADB serial was offline during diagnosis.
+The ROOM boot receiver restores the native presence service but does not launch the visible Activity. The visible ROOM screen after a reboot depends on Android resolving Hotel Alert as HOME. The current automatic role prompt records that it was attempted immediately after launching Android's chooser; a canceled/denied prompt is not retried automatically. A recent read-only diagnosis found the ROOM's HOME role holder and the HOME intent resolver disagree, so operators need a direct path to Android's Home selection settings in addition to the role-request chooser.
 
 ## Scope and constraints
 
-- Preserve Android's HOME-role consent flow on API 29+, the legacy HOME Settings fallback, and the Device Owner persistent-HOME path.
+- Preserve Android's HOME-role consent flow on API 29+, add the public `Settings.ACTION_HOME_SETTINGS` route to Android's Home selection screen with a safe fallback if the OEM has no handler, and preserve the Device Owner persistent-HOME path.
 - Re-read actual Android HOME role/resolution after the operator returns from the chooser; never treat opening the chooser as proof that Hotel Alert became default.
 - Keep declined/canceled automatic prompting from looping, while retaining a clear explicit operator-initiated retry in native maintenance.
 - Keep visible native feedback in Spanish and make an unsuccessful selection/retry understandable.
@@ -21,7 +21,7 @@ The ROOM boot receiver restores the native presence service but does not launch 
 
 ## Authorized scope
 
-The user approved implementing the root correction to HOME confirmation/retry and testing the APK on the two authorized test devices. Destinations are ROOM device `192.168.0.243` and operator tablet `192.168.0.214`, using the previously approved ADB wireless/USB connections. No power-cycle, system-settings, HOME-role, or device-owner mutation is authorized by this task; cold-boot physical behavior remains a manual device check.
+The user approved implementing a separate native button that opens Android's HOME selection settings, so they can change the selected launcher themselves. Destinations for the standing final APK rollout are ROOM device `192.168.0.243` and operator tablet `192.168.0.214`, using the previously approved ADB wireless/USB connections. This task may open the system page but must not select a launcher, alter HOME state automatically, provision Device Owner, or power-cycle the ROOM; cold-boot physical behavior remains a manual device check.
 
 ## Tasks
 
@@ -40,11 +40,26 @@ The user approved implementing the root correction to HOME confirmation/retry an
 - [x] Install the verified debug APK on operator tablet `192.168.0.214` using its previously approved USB ADB connection.
 - [x] Record exact device/ADB outcomes; do not change Android HOME selection or power-cycle settings.
 
+### ROOM-HOME-03 — Open Android's HOME selection settings directly
+
+- [x] Add a distinct Spanish maintenance action that opens Android's Home selection settings (`Settings.ACTION_HOME_SETTINGS`) rather than the generic Settings home or only the RoleManager consent chooser.
+- [x] Preserve user control: do not programmatically select/clear a preferred launcher or request Device Owner; fall back to the existing consent-based chooser with understandable feedback if the system settings action cannot be opened.
+- [x] Re-read and display the actual HOME status after returning from Android settings; confirmed the existing `onResume`/maintenance refresh path performs this check.
+- [x] Run the Android unit-test/build/lint/check suite and `git diff --check`.
+- [ ] Commit only the scoped source and tracker changes.
+
+### ROOM-HOME-04 — Roll out the direct HOME settings APK
+
+- [ ] Install the verified APK on ROOM device `192.168.0.243` using the authorized ADB transport available for this rollout.
+- [ ] Install the same verified APK on operator tablet `192.168.0.214` using its previously approved USB ADB connection.
+- [ ] Record exact installation and package verification outcomes; do not change HOME selection or power-cycle either device.
+
 ## Acceptance criteria
 
 - The app reports Hotel Alert as HOME only when Android's current role/resolver state confirms it.
 - A dismissed/denied automatic chooser is not reported as success and does not cause repeated prompt loops.
 - An operator can explicitly reopen HOME selection from native maintenance and see the refreshed actual status after returning.
+- A separate maintenance action opens Android's specific HOME selection settings screen; when unsupported, it falls back to the existing user-consented HOME chooser without claiming a selection succeeded.
 - ROOM presence restoration continues without direct Activity launch from the boot receiver; AREA/Admin and screen-wake behavior remain unchanged.
 - Focused tests and Android test/assemble/lint/check pass; `git diff --check` passes.
 - The resulting debug APK is installed on both authorized test devices unless the user explicitly opts out. A physical cold-boot power-cycle test is not claimed unless actually performed.
@@ -63,6 +78,8 @@ The user approved implementing the root correction to HOME confirmation/retry an
 - Mapping trigger: HOME boot behavior spans at least four Android files. CodeGraph mapped the flow, and `/root/room_reboot_path_audit` completed the delegated read-only audit before implementation.
 - Writer trigger: the correction crosses MainActivity/role handling, native maintenance display, policy tests, and operator documentation; one bounded writer will own those files.
 - Forecast: approximately 120–220 authored changed lines, excluding generated files.
+- ROOM-HOME-03 writer trigger: the direct system-settings launch belongs in `MainActivity.kt`, while the separate native button belongs in `RoomMaintenanceScreens.kt`; these are two non-trivial files, so one bounded writer owns both. Expected scope is under 100 authored lines; tracker files remain parent-owned.
+- ROOM-HOME-03 preparation: CodeGraph mapped the maintenance screen/Activity callback and Android's official `Settings.ACTION_HOME_SETTINGS` contract was checked before the writer begins.
 - Delivery strategy: `stacked-to-main`, inherited from the existing Android ROOM feature; continue on `jorlys/feat/lan-notification-agent` without creating a branch.
 
 ## Progress and verification evidence
@@ -74,6 +91,9 @@ The user approved implementing the root correction to HOME confirmation/retry an
 - Work-unit commit: `17b1cab` (`fix(android): report actual room home selection`), 159 authored lines; only the scoped Android flow/policy, focused test, operator guide, and this tracker were included. The shared Git index hash remained unchanged.
 - Device rollout: the operator tablet connected as `R9PT70GX3PA` accepted the verified debug APK (`adb install -r`: `Success`); `pm path` confirms the installed package and `dumpsys package` reports `versionCode=1`, `targetSdk=35`. The ROOM device connected at user-provided transport `192.168.0.243:38655` also accepted the APK (`adb install -r`: `Success`); `pm path` confirms the installed package and `dumpsys package` reports `versionCode=1`, `targetSdk=35`. APK SHA-256 matched the verified build on both installs: `4ec8d8a1984b322833055d41d83b7e008910a587d37341650e21cf07ed885`.
 - Next step: physically validate ROOM's HOME selection and cold-boot behavior separately. Both-device APK rollout is complete; no HOME setting was changed and no cold boot was performed.
+- Follow-up diagnosis: `dumpsys role` reports `com.hotelalert.notificationreceiver` as the ROOM's `android.app.role.HOME` holder, while `cmd package resolve-activity` still resolves the HOME intent to `com.akubela.panel/.activity.init.InitActivity` with `isDefault=true`. This task adds a direct settings entry point for the operator to correct/inspect that mismatch; the system setting itself remains user-controlled.
+- ROOM-HOME-03 implementation: added the separate “Cambiar aplicación de inicio en Android” action and wired it to `Settings.ACTION_HOME_SETTINGS`; if Android cannot open that system page, the app offers its existing consent-based RoleManager flow and a safe general-Settings fallback. No HOME preference is set or cleared by Hotel Alert.
+- ROOM-HOME-03 verification: `:app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:check` passed (BUILD SUCCESSFUL; 78 actionable tasks, 21 executed, 57 up-to-date). `git diff --check` passed. The shared Git index remains unchanged at tree `de340c670a8e120c7db6f10dd48656f96f712286`.
 
 ## Relevant files
 

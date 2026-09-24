@@ -87,6 +87,7 @@ internal fun RoomMaintenanceSettingsScreen(
     overlayPermissionRequired: Boolean,
     overlayPermissionGranted: Boolean,
     onChooseHome: () -> Unit,
+    onOpenHomeSelectionSettings: () -> Unit,
     onClearManagedHome: () -> Unit,
     onOpenAndroidSettings: () -> Unit,
     onManageOverlayPermission: () -> Unit,
@@ -115,6 +116,13 @@ internal fun RoomMaintenanceSettingsScreen(
                 Text("Aplicación de inicio: ${homeStatusLabel(homeStatus)}", style = MaterialTheme.typography.bodyMedium)
                 Button(onClick = onChooseHome, modifier = Modifier.fillMaxWidth()) {
                     Text("Elegir o volver a elegir Hotel Alert como aplicación de inicio")
+                }
+                Text(
+                    "Si Android todavía abre Akubela, puedes cambiar la aplicación de inicio desde los ajustes del sistema.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Button(onClick = onOpenHomeSelectionSettings, modifier = Modifier.fillMaxWidth()) {
+                    Text("Cambiar aplicación de inicio en Android")
                 }
                 if (isDeviceOwner) {
                     Text(
