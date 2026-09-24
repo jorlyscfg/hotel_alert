@@ -51,6 +51,24 @@ class RoomHomeLauncherPolicyTest {
     }
 
     @Test
+    fun `chooser feedback follows the refreshed Android HOME state instead of the activity result code`() {
+        assertEquals(
+            HomeSelectionFeedback.CONFIRMED,
+            homeSelectionFeedback(RoomHomeStatus.HOTEL_ALERT_DEFAULT)
+        )
+        assertEquals(
+            HomeSelectionFeedback.NOT_CONFIRMED,
+            homeSelectionFeedback(RoomHomeStatus.ANOTHER_APP_DEFAULT)
+        )
+        assertEquals(
+            HomeSelectionFeedback.UNKNOWN,
+            homeSelectionFeedback(RoomHomeStatus.UNKNOWN)
+        )
+        assertTrue(homeSelectionFeedbackMessage(HomeSelectionFeedback.CONFIRMED).contains("Selección confirmada"))
+        assertTrue(homeSelectionFeedbackMessage(HomeSelectionFeedback.NOT_CONFIRMED).contains("no confirmada"))
+    }
+
+    @Test
     fun `persistent Home writes and clears are reserved for the Device Owner`() {
         assertTrue(shouldSetPersistentPreferredHome(isDeviceOwner = true))
         assertTrue(shouldClearPersistentPreferredHome(isDeviceOwner = true))

@@ -114,7 +114,7 @@ internal fun RoomMaintenanceSettingsScreen(
                 Text("Dispositivo Android", style = MaterialTheme.typography.titleMedium)
                 Text("Aplicación de inicio: ${homeStatusLabel(homeStatus)}", style = MaterialTheme.typography.bodyMedium)
                 Button(onClick = onChooseHome, modifier = Modifier.fillMaxWidth()) {
-                    Text("Elegir Hotel Alert como aplicación de inicio")
+                    Text("Elegir o volver a elegir Hotel Alert como aplicación de inicio")
                 }
                 if (isDeviceOwner) {
                     Text(

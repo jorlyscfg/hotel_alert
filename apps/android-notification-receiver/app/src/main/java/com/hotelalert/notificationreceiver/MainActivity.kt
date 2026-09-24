@@ -1,7 +1,6 @@
 package com.hotelalert.notificationreceiver
 
 import android.Manifest
-import android.app.Activity
 import android.app.ActivityManager
 import android.app.role.RoleManager
 import android.content.ActivityNotFoundException
@@ -15,6 +14,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -100,15 +100,8 @@ class MainActivity : ComponentActivity() {
 
     private val homeRoleRequestLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (maintenanceRoute == RoomMaintenanceRoute.SETTINGS) {
-            kioskControlMessage = if (result.resultCode == Activity.RESULT_OK) {
-                "Android aceptó la selección de la aplicación de inicio."
-            } else {
-                "No se cambió la aplicación de inicio."
-            }
-            refreshMaintenanceDeviceState()
-        }
+    ) {
+        refreshHomeSelectionStatus()
     }
 
     private val roomSessionChangedReceiver = object : BroadcastReceiver() {
@@ -397,13 +390,37 @@ class MainActivity : ComponentActivity() {
             )
         ) return false
 
+        markHomeRoleRequestAttempted()
         try {
             homeRoleRequestLauncher.launch(roleManager.createRequestRoleIntent(RoleManager.ROLE_HOME))
-            preferences.edit().putBoolean(HOME_ROLE_REQUEST_ATTEMPTED_KEY, true).apply()
             return true
         } catch (error: Exception) {
+            val message = "Android no pudo abrir la selección de la aplicación de inicio. Vuelve a intentarlo desde Mantenimiento o desde la configuración de Android."
+            kioskControlMessage = message
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
             Log.w(TAG, "The HOME role request could not be opened; use Android Settings to select Hotel Alert as Home.", error)
             return false
+        }
+    }
+
+    private fun markHomeRoleRequestAttempted() {
+        getSharedPreferences(ROOM_KIOSK_PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putBoolean(HOME_ROLE_REQUEST_ATTEMPTED_KEY, true)
+            .apply()
+    }
+
+    private fun refreshHomeSelectionStatus() {
+        lifecycleScope.launch {
+            val refreshedStatus = withContext(Dispatchers.IO) {
+                runCatching { roomHomePolicy.readStatus().homeStatus }
+                    .getOrDefault(RoomHomeStatus.UNKNOWN)
+            }
+            homeStatus = refreshedStatus
+            val message = homeSelectionFeedbackMessage(homeSelectionFeedback(refreshedStatus))
+            kioskControlMessage = message
+            Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
+            if (maintenanceRoute == RoomMaintenanceRoute.SETTINGS) refreshMaintenanceDeviceState()
         }
     }
 
@@ -562,6 +579,7 @@ class MainActivity : ComponentActivity() {
                     openHomeSelectionSettings()
                     return
                 }
+                markHomeRoleRequestAttempted()
                 runCatching {
                     homeRoleRequestLauncher.launch(roleManager.createRequestRoleIntent(RoleManager.ROLE_HOME))
                 }.onFailure {

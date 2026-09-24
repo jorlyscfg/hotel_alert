@@ -12,6 +12,27 @@ internal enum class RoomHomeStatus {
     UNKNOWN
 }
 
+internal enum class HomeSelectionFeedback {
+    CONFIRMED,
+    NOT_CONFIRMED,
+    UNKNOWN
+}
+
+internal fun homeSelectionFeedback(status: RoomHomeStatus): HomeSelectionFeedback = when (status) {
+    RoomHomeStatus.HOTEL_ALERT_DEFAULT -> HomeSelectionFeedback.CONFIRMED
+    RoomHomeStatus.ANOTHER_APP_DEFAULT -> HomeSelectionFeedback.NOT_CONFIRMED
+    RoomHomeStatus.UNKNOWN -> HomeSelectionFeedback.UNKNOWN
+}
+
+internal fun homeSelectionFeedbackMessage(feedback: HomeSelectionFeedback): String = when (feedback) {
+    HomeSelectionFeedback.CONFIRMED ->
+        "Selección confirmada: Hotel Alert es la aplicación de inicio predeterminada."
+    HomeSelectionFeedback.NOT_CONFIRMED ->
+        "Selección no confirmada: Android mantiene otra aplicación como inicio predeterminado."
+    HomeSelectionFeedback.UNKNOWN ->
+        "Android no confirmó cuál es la aplicación de inicio predeterminada. Compruébalo en la configuración de Android."
+}
+
 internal fun chooseHomeSelectionAction(
     apiLevel: Int,
     roleAvailable: Boolean,
