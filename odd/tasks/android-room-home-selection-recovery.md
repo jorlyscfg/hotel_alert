@@ -96,6 +96,8 @@ The user approved implementing a separate native button that opens Android's HOM
 - ROOM-HOME-03 verification: `:app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:check` passed (BUILD SUCCESSFUL; 78 actionable tasks, 21 executed, 57 up-to-date). `git diff --check` passed. The shared Git index remains unchanged at tree `de340c670a8e120c7db6f10dd48656f96f712286`.
 - ROOM-HOME-03 work-unit commit: `251317e` (`feat(android): open Home selection settings`), 56 insertions and 8 deletions across the two native files and this task tracker. The commit was created from an isolated index; the shared Git index remains unchanged.
 - ROOM-HOME-04 rollout: built APK SHA-256 `3d8b1621b508ffebc0fee73fb8a0ad5173486a443334e40b95f1158d91f74d3d` installed successfully (`adb install -r`: `Success`) on ROOM `192.168.0.243:38655` and tablet `R9PT70GX3PA`. Both `pm path` queries returned the installed package and both report `versionCode=1`, `minSdk=26`, `targetSdk=35`. No HOME setting was changed and no device was rebooted.
+- ROOM-HOME-04 system-action check: read-only `cmd package resolve-activity --brief -a android.settings.HOME_SETTINGS` returned `com.android.permissioncontroller/.role.ui.HomeSettingsActivity` on ROOM and `com.google.android.permissioncontroller/com.android.permissioncontroller.role.ui.HomeSettingsActivity` on the tablet. The system page was not launched and no setting was changed.
+- ROOM-HOME-04 work-unit commit: `6d68ff8` (`docs(android): record Home settings rollout`), recording both verified installs; the shared Git index remained unchanged.
 
 ## Relevant files
 
