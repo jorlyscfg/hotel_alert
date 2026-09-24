@@ -2,6 +2,8 @@ package com.hotelalert.notificationreceiver.ui
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.view.MotionEvent
+import android.view.ViewConfiguration
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -28,6 +30,7 @@ fun HotelWebView(
     bridge: HotelAlertWebBridge = HotelAlertWebBridge(),
     reloadKey: Int = 0,
     onMainFrameLoadFailure: () -> Unit = {},
+    onScreenTap: () -> Unit = {},
     modifier: Modifier = Modifier.fillMaxSize()
 ) {
     val context = LocalContext.current
@@ -37,6 +40,7 @@ fun HotelWebView(
                 createRestrictedWebView(context, serverOrigin, bridge, onMainFrameLoadFailure)
             },
             modifier = modifier,
+            update = { webView -> installTapObserver(webView, context, onScreenTap) },
             onRelease = { webView ->
                 webView.stopLoading()
                 webView.removeJavascriptInterface(NativeWebViewBridgeContract.name)
@@ -45,6 +49,38 @@ fun HotelWebView(
         )
     }
 }
+
+private fun installTapObserver(webView: WebView, context: Context, onScreenTap: () -> Unit) {
+    val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    var downX = 0f
+    var downY = 0f
+    var downAtMillis = 0L
+    var isTap = false
+    webView.setOnTouchListener { _, event ->
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = event.x
+                downY = event.y
+                downAtMillis = event.eventTime
+                isTap = true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val dx = event.x - downX
+                val dy = event.y - downY
+                if (dx * dx + dy * dy > touchSlop * touchSlop) isTap = false
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> isTap = false
+            MotionEvent.ACTION_UP -> {
+                if (isTap && event.eventTime - downAtMillis <= TAP_MAX_DURATION_MILLIS) onScreenTap()
+                isTap = false
+            }
+            MotionEvent.ACTION_CANCEL -> isTap = false
+        }
+        false
+    }
+}
+
+private const val TAP_MAX_DURATION_MILLIS = 500L
 
 @SuppressLint("SetJavaScriptEnabled")
 internal fun createRestrictedWebView(

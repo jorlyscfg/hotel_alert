@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.collectAsState
@@ -19,6 +20,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -31,8 +35,12 @@ import kotlinx.coroutines.withContext
 import com.hotelalert.notificationreceiver.protocol.ReceiverConfiguration
 import com.hotelalert.notificationreceiver.receiver.HotelNotificationReceiverService
 import com.hotelalert.notificationreceiver.receiver.RoomPresenceService
+import com.hotelalert.notificationreceiver.storage.AndroidRoomMaintenancePinStore
+import com.hotelalert.notificationreceiver.storage.RoomMaintenancePinVerification
 import com.hotelalert.notificationreceiver.ui.HotelWebView
 import com.hotelalert.notificationreceiver.ui.HotelAlertTheme
+import com.hotelalert.notificationreceiver.ui.RoomMaintenancePinDialog
+import com.hotelalert.notificationreceiver.ui.RoomMaintenanceSettingsScreen
 import com.hotelalert.notificationreceiver.ui.ReceiverScreen
 import com.hotelalert.notificationreceiver.ui.ServerOriginRecoveryScreen
 import com.hotelalert.notificationreceiver.ui.ServerOriginSetupScreen
@@ -50,6 +58,12 @@ class MainActivity : ComponentActivity() {
     private var notificationPermissionGranted by mutableStateOf(false)
     private var roomSessionConfigured = false
     private var roomSessionReceiverRegistered = false
+    private var maintenanceRoute by mutableStateOf(RoomMaintenanceRoute.CLOSED)
+    private var maintenancePinError by mutableStateOf<String?>(null)
+    private var maintenancePinChangeMessage by mutableStateOf<String?>(null)
+    private var isCheckingMaintenancePin by mutableStateOf(false)
+    private val maintenanceTapGate = RoomMaintenanceTapGate()
+    private val maintenancePinStore by lazy { AndroidRoomMaintenancePinStore(applicationContext) }
 
     private val homeRoleRequestLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -101,18 +115,38 @@ class MainActivity : ComponentActivity() {
                         }
                     )
                 } else {
-                    HotelWebView(
-                        serverOrigin = configuredOrigin,
-                        bridge = component.webBridge,
-                        reloadKey = webViewRecoveryState.reloadKey,
-                        onMainFrameLoadFailure = {
-                            webViewRecoveryState = webViewStateAfterLoadError(
-                                currentState = webViewRecoveryState,
-                                isForMainFrame = true,
-                                serverOrigin = configuredOrigin
+                    Box(Modifier.fillMaxSize()) {
+                        HotelWebView(
+                            serverOrigin = configuredOrigin,
+                            bridge = component.webBridge,
+                            reloadKey = webViewRecoveryState.reloadKey,
+                            onMainFrameLoadFailure = {
+                                webViewRecoveryState = webViewStateAfterLoadError(
+                                    currentState = webViewRecoveryState,
+                                    isForMainFrame = true,
+                                    serverOrigin = configuredOrigin
+                                )
+                            },
+                            onScreenTap = ::onRoomScreenTap
+                        )
+                        when (maintenanceRoute) {
+                            RoomMaintenanceRoute.CLOSED -> Unit
+                            RoomMaintenanceRoute.PIN -> RoomMaintenancePinDialog(
+                                errorMessage = maintenancePinError,
+                                isChecking = isCheckingMaintenancePin,
+                                onSubmit = ::verifyMaintenancePin,
+                                onDismiss = ::closeMaintenance
                             )
+                            RoomMaintenanceRoute.SETTINGS -> {
+                                BackHandler(onBack = ::closeMaintenance)
+                                RoomMaintenanceSettingsScreen(
+                                    pinChangeMessage = maintenancePinChangeMessage,
+                                    onChangePin = ::changeMaintenancePin,
+                                    onReturnToRoom = ::closeMaintenance
+                                )
+                            }
                         }
-                    )
+                    }
                 }
             }
         }
@@ -219,6 +253,11 @@ class MainActivity : ComponentActivity() {
             roomSessionConfigured = withContext(Dispatchers.IO) {
                 runCatching { component.hasConfiguredRoomPresenceSession() }.getOrDefault(false)
             }
+            if ((!roomSessionConfigured || diagnosticsMode) && maintenanceRoute != RoomMaintenanceRoute.CLOSED) {
+                maintenanceRoute = RoomMaintenanceRoute.CLOSED
+                maintenancePinError = null
+                maintenancePinChangeMessage = null
+            }
             updateRoomWindowMode()
 
             if (roomSessionConfigured) {
@@ -230,6 +269,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestHomeRoleIfNeeded() {
+        if (maintenanceRoute != RoomMaintenanceRoute.CLOSED) return
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
         val roleManager = getSystemService(RoleManager::class.java) ?: return
         val preferences = getSharedPreferences(ROOM_KIOSK_PREFERENCES, MODE_PRIVATE)
@@ -255,13 +295,80 @@ class MainActivity : ComponentActivity() {
         val immersive = shouldUseRoomImmersiveMode(
             hasRoomSession = roomSessionConfigured,
             hasServerOrigin = runCatching { component.serverOriginStore.read() != null }.getOrDefault(false),
-            showDiagnostics = diagnosticsMode
+            showDiagnostics = diagnosticsMode,
+            maintenanceActive = maintenanceRoute != RoomMaintenanceRoute.CLOSED
         )
         WindowCompat.setDecorFitsSystemWindows(window, !immersive)
         val controller = WindowCompat.getInsetsController(window, window.decorView)
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         if (immersive) controller.hide(WindowInsetsCompat.Type.systemBars())
         else controller.show(WindowInsetsCompat.Type.systemBars())
+    }
+
+    private fun onRoomScreenTap() {
+        val shouldOpenPin = maintenanceTapGate.onTap(
+            hasRoomSession = roomSessionConfigured && !diagnosticsMode,
+            maintenanceOpen = maintenanceRoute != RoomMaintenanceRoute.CLOSED,
+            nowMillis = System.currentTimeMillis()
+        )
+        if (shouldOpenPin) {
+            maintenancePinError = null
+            maintenanceRoute = RoomMaintenanceRoute.PIN
+            updateRoomWindowMode()
+        }
+    }
+
+    private fun verifyMaintenancePin(pin: String) {
+        if (isCheckingMaintenancePin) return
+        isCheckingMaintenancePin = true
+        maintenancePinError = null
+        lifecycleScope.launch {
+            val verification = runCatching {
+                withContext(Dispatchers.IO) {
+                    maintenancePinStore.verify(pin, System.currentTimeMillis())
+                }
+            }
+            isCheckingMaintenancePin = false
+            verification.onSuccess { result ->
+                when (result) {
+                    is RoomMaintenancePinVerification.Accepted -> {
+                        maintenancePinError = null
+                        maintenancePinChangeMessage = null
+                        maintenanceRoute = RoomMaintenanceRoute.SETTINGS
+                        updateRoomWindowMode()
+                    }
+                    is RoomMaintenancePinVerification.Rejected -> {
+                        maintenancePinError = "Incorrect PIN. ${result.attemptsRemaining} attempts remain."
+                    }
+                    is RoomMaintenancePinVerification.Locked -> {
+                        val seconds = ((result.retryAfterMillis + 999) / 1_000).coerceAtLeast(1)
+                        maintenancePinError = "Too many attempts. Try again in $seconds seconds."
+                    }
+                }
+            }.onFailure {
+                maintenancePinError = "The configuration PIN could not be checked. Please try again."
+            }
+        }
+    }
+
+    private fun changeMaintenancePin(pin: String) {
+        if (maintenanceRoute != RoomMaintenanceRoute.SETTINGS) return
+        lifecycleScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { maintenancePinStore.changePin(pin) }
+            }.onSuccess {
+                maintenancePinChangeMessage = "Configuration PIN updated."
+            }.onFailure {
+                maintenancePinChangeMessage = "The PIN could not be saved. Please try again."
+            }
+        }
+    }
+
+    private fun closeMaintenance() {
+        maintenanceRoute = RoomMaintenanceRoute.CLOSED
+        maintenancePinError = null
+        maintenancePinChangeMessage = null
+        updateRoomWindowMode()
     }
 
     companion object {
@@ -284,6 +391,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+private enum class RoomMaintenanceRoute { CLOSED, PIN, SETTINGS }
 
 internal fun shouldShowReceiverDiagnostics(intent: Intent): Boolean =
     shouldShowReceiverDiagnostics(

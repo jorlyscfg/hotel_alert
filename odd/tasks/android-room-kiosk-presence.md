@@ -12,7 +12,8 @@ ROOM assignment and live presence currently depend on the WebView's browser stor
 
 - Add native ROOM credential/session handoff after the existing web `/devices/bootstrap` registration succeeds; keep the web login, target selection, and server registration as the single enrollment flow.
 - Keep ROOM native presence separate from the existing AREA Socket.IO/snapshot/commands pipeline. Use the authenticated server session and heartbeat contracts, persist secrets in Android Keystore-backed storage, reconnect with bounded backoff, and clear native ROOM credentials after a confirmed revoked/inactive assignment.
-- Add a generic Android HOME/boot restoration path, fullscreen immersive ROOM mode, and a concealed repeated-tap maintenance gate protected by a per-device operator PIN; preserve setup/admin/AREA behavior.
+- Add a generic Android HOME/boot restoration path, fullscreen immersive ROOM mode, and a concealed four-tap maintenance gate protected by a four-digit configuration PIN; preserve setup/admin/AREA behavior.
+- Keep the ROOM platform experience in the existing web session. All Android maintenance and kiosk controls must be native and must not pass the PIN through JavaScript or the WebView bridge.
 - For a dependency-closed ARKP-01 work-unit commit, include the already-pending shared web login/role/room-target assignment flow and only its required styles, translations, persistence helpers, and focused tests. The user explicitly authorized this related commit scope on 2026-09-23; keep unrelated admin/media/localization changes out.
 - Support two deployment levels: ordinary manual installation + operator-selected HOME/immersive mode as the default, and optional Device Owner/Lock Task for strict single-app lockdown. Do not run ADB, configure a physical device, require factory reset, or claim ordinary HOME is a strict kiosk.
 - Provide operator instructions for HOME selection, optional Device Owner activation/removal, maintenance, and Android/OEM limitations. All behavior must remain generic across supported Android 26–35 devices.
@@ -24,7 +25,10 @@ ROOM assignment and live presence currently depend on the WebView's browser stor
 - Use a native Room presence runtime, not WebView timers and not the current AREA `dataSync` service. Target SDK is 35; verify foreground-service type/start rules and keep a visible low-priority service notification where Android requires it.
 - Keep the API's existing token/heartbeat semantics and server stale/offline thresholds; do not increase heartbeat frequency beyond the server's documented rate limit.
 - Use the same APK as both kiosk UI and (only when explicitly activated by an operator) its own Device Policy Controller. Device Owner is optional; do not make it a prerequisite for basic setup.
-- Never embed a shared maintenance PIN in the APK. Create/configure a device-specific PIN during ROOM commissioning and persist it using Android protected storage; support recovery by leaving the current shared admin authentication path available.
+- The user explicitly approved `0623` as the default Android configuration PIN. It may remain unchanged; changing it is optional and available only from the native maintenance settings screen. This intentionally shared default supersedes the earlier per-device-only PIN requirement. Persist the active verifier using Android-protected storage, keep PIN entry/verification/change native, and never expose the PIN to JavaScript or WebView state.
+- The native maintenance screen is available only for an active ROOM session. It must remain independent of the ROOM assignment and continue to preserve ROOM presence while maintenance is open or Android Settings is in the foreground.
+- Android HOME selection must use system consent where available; only Device Owner policy can persistently enforce HOME or enable strict Lock Task. Basic screen pinning must never be presented as a strict kiosk lock.
+- When Android Settings is opened from maintenance, exit Lock Task safely first and suppress automatic kiosk re-entry while maintenance is active. Re-enter the ROOM view and apply the requested strict lock only after the operator selects Save/Return and Android reports the policy is ready.
 - Existing changes are extensive and mixed; no broad reformat/revert. Use isolated staging for only the work-unit files/hunks. Existing `MM` files and the shared index must remain untouched.
 - Effective TDD: OFF, according to the active Android task configuration. Run ordinary functional checks.
 - Android runner (from `apps/android-notification-receiver`): `source /home/jorlys/.local/share/hotel-alert-env/android-toolchain.sh && ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:check`.
@@ -81,14 +85,35 @@ ROOM assignment and live presence currently depend on the WebView's browser stor
 - Work-unit committed: `dccd79a` (`feat(android): prepare room device owner lock task`), 344 authored lines across DPC registration, guarded Device Owner policy, focused tests, and operator guidance.
 - Progress: ☑ ARKP-02B complete and committed. Strict Lock Task must not be activated before a safe maintenance exit exists in ARKP-02C.
 
-#### ARKP-02C — Protect maintenance access with a device-specific PIN
+#### ARKP-02C — Add native ROOM maintenance and kiosk controls
 
-- Add a concealed repeated-tap maintenance entry, device-specific PIN setup/verification during ROOM commissioning, safe exit/unlock controls, and recovery through existing admin authentication; never embed a fleet PIN.
-- Persist the verifier with Android-protected storage and test setup, verification, failure/rate-limit, and recovery rules.
-- Document commissioning and maintenance steps.
-- Route: delegated direct writer; ownership assigned after ARKP-02B is verified.
-- Checks: focused Android tests, Android assemble/lint/check runner, and `git diff --check`. Physical interaction testing remains pending.
+**Forecast:** approximately 600–900 authored lines across native Android UI/policy, focused tests, and operator documentation. Preserve the established `stacked-to-main` delivery strategy on the existing feature branch. The two slices below are behavior boundaries, not size-only splits.
+
+**Route:** delegated direct. Mapping trigger evidence: the behavior crosses `MainActivity`, Compose UI, Android-protected storage, HOME role handling, DevicePolicyManager, tests, and operator documentation. Read-only mapping completed by `room_maint_surface_map` and CodeGraph. Writer trigger evidence: both slices modify multiple non-trivial Android, test, and documentation files. Effective TDD is OFF; use the Android Gradle runner recorded above.
+
+##### ARKP-02C.1 — Add native four-tap PIN maintenance entry
+
+- Observe four rapid taps anywhere in the active ROOM view without consuming or changing the underlying WebView gestures; only ROOM mode may open the gate.
+- Show a native Compose PIN-entry screen. Initialize the Android configuration PIN to `0623`; do not require changing it. The PIN may be changed from the native maintenance settings screen.
+- Keep PIN entry, verification, and updates native; use Android-protected storage for the verifier and persistent failed-attempt throttling. Do not route secrets through WebView/JavaScript or clear the ROOM assignment when entering maintenance.
+- Add focused unit tests for the four-tap recognition window, ROOM-only eligibility, default PIN initialization, verify/change behavior, and failed-attempt throttling.
+- Route: delegated direct writer; scope owner is the Android gesture policy, MainActivity state, native PIN Compose UI, PIN verifier/storage, focused tests, and the ARKP-02C operator documentation section. Preserve unrelated staged/unstaged changes.
+- Checks: focused Android tests, prescribed Android assemble/lint/check runner, and `git diff --check`. No device/ADB testing is included in this code task.
+- Verification observed: `RoomMaintenancePolicyTest`, `storage.RoomMaintenancePinPolicyTest`, and `RoomKioskPolicyTest` passed; prescribed `:app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:check` passed (78 tasks; 1 executed, 77 up-to-date); `git diff --check` passed. No ADB, emulator, or device was used. The native operator guide now documents the four-tap gate, default/optional PIN change, throttling, and return to ROOM.
+- Progress: ☑ implementation and automated checks complete; isolated work-unit commit is being prepared.
+- Planned work-unit commit: `feat(android): add native room maintenance pin gate`.
+
+##### ARKP-02C.2 — Add native Android settings, HOME, and strict-lock controls
+
+- In the native maintenance screen, show actual HOME/default-launcher status and a user-initiated action to choose Hotel Alert as HOME. Use `RoleManager` consent on supported Android versions and a system Settings fallback where needed; when Device Owner is active, allow the existing DPC to set/clear the persistent preferred HOME activity.
+- Add a strict kiosk-lock control. Enable actual Lock Task only when Device Owner allowlisting is confirmed; otherwise explain that strict lock is unavailable and preserve Basic mode without claiming screen pinning is unescapable.
+- Add an Android System Settings button. If strict Lock Task is active, stop it before launching system Settings; preserve the PIN-authorized maintenance state across Activity resume and do not re-enter kiosk mode until the operator saves/returns.
+- Add Save Changes and Return to ROOM behavior that persists the selected local kiosk preference, returns to the existing web-based ROOM session without changing assignment/presence, reapplies immersive mode, and enters strict Lock Task only when Android policy permits.
+- Add focused tests for HOME request/status/Device Owner persistence, strict-mode readiness and lifecycle suppression/restore, plus native operator instructions and supported Android/OEM limitations.
+- Route: delegated direct writer; scope owner is HOME/DPM policy adapter, MainActivity lifecycle/Settings launch, native maintenance settings UI, focused tests, and `docs/android-room-kiosk.md`. Preserve unrelated staged/unstaged changes.
+- Checks: focused Android tests, prescribed Android assemble/lint/check runner, and `git diff --check`. Physical OEM behavior and on-device provisioning remain unverified.
 - Progress: ☐ not started.
+- Planned work-unit commit: `feat(android): control room kiosk from native maintenance`.
 
 ## Acceptance Criteria
 
@@ -96,7 +121,9 @@ ROOM assignment and live presence currently depend on the WebView's browser stor
 - When WebView JavaScript is paused or the activity is not visible, a native ROOM runtime continues posting authenticated heartbeats; it never routes ROOM through AREA-only snapshots or commands.
 - Server/network transient errors retain valid credentials and retry with backoff; confirmed revocation clears local ROOM state without erasing the configured server origin and causes onboarding to reappear.
 - ROOM mode restores after device reboot and uses fullscreen immersive UI. Basic mode is available without Device Owner; strict Lock Task is enabled only when Android confirms the app is allowlisted by its Device Owner.
-- A repeated-tap gesture requires the device-specific maintenance PIN before exiting strict mode; no universal PIN is embedded. Existing admin login offers a documented recovery path.
+- Four rapid taps anywhere in active ROOM mode open a native PIN gate; default PIN is `0623`, it can remain unchanged, and it can optionally be changed from native settings. The ROOM web UI/assignment flow remains unchanged and the PIN never enters WebView/JavaScript.
+- PIN-authorized native settings can open Android System Settings, request/select the default HOME app, enable strict Lock Task when Device Owner is present, save, and return to ROOM. Lifecycle callbacks preserve maintenance until Save/Return.
+- Strict Lock Task is enabled only after Android confirms Device Owner allowlisting and a safe maintenance exit exists; Basic mode remains available without Device Owner and is never described as strict lock.
 - Area/admin behavior and all pre-existing project work remain intact. Tests/build/lint/check results and unavailable physical-device/OEM checks are reported honestly.
 
 ## Verification Evidence
@@ -107,6 +134,9 @@ ROOM assignment and live presence currently depend on the WebView's browser stor
 - Android Device Owner is an operator-provisioned management state; the APK cannot grant itself that authority. Avoid disabling system lock-task features absent an explicit recovery policy: https://developer.android.com/work/dpc/dedicated-devices/cookbook.
 - The official ADB reference documents `dpm set-device-owner` as a development command supported on Android 9/API 28+ and requires an eligible device state; production dedicated-device provisioning should use the organization's approved managed-device enrollment flow: https://developer.android.com/tools/adb ; https://developer.android.com/work/dpc/dedicated-devices/.
 - Android `RoleManager` is available from API 29; the system checks HOME-role availability, requires a qualifying HOME intent filter, and presents a user-consent request. Older versions need a manual operator fallback: https://developer.android.com/reference/android/app/role/RoleManager.
+- Android's `RoleManager.createRequestRoleIntent()` explicitly prompts the user to grant HOME; `DevicePolicyManager.addPersistentPreferredActivity()` requires profile/device-owner authority to set a persistent default intent handler: https://developer.android.com/reference/android/app/role/RoleManager ; https://developer.android.com/reference/android/app/admin/DevicePolicyManager#addPersistentPreferredActivity(android.content.ComponentName,android.content.IntentFilter,android.content.ComponentName).
+- Android restricts background Activity launches starting in API 29; a normal HOME selection does not authorize arbitrary foreground launches when the screen wakes: https://developer.android.com/guide/components/activities/background-starts.
+- FreeKiosk documents its hidden multi-tap PIN entry, separate Basic and Device Owner modes, and Android Settings access; these are useful UX patterns, not a way around Android Device Owner requirements: https://github.com/RushB-fr/freekiosk/blob/main/docs/installation.md ; https://github.com/RushB-fr/freekiosk/blob/main/CHANGELOG.md.
 - Android 15 target-35 boot restrictions explicitly prohibit boot-starting selected FGS types (including `dataSync`) but list no generic Activity launch allowance; the app must not start its fullscreen Activity directly from a boot receiver: https://developer.android.com/about/versions/15/behavior-changes-15.
 - Android target-35 documentation prohibits launching `dataSync` FGS from `BOOT_COMPLETED` and imposes a six-hour-per-day `dataSync` cap; FGS starts also have background restrictions. Do not reuse AREA's `dataSync` service for ROOM presence: https://developer.android.com/about/versions/15/changes/foreground-service-types ; https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start.
 - Android `specialUse` FGS requires manifest subtype disclosure and may be subject to Play review; verify the exact service classification before implementation and document it: https://developer.android.com/about/versions/14/changes/fgs-types-required.
@@ -116,7 +146,7 @@ ROOM assignment and live presence currently depend on the WebView's browser stor
 
 ## Next Step
 
-ARKP-01 is complete on the existing feature branch in two dependency-closed commits: web onboarding/bridges `d5d8e87`, then Android ROOM presence `790ed96`; tracker evidence is committed as `cbebab0`. ARKP-02A is complete and committed as `fbf67b9`. ARKP-02B is complete in `dccd79a` with no app entry to Lock Task. Next, map ARKP-02C's local PIN setup/maintenance-exit flow against `HEAD=dccd79a`, then implement and test the device-specific PIN recovery before any strict Lock Task entry. Preserve AREA/Admin behavior. Do not run ADB or configure a device, create another branch, push, or open a PR. No on-device verification is claimed.
+ARKP-01 is complete on the existing feature branch in two dependency-closed commits: web onboarding/bridges `d5d8e87`, then Android ROOM presence `790ed96`; tracker evidence is committed as `cbebab0`. ARKP-02A is complete and committed as `fbf67b9`. ARKP-02B is complete in `dccd79a` with tracker evidence `06812da`; no app entry to Lock Task exists. ARKP-02C read-only mapping is complete. The user resolved the open design decisions: the PIN is native configuration PIN `0623` by default and may be changed but need not be; Android maintenance/settings are native while the ROOM platform view remains web-based. C.1 implementation and automated checks are complete; isolate and commit it before implementing C.2 on the existing branch. Preserve AREA/Admin behavior and the shared index. Do not run ADB or configure a device, create another branch, push, or open a PR. No on-device verification is claimed.
 
 ## Relevant Files
 

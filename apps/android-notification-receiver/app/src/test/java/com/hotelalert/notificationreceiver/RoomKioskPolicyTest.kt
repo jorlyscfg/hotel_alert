@@ -11,6 +11,12 @@ class RoomKioskPolicyTest {
         assertFalse(shouldUseRoomImmersiveMode(hasRoomSession = false, hasServerOrigin = true, showDiagnostics = false))
         assertFalse(shouldUseRoomImmersiveMode(hasRoomSession = true, hasServerOrigin = false, showDiagnostics = false))
         assertFalse(shouldUseRoomImmersiveMode(hasRoomSession = true, hasServerOrigin = true, showDiagnostics = true))
+        assertFalse(shouldUseRoomImmersiveMode(
+            hasRoomSession = true,
+            hasServerOrigin = true,
+            showDiagnostics = false,
+            maintenanceActive = true
+        ))
     }
 
     @Test

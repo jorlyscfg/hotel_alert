@@ -3,8 +3,9 @@ package com.hotelalert.notificationreceiver
 internal fun shouldUseRoomImmersiveMode(
     hasRoomSession: Boolean,
     hasServerOrigin: Boolean,
-    showDiagnostics: Boolean
-): Boolean = hasRoomSession && hasServerOrigin && !showDiagnostics
+    showDiagnostics: Boolean,
+    maintenanceActive: Boolean = false
+): Boolean = hasRoomSession && hasServerOrigin && !showDiagnostics && !maintenanceActive
 
 internal fun shouldRequestHomeRole(
     apiLevel: Int,
