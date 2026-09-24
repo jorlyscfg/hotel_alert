@@ -71,11 +71,15 @@ ROOM assignment and live presence currently depend on the WebView's browser stor
 #### ARKP-02B — Add optional strict Device Owner Lock Task
 
 - Add a same-app DeviceAdminReceiver and Device Owner-only Lock Task allowlist/configuration; query Android policy before entering, and never fall back to screen pinning as if it were strict mode.
+- Keep actual Lock Task entry disabled until ARKP-02C adds a tested local maintenance PIN and a safe exit; ARKP-02B prepares only DPC registration and a guarded policy/controller.
 - Provide explicit operator-facing activation/removal instructions; do not configure a device or execute ADB during this code task.
 - Add policy decision tests and documentation. Preserve a working Basic mode without Device Owner.
-- Route: delegated direct writer; ownership assigned after ARKP-02A is verified.
+- Route: delegated direct. Read-only mapping completed by `/root/map_arkp01_commit_hunks` against `HEAD=0c08e6d`. Writer `/root/map_arkp01_commit_hunks` owned only manifest DPC registration, new receiver/policy/XML, focused tests, and `docs/android-room-kiosk.md`; `MainActivity` was not changed to enter Lock Task.
 - Checks: focused policy tests, Android assemble/lint/check runner, and `git diff --check`. Device Owner provisioning remains operator/device-matrix verification.
-- Progress: ☐ not started.
+- Verification observed: focused policy/controller unit tests passed; parent reran `source /home/jorlys/.local/share/hotel-alert-env/android-toolchain.sh && ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:check` successfully (78 tasks, 1 executed and 77 up-to-date); `git diff --check` passed. No device, emulator, ADB, staging, or shared-index mutation was used.
+- Implemented: same-app `DeviceAdminReceiver` registration with system-protected binding permission and XML metadata; a Device Owner guarded policy adapter allowlists only Hotel Alert after a ROOM session is present; strict-mode readiness requires a valid ROOM session, Device Owner authority, package allowlisting, explicit opt-in, and a local maintenance exit. The wrapper is not yet called by the app and no `startLockTask()` entry exists. Operator docs distinguish ordinary Basic mode from optional, operator-provisioned Device Owner and include recovery constraints.
+- Work-unit committed: `dccd79a` (`feat(android): prepare room device owner lock task`), 344 authored lines across DPC registration, guarded Device Owner policy, focused tests, and operator guidance.
+- Progress: ☑ ARKP-02B complete and committed. Strict Lock Task must not be activated before a safe maintenance exit exists in ARKP-02C.
 
 #### ARKP-02C — Protect maintenance access with a device-specific PIN
 
@@ -99,6 +103,9 @@ ROOM assignment and live presence currently depend on the WebView's browser stor
 
 - FreeKiosk's current installation/features documentation distinguishes Basic auto-start/partial lock from Device Owner strict Lock Task. Its setup guide documents `dpm set-device-owner` and says factory reset is typically not needed when account/device state allows; some OEM/device states may still require remediation.
 - Android official Lock Task documentation confirms only DPC-allowlisted apps can enter real Lock Task; screen pinning is user-exitable: https://developer.android.com/work/dpc/dedicated-devices/lock-task-mode.
+- Android's DeviceAdminReceiver contract requires the system-protected `BIND_DEVICE_ADMIN` permission, device-admin XML metadata, and `DEVICE_ADMIN_ENABLED` intent filter: https://developer.android.com/reference/android/app/admin/DeviceAdminReceiver.
+- Android Device Owner is an operator-provisioned management state; the APK cannot grant itself that authority. Avoid disabling system lock-task features absent an explicit recovery policy: https://developer.android.com/work/dpc/dedicated-devices/cookbook.
+- The official ADB reference documents `dpm set-device-owner` as a development command supported on Android 9/API 28+ and requires an eligible device state; production dedicated-device provisioning should use the organization's approved managed-device enrollment flow: https://developer.android.com/tools/adb ; https://developer.android.com/work/dpc/dedicated-devices/.
 - Android `RoleManager` is available from API 29; the system checks HOME-role availability, requires a qualifying HOME intent filter, and presents a user-consent request. Older versions need a manual operator fallback: https://developer.android.com/reference/android/app/role/RoleManager.
 - Android 15 target-35 boot restrictions explicitly prohibit boot-starting selected FGS types (including `dataSync`) but list no generic Activity launch allowance; the app must not start its fullscreen Activity directly from a boot receiver: https://developer.android.com/about/versions/15/behavior-changes-15.
 - Android target-35 documentation prohibits launching `dataSync` FGS from `BOOT_COMPLETED` and imposes a six-hour-per-day `dataSync` cap; FGS starts also have background restrictions. Do not reuse AREA's `dataSync` service for ROOM presence: https://developer.android.com/about/versions/15/changes/foreground-service-types ; https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start.
@@ -109,7 +116,7 @@ ROOM assignment and live presence currently depend on the WebView's browser stor
 
 ## Next Step
 
-ARKP-01 is complete on the existing feature branch in two dependency-closed commits: web onboarding/bridges `d5d8e87`, then Android ROOM presence `790ed96`; tracker evidence is committed as `cbebab0`. ARKP-02A is complete and committed as `fbf67b9`; its operator guide is `docs/android-room-kiosk.md`. Next implement ARKP-02B, optional Device Owner Lock Task. Preserve AREA/Admin behavior. Do not run ADB or configure a device, create another branch, push, or open a PR. No on-device verification is claimed.
+ARKP-01 is complete on the existing feature branch in two dependency-closed commits: web onboarding/bridges `d5d8e87`, then Android ROOM presence `790ed96`; tracker evidence is committed as `cbebab0`. ARKP-02A is complete and committed as `fbf67b9`. ARKP-02B is complete in `dccd79a` with no app entry to Lock Task. Next, map ARKP-02C's local PIN setup/maintenance-exit flow against `HEAD=dccd79a`, then implement and test the device-specific PIN recovery before any strict Lock Task entry. Preserve AREA/Admin behavior. Do not run ADB or configure a device, create another branch, push, or open a PR. No on-device verification is claimed.
 
 ## Relevant Files
 
@@ -117,6 +124,10 @@ ARKP-01 is complete on the existing feature branch in two dependency-closed comm
 - `apps/android-notification-receiver/app/src/main/java/com/hotelalert/notificationreceiver/RoomKioskPolicy.kt` — pure ROOM fullscreen/HOME/boot restoration predicates.
 - `apps/android-notification-receiver/app/src/main/java/com/hotelalert/notificationreceiver/receiver/RoomPresenceRestoreReceiver.kt` — gated ROOM service restoration after boot/package replacement.
 - `apps/android-notification-receiver/app/src/test/java/com/hotelalert/notificationreceiver/RoomKioskPolicyTest.kt` — HOME/fullscreen/restoration policy tests.
+- `apps/android-notification-receiver/app/src/main/java/com/hotelalert/notificationreceiver/admin/HotelAlertDeviceAdminReceiver.kt` — same-app DPC receiver declaration.
+- `apps/android-notification-receiver/app/src/main/java/com/hotelalert/notificationreceiver/admin/RoomLockTaskPolicy.kt` and `AndroidRoomLockTaskDevicePolicy.kt` — pure eligibility predicates and guarded DPM adapter; strict entry remains disabled.
+- `apps/android-notification-receiver/app/src/main/res/xml/device_admin.xml` — DPC metadata with no legacy admin policies requested.
+- `apps/android-notification-receiver/app/src/test/java/com/hotelalert/notificationreceiver/admin/RoomLockTaskPolicyTest.kt` and `RoomLockTaskControllerTest.kt` — ROOM/owner/allowlist/maintenance-gate policy tests.
 - `docs/android-room-kiosk.md` — operator guide for the native ROOM HOME/boot/immersive flow (ARKP-02A).
 - `apps/android-notification-receiver/app/src/main/java/com/hotelalert/notificationreceiver/MainActivity.kt` — WebView Activity and lifecycle.
 - `apps/android-notification-receiver/app/src/main/java/com/hotelalert/notificationreceiver/web/NativeWebViewBridge.kt` — native bridge called from web onboarding.
