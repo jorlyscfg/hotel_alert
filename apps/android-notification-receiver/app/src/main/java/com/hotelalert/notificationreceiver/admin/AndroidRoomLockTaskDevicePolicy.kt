@@ -31,6 +31,21 @@ internal class AndroidRoomLockTaskDevicePolicy(context: Context) : RoomLockTaskD
         maintenanceExitAvailable = maintenanceExitAvailable
     )
 
+    fun isDeviceOwner(): Boolean = devicePolicyManager.isDeviceOwnerApp(appContext.packageName)
+
+    /** Removes only this app from the existing allowlist; Android exits its strict Lock Task. */
+    fun removeAppFromLockTaskAllowlistForMaintenance(): Boolean {
+        if (!isDeviceOwner()) return false
+        return try {
+            val remainingPackages = devicePolicyManager.getLockTaskPackages(adminComponent)
+                .filterNot { it == appContext.packageName }
+            devicePolicyManager.setLockTaskPackages(adminComponent, remainingPackages.toTypedArray())
+            !devicePolicyManager.isLockTaskPermitted(appContext.packageName)
+        } catch (_: SecurityException) {
+            false
+        }
+    }
+
     override fun isDeviceOwner(packageName: String): Boolean =
         devicePolicyManager.isDeviceOwnerApp(packageName)
 
