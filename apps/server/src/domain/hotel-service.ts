@@ -1219,6 +1219,9 @@ export class HotelService {
       if (!room.active || !service.active || !area.active) {
         throw new AppError('INACTIVE_DEPENDENCY', 'The room, service, and responsible area must all be active.', 409);
       }
+      if (room.do_not_disturb) {
+        throw new AppError('RESOURCE_CONFLICT', 'Room service requests are unavailable while do-not-disturb is enabled.', 409);
+      }
       const id = createId('req');
       this.db.prepare(`INSERT INTO requests(
         id, room_id, service_id, responsible_area_id, status, version, created_by_actor_type, created_by_actor_id,

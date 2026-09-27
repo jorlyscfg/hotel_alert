@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadConfig, type ServerConfig } from '../../apps/server/src/config/env';
 import { closeDatabase, openDatabase, runMigrations, type SqliteDatabase } from '../../apps/server/src/db/connection';
 import { HotelService, type RequestFilters } from '../../apps/server/src/domain/hotel-service';
+import { AppError } from '../../apps/server/src/errors';
 import type { Actor } from '../../apps/server/src/security/principal';
 
 const systemActor: Actor = { actorType: 'SYSTEM', actorId: null };
@@ -56,6 +57,45 @@ describe('HotelService request access', () => {
     expect(service.getRequestHistory(principal, created.id)).toHaveLength(1);
   });
 
+  it('rejects new requests while do-not-disturb is active and preserves successful idempotent replays', () => {
+    const area = service.createArea({ code: 'dnd-housekeeping', displayName: 'Housekeeping' }, systemActor, 'dnd-setup-area');
+    const room = service.createRoom({ code: 'dnd-101', displayName: 'Room 101' }, systemActor, 'dnd-setup-room');
+    const catalogService = service.createService({
+      code: 'dnd-towels',
+      displayName: 'Fresh towels',
+      areaId: area.id
+    }, systemActor, 'dnd-setup-service');
+    const device = service.bootstrapDevice({
+      installationId: 'dnd-installation-101',
+      displayName: 'Room 101 tablet',
+      assignmentMode: 'ROOM',
+      roomId: room.id
+    }, systemActor, 'dnd-setup-device');
+    const principal = service.authenticateDeviceToken(device.deviceToken).principal;
+
+    service.setRoomDoNotDisturb(principal, true, 'dnd-enable', 'dnd-enable');
+    let dndError: unknown;
+    try {
+      service.createRequest(principal, catalogService.id, 'blocked-request-key', 'blocked-request');
+    } catch (error) {
+      dndError = error;
+    }
+
+    expect(dndError).toBeInstanceOf(AppError);
+    expect(dndError).toMatchObject({ code: 'RESOURCE_CONFLICT', statusCode: 409 });
+    expect((database.prepare('SELECT COUNT(*) AS count FROM requests WHERE room_id = ?').get(room.id) as { count: number }).count).toBe(0);
+
+    service.setRoomDoNotDisturb(principal, false, 'dnd-disable', 'dnd-disable');
+    const created = service.createRequest(principal, catalogService.id, 'replay-request-key', 'replay-request');
+    expect(created.idempotentReplay).toBe(false);
+    service.setRoomDoNotDisturb(principal, true, 'dnd-enable-again', 'dnd-enable-again');
+
+    const replayed = service.createRequest(principal, catalogService.id, 'replay-request-key', 'replay-request-again');
+
+    expect(replayed.idempotentReplay).toBe(true);
+    expect(replayed.data).toEqual(created.data);
+    expect((database.prepare('SELECT COUNT(*) AS count FROM requests WHERE room_id = ?').get(room.id) as { count: number }).count).toBe(1);
+  });
   it('includes the configured service icon in request references', () => {
     const area = service.createArea({ code: 'test-maintenance', displayName: 'Maintenance' }, systemActor, 'setup-area');
     const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');

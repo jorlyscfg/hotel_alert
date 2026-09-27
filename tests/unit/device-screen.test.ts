@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import * as deviceScreenModule from '../../apps/web/src/features/device/DeviceScreen';
 import {
   DeviceScreen,
+  RoomAreaServices,
   chunkServices,
   filterAreaRequests,
   formatAreaRequestAge,
@@ -252,6 +253,39 @@ describe('device pending alert helpers', () => {
     expect(groupedMarkup).not.toContain('service-page-rail');
     expect(legacyMarkup).toContain('service-page-rail');
     expect(legacyMarkup).toContain('<strong>Fresh towels</strong>');
+  });
+
+  it('disables ROOM service actions while do-not-disturb is active and restores them when disabled', () => {
+    const renderDeviceScreen = (snapshot: DeviceSyncSnapshot): string => renderToStaticMarkup(createElement(DeviceScreen, {
+      snapshot,
+      deviceToken: 'device-token',
+      connectionStatus: 'online',
+      onRefresh: async () => undefined,
+      onOpenAdmin: () => undefined,
+      onAuthFailure: () => undefined
+    }));
+    const activeMarkup = renderDeviceScreen(createRoomSnapshot(true));
+    const inactiveMarkup = renderDeviceScreen(createRoomSnapshot(false));
+    const groupedSnapshot = createRoomSnapshot(true);
+    groupedSnapshot.config.areas = [{
+      id: 'area_default_housekeeping',
+      code: 'housekeeping',
+      displayName: 'Housekeeping'
+    }];
+    const groupedMarkup = renderDeviceScreen(groupedSnapshot);
+    const service = groupedSnapshot.config.services[0];
+    if (service === undefined) throw new Error('Expected the room snapshot to include a service.');
+    const areaServicesMarkup = renderToStaticMarkup(createElement(RoomAreaServices, {
+      services: [service],
+      disabled: true,
+      onSelect: () => undefined
+    }));
+
+    expect(activeMarkup).toMatch(/<button class="service-tile" type="button" disabled=""/);
+    expect(activeMarkup).not.toContain('room-area-card');
+    expect(inactiveMarkup).not.toMatch(/<button class="service-tile" type="button" disabled=""/);
+    expect(groupedMarkup).toMatch(/<button class="service-tile room-area-card[^>]*disabled=""/);
+    expect(areaServicesMarkup).toMatch(/<button class="service-tile" type="button" disabled=""/);
   });
 
   it('renders ROOM area groups inside explicit page wrappers', () => {

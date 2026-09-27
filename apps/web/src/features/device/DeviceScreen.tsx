@@ -472,6 +472,7 @@ function useViewportSize(): ViewportSize | null {
 
 function RoomDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onRefresh, onOpenAdmin, onAuthFailure, roomRequestNotificationsUnread = false, onClearRoomRequestNotifications }: DeviceDisplayProps) {
   const { locale, t } = useI18n();
+  const doNotDisturbEnabled = snapshot.config.room?.doNotDisturb ?? false;
   const [selectedService, setSelectedService] = useState<ServiceDTO | null>(null);
   const [selectedAreaId, setSelectedAreaId] = useState<string | null>(null);
   const [queuedRequests, setQueuedRequests] = useState<QueuedRoomRequest[]>(() => getRoomRequestQueue({ deviceId: snapshot.device.id }));
@@ -493,6 +494,12 @@ function RoomDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
   const servicePages = chunkServices(snapshot.config.services, servicePageSize);
   const lastPageIndex = Math.max(servicePages.length - 1, 0);
   const boundedActivePage = Math.min(activePage, lastPageIndex);
+
+  useEffect(() => {
+    if (!doNotDisturbEnabled) return;
+    setSelectedAreaId(null);
+    setSelectedService(null);
+  }, [doNotDisturbEnabled]);
 
   useEffect(() => {
     setActivePage((page) => Math.min(page, lastPageIndex));
@@ -599,7 +606,10 @@ function RoomDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
                           className={`service-tile room-area-card room-area-card--${tint}`}
                           type="button"
                           key={area.id}
-                          onClick={() => setSelectedAreaId(area.id)}
+                          onClick={() => {
+                            if (!doNotDisturbEnabled) setSelectedAreaId(area.id);
+                          }}
+                          disabled={doNotDisturbEnabled}
                           aria-haspopup="dialog"
                           aria-expanded={selectedAreaId === area.id}
                         >
@@ -635,7 +645,7 @@ function RoomDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
                       {servicePages.map((services, pageIndex) => (
                         <div className={`service-page service-page--${resolveRoomServicePagePosition(pageIndex, boundedActivePage)}`} key={services[0]?.id ?? 'service-page'}>
                           <div className="service-grid">
-                            {services.map((service) => <ServiceTile key={service.id} service={service} onSelect={setSelectedService} />)}
+                            {services.map((service) => <ServiceTile key={service.id} service={service} onSelect={setSelectedService} disabled={doNotDisturbEnabled} />)}
                           </div>
                        </div>
                      ))}
@@ -658,7 +668,7 @@ function RoomDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
             />
           </div>
           <RoomDoNotDisturbControl
-           enabled={snapshot.config.room?.doNotDisturb ?? false}
+           enabled={doNotDisturbEnabled}
            deviceToken={deviceToken}
            connectionStatus={connectionStatus}
            onRefresh={onRefresh}
@@ -670,7 +680,7 @@ function RoomDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
        </div>
 
        <ServiceRequestDialog
-        service={selectedService}
+        service={doNotDisturbEnabled ? null : selectedService}
         deviceToken={deviceToken}
         deviceId={snapshot.device.id}
         connectionStatus={connectionStatus}
@@ -682,7 +692,7 @@ function RoomDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
          onQueueError={setQueueError}
        />
         <Modal
-          open={selectedArea !== null}
+          open={selectedArea !== null && !doNotDisturbEnabled}
           title={selectedArea === null ? t('device.guestServices') : resolveLocalizedDisplayName(selectedArea.area, locale)}
           onClose={() => setSelectedAreaId(null)}
           closeLabel={t('common.closeDialog')}
@@ -691,7 +701,9 @@ function RoomDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
            {selectedArea !== null && (
              <RoomAreaServices
                services={selectedArea.services}
+               disabled={doNotDisturbEnabled}
                onSelect={(nextService) => {
+                 if (doNotDisturbEnabled) return;
                  setSelectedAreaId(null);
                  setSelectedService(nextService);
                }}
@@ -704,10 +716,11 @@ function RoomDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
 
 interface RoomAreaServicesProps {
   services: readonly ServiceDTO[];
+  disabled?: boolean;
   onSelect: (service: ServiceDTO) => void;
 }
 
-export function RoomAreaServices({ services, onSelect }: RoomAreaServicesProps) {
+export function RoomAreaServices({ services, onSelect, disabled = false }: RoomAreaServicesProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [overflow, setOverflow] = useState<RoomAreaOverflow>({ canScrollPrevious: false, canScrollNext: false });
   const servicePageKey = services.map((service) => service.id).join('|');
@@ -746,6 +759,7 @@ export function RoomAreaServices({ services, onSelect }: RoomAreaServicesProps) 
                 key={service.id}
                 service={service}
                 onSelect={onSelect}
+                disabled={disabled}
                 autoFocus={pageIndex === 0 && serviceIndex === 0}
               />
             ))}
@@ -762,13 +776,14 @@ export function RoomAreaServices({ services, onSelect }: RoomAreaServicesProps) 
 interface ServiceTileProps {
   service: ServiceDTO;
   onSelect: (service: ServiceDTO) => void;
+  disabled?: boolean;
   autoFocus?: boolean;
 }
 
-function ServiceTile({ service, onSelect, autoFocus = false }: ServiceTileProps) {
+function ServiceTile({ service, onSelect, disabled = false, autoFocus = false }: ServiceTileProps) {
   const { locale } = useI18n();
 
-  return <button className="service-tile" type="button" onClick={() => onSelect(service)} data-autofocus={autoFocus ? true : undefined}>
+  return <button className="service-tile" type="button" onClick={() => onSelect(service)} disabled={disabled} data-autofocus={autoFocus ? true : undefined}>
     <span className="service-tile__icon"><ServiceIcon iconKey={service.iconKey} size={27} /></span>
     <span className="service-tile__body">
       <strong>{resolveServiceDisplayName(service, locale)}</strong>
