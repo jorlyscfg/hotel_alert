@@ -1,6 +1,6 @@
 import { createElement, type ComponentType } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as deviceScreenModule from '../../apps/web/src/features/device/DeviceScreen';
 import {
   DeviceScreen,
@@ -277,15 +277,69 @@ describe('device pending alert helpers', () => {
     if (service === undefined) throw new Error('Expected the room snapshot to include a service.');
     const areaServicesMarkup = renderToStaticMarkup(createElement(RoomAreaServices, {
       services: [service],
-      disabled: true,
+      doNotDisturbEnabled: true,
       onSelect: () => undefined
     }));
 
-    expect(activeMarkup).toMatch(/<button class="service-tile" type="button" disabled=""/);
+    expect(activeMarkup).toMatch(/<button class="service-tile(?: [^"]*)?" type="button" aria-disabled="true"/);
+    expect(activeMarkup).not.toMatch(/<button class="service-tile"[^>]* disabled=""/);
     expect(activeMarkup).not.toContain('room-area-card');
-    expect(inactiveMarkup).not.toMatch(/<button class="service-tile" type="button" disabled=""/);
-    expect(groupedMarkup).toMatch(/<button class="service-tile room-area-card[^>]*disabled=""/);
-    expect(areaServicesMarkup).toMatch(/<button class="service-tile" type="button" disabled=""/);
+    expect(inactiveMarkup).not.toMatch(/<button class="service-tile"[^>]*aria-disabled="true"/);
+    expect(groupedMarkup).toMatch(/<button class="service-tile room-area-card[^>]*aria-disabled="true"/);
+    expect(areaServicesMarkup).toMatch(/<button class="service-tile(?: [^"]*)?" type="button" aria-disabled="true"/);
+  });
+
+  it('routes service and area taps to the DND explanation instead of opening the request flow', () => {
+    type HandlerFactory = (doNotDisturbEnabled: boolean, onActivate: () => void, onBlockedTap: () => void) => () => void;
+    const candidate = (deviceScreenModule as unknown as Record<string, unknown>)['createRoomServiceControlClickHandler'];
+    expect(typeof candidate).toBe('function');
+    if (typeof candidate !== 'function') return;
+
+    const createHandler = candidate as HandlerFactory;
+    const openRequest = vi.fn();
+    const openArea = vi.fn();
+    const showExplanation = vi.fn();
+
+    createHandler(true, openRequest, showExplanation)();
+    createHandler(true, openArea, showExplanation)();
+
+    expect(showExplanation).toHaveBeenCalledTimes(2);
+    expect(openRequest).not.toHaveBeenCalled();
+    expect(openArea).not.toHaveBeenCalled();
+
+    createHandler(false, openRequest, showExplanation)();
+    expect(openRequest).toHaveBeenCalledOnce();
+  });
+
+  it('renders the DND request explanation in English and Spanish', () => {
+    type NoticeProps = { open: boolean; onClose: () => void };
+    const candidate = (deviceScreenModule as unknown as Record<string, unknown>)['RoomDoNotDisturbExplanation'];
+    expect(typeof candidate).toBe('function');
+    if (typeof candidate !== 'function') return;
+    const Notice = candidate as ComponentType<NoticeProps>;
+    const previousWindow = globalThis.window;
+    let selectedLocale = 'en';
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { localStorage: { getItem: () => selectedLocale, setItem: () => undefined } }
+    });
+
+    try {
+      const render = () => renderToStaticMarkup(createElement(I18nProvider, {
+        children: createElement(Notice, { open: true, onClose: () => undefined })
+      }));
+      const englishMarkup = render();
+      selectedLocale = 'es';
+      const spanishMarkup = render();
+
+      expect(englishMarkup).toContain('Requests are paused');
+      expect(englishMarkup).toContain('Turn off Do not disturb for this room before requesting a service.');
+      expect(spanishMarkup).toContain('Solicitudes pausadas');
+      expect(spanishMarkup).toContain('Desactiva «No molestar» en esta habitación para poder solicitar un servicio.');
+    } finally {
+      if (previousWindow === undefined) Reflect.deleteProperty(globalThis, 'window');
+      else Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow });
+    }
   });
 
   it('renders ROOM area groups inside explicit page wrappers', () => {

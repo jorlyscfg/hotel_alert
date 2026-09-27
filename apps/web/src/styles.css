@@ -378,6 +378,8 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
   .app-frame--room .room-area-card { background: var(--room-area-card-surface-fallback); }
   .app-frame--room .room-area-card:hover { background: var(--room-area-card-hover-surface-fallback); }
 }
+.app-frame--room .service-tile[aria-disabled="true"] { cursor: not-allowed; filter: grayscale(0.2); opacity: 0.58; }
+.app-frame--room .service-tile[aria-disabled="true"]:hover { border-color: var(--room-line); box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06); transform: none; }
 .service-tile__icon, .dialog__icon { align-items: center; color: var(--ink); display: inline-flex; flex: 0 0 auto; font-family: Georgia, serif; font-size: 1.55rem; height: 48px; justify-content: center; width: 48px; }
 .service-tile__icon { background: transparent; border: 0; border-radius: 0; box-shadow: none; padding: 0; }
 .service-tile__icon svg { display: block; }
