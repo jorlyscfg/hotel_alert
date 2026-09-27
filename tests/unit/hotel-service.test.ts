@@ -425,6 +425,9 @@ describe('HotelService request access', () => {
     const secondRoom = service.createRoom({ code: '101', displayName: 'Room 101', displayOrder: 10, doNotDisturb: true }, systemActor, 'setup-room-101');
     service.createRoom({ code: '202', displayName: 'Room 202', displayOrder: 5, doNotDisturb: true, active: false }, systemActor, 'setup-room-inactive');
     service.createRoom({ code: '404', displayName: 'Room 404', displayOrder: 1, doNotDisturb: false }, systemActor, 'setup-room-404');
+    const unassignedRoom = service.createRoom({ code: '606', displayName: 'Room 606', displayOrder: 15, doNotDisturb: true }, systemActor, 'setup-room-606');
+    const inactiveStationRoom = service.createRoom({ code: '707', displayName: 'Room 707', displayOrder: 16, doNotDisturb: true }, systemActor, 'setup-room-707');
+    const retiredStationRoom = service.createRoom({ code: '808', displayName: 'Room 808', displayOrder: 17, doNotDisturb: true }, systemActor, 'setup-room-808');
     const areaDevice = service.bootstrapDevice({
       installationId: 'installation-area',
       displayName: 'Housekeeping console',
@@ -437,6 +440,26 @@ describe('HotelService request access', () => {
       assignmentMode: 'ROOM',
       roomId: secondRoom.id
     }, systemActor, 'setup-room-device');
+    service.bootstrapDevice({
+      installationId: 'installation-room-305',
+      displayName: 'Room 305 tablet',
+      assignmentMode: 'ROOM',
+      roomId: firstRoom.id
+    }, systemActor, 'setup-room-device-305');
+    const inactiveStation = service.bootstrapDevice({
+      installationId: 'installation-room-707',
+      displayName: 'Room 707 tablet',
+      assignmentMode: 'ROOM',
+      roomId: inactiveStationRoom.id
+    }, systemActor, 'setup-room-device-707');
+    const retiredStation = service.bootstrapDevice({
+      installationId: 'installation-room-808',
+      displayName: 'Room 808 tablet',
+      assignmentMode: 'ROOM',
+      roomId: retiredStationRoom.id
+    }, systemActor, 'setup-room-device-808');
+    database.prepare('UPDATE devices SET active = 0 WHERE id = ?').run(inactiveStation.device.id);
+    database.prepare('UPDATE devices SET active = 0, retired_at = ? WHERE id = ?').run(new Date().toISOString(), retiredStation.device.id);
 
     const areaSnapshot = service.getDeviceSnapshot(service.authenticateDeviceToken(areaDevice.deviceToken).principal) as {
       activeDoNotDisturbRooms?: Array<{ code: string; displayName: string }>;
@@ -445,6 +468,7 @@ describe('HotelService request access', () => {
 
     expect(areaSnapshot.activeDoNotDisturbRooms?.map((room) => room.code)).toEqual(['101', '305']);
     expect(areaSnapshot.activeDoNotDisturbRooms?.map((room) => room.displayName)).toEqual(['Room 101', 'Room 305']);
+    expect(areaSnapshot.activeDoNotDisturbRooms?.some((room) => room.code === unassignedRoom.code)).toBe(false);
     expect(roomSnapshot).not.toHaveProperty('activeDoNotDisturbRooms');
     expect(firstRoom.id).not.toBe(secondRoom.id);
   });

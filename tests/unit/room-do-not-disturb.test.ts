@@ -54,4 +54,50 @@ describe('room do-not-disturb state', () => {
       aggregate_id: room.id
     });
   });
+
+  it('clears room DND and publishes room updates when its ROOM station leaves', () => {
+    const area = service.createArea({ code: 'dnd-housekeeping', displayName: 'Housekeeping' }, systemActor, 'setup-area');
+    const rooms = ['101', '102', '103'].map((code) => service.createRoom({ code, displayName: `Room ${code}` }, systemActor, `setup-room-${code}`));
+    const devices = rooms.map((room, index) => service.bootstrapDevice({
+      installationId: `installation-${room.code}`,
+      displayName: `Room ${room.code} tablet`,
+      assignmentMode: 'ROOM',
+      roomId: room.id
+    }, systemActor, `setup-device-${index}`));
+    const roomPrincipals = devices.map((device) => service.authenticateDeviceToken(device.deviceToken).principal);
+    roomPrincipals.forEach((principal, index) => service.setRoomDoNotDisturb(principal, true, `enable-${index}`, `enable-${index}`));
+    const areaDevice = service.bootstrapDevice({
+      installationId: 'installation-housekeeping',
+      displayName: 'Housekeeping console',
+      assignmentMode: 'AREA',
+      areaId: area.id
+    }, systemActor, 'setup-area-device');
+    const areaPrincipal = service.authenticateDeviceToken(areaDevice.deviceToken).principal;
+    const admin = service.createAdmin({ username: 'dnd-admin', password: 'correct-horse-battery-staple' }, systemActor, 'setup-admin');
+    const adminPrincipal = service.authenticateAdmin(service.loginAdmin(
+      admin.username, 'correct-horse-battery-staple', 'login-admin', undefined, undefined
+    ).sessionToken);
+    const latestRoomUpdate = (roomId: string) => database.prepare(
+      "SELECT payload_json FROM outbox_events WHERE event_name = 'room.updated' AND aggregate_id = ? ORDER BY rowid DESC LIMIT 1"
+    ).get(roomId) as { payload_json: string } | undefined;
+
+    service.assignDevice(adminPrincipal, devices[0]!.device.id, {
+      expectedDeviceConfigVersion: devices[0]!.device.deviceConfigVersion,
+      assignmentMode: 'AREA',
+      roomId: null,
+      areaId: area.id,
+      reason: 'Move station to the housekeeping console'
+    }, 'move-device-101');
+
+    service.patchDevice(adminPrincipal, devices[1]!.device.id, {
+      active: false,
+      expectedDeviceConfigVersion: devices[1]!.device.deviceConfigVersion
+    }, 'deactivate-device-102');
+
+    service.retireDevice(adminPrincipal, devices[2]!.device.id, 'retire-device-103', 'retire-device-103');
+
+    expect.soft(rooms.map((room) => service.getRoom(room.id)?.doNotDisturb)).toEqual([false, false, false]);
+    expect.soft(rooms.map((room) => JSON.parse(latestRoomUpdate(room.id)!.payload_json).room.doNotDisturb)).toEqual([false, false, false]);
+    expect.soft((service.getDeviceSnapshot(areaPrincipal) as { activeDoNotDisturbRooms: Array<{ id: string }> }).activeDoNotDisturbRooms).toEqual([]);
+  });
 });

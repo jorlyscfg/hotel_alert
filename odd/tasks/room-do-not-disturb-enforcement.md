@@ -35,18 +35,19 @@ The room DND flag is persisted and exposed, but a client can still submit servic
 - Existing unrelated worktree/index content remains untouched.
 
 ## Tasks
-- [x] **DND-01 — Enforce DND for service requests.** Added a UI regression proving DND disables service/area choices and restores them when cleared, and a domain regression proving new requests are rejected while idempotent successful replays remain valid. Observed RED (both new tests failed; 80 existing focused tests passed), then GREEN/refactor (focused suite: 2 files / 82 tests; TypeScript `corepack pnpm exec tsc --noEmit --pretty false` passed). Commit evidence: pending.
-- [ ] **DND-02 — Scope and clear active DND rooms.** Add failing tests, observe RED, restrict the area snapshot's active-DND query to active/non-retired ROOM assignments, clear and publish the old room's DND state on reassignment/deactivation/retirement, then verify GREEN and refactor. Focused files: `apps/server/src/domain/hotel-service.ts` and focused server tests. Commit evidence: pending.
+- [x] **DND-01 — Enforce DND for service requests.** Added a UI regression proving DND disables service/area choices and restores them when cleared, and a domain regression proving new requests are rejected while idempotent successful replays remain valid. Observed RED (both new tests failed; 80 existing focused tests passed), then GREEN/refactor (focused suite: 2 files / 82 tests; TypeScript `corepack pnpm exec tsc --noEmit --pretty false` passed). Work-unit commit: `ded3f4e` (`fix(dnd): enforce room do-not-disturb requests`).
+- [x] **DND-02 — Scope and clear active DND rooms.** Added regressions for active ROOM-station filtering and stale DND cleanup on reassignment, deactivation, and retirement, including `room.updated` payloads. RED exposed both the leaking AREA list and uncleared room state. Focused GREEN: `corepack pnpm exec vitest run tests/unit/hotel-service.test.ts tests/unit/room-do-not-disturb.test.ts` passed (2 files / 36 tests); the complete DND focus suite passed (3 files / 84 tests). `corepack pnpm exec tsc --noEmit --pretty false`, `git diff --check`, and `corepack pnpm test:unit` (43 files / 468 tests) passed. Commit evidence: pending.
 
 ## Progress and Verification
 - Exploration confirmed the room DND UI, request submission path, server `createRequest`, area snapshot DND list, and device assignment/retirement paths.
 - Existing working-tree changes are present in the target files; implementation must preserve them and commits must include only this feature's hunks plus its tracker.
 - DND-01 RED/GREEN evidence: observed and passed as recorded above.
 - DND-01 functional/type checks: passed (82 focused tests; `tsc --noEmit`).
-- Work-unit commits and review status: pending; RDD is disabled/unmanaged.
+- DND-01 work-unit commit: `ded3f4e` (`fix(dnd): enforce room do-not-disturb requests`).
+- DND-02 work-unit commit and review status: pending; RDD is disabled/unmanaged.
 
 ## Next Step
-Commit DND-01 with only its isolated hunks, then delegate DND-02 under strict TDD to scope area-console DND indicators and clear stale room state on station lifecycle changes.
+Commit DND-02 with only its isolated hunks; then reconcile the Engram mirror, verify remaining repository state, and close the feature.
 
 ## Relevant Files
 - `apps/web/src/features/device/DeviceScreen.tsx` — ROOM service actions and DND control.

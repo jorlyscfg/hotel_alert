@@ -895,6 +895,9 @@ export class HotelService {
       const revision = this.bumpConfiguration();
       this.audit({ actorType: 'ADMIN', actorId: principal.adminId }, nextActive ? 'DEVICE_ACTIVATED' : 'DEVICE_DEACTIVATED', 'DEVICE', id, requestId, {});
       this.appendDeviceConfigEvent(id, revision, existing.device_config_version, existing.assignment_mode, existing.room_id, existing.area_id, nextActive ? 'DEVICE_ACTIVATED' : 'DEVICE_DEACTIVATED');
+      if (!nextActive && existing.active && existing.assignment_mode === 'ROOM' && existing.room_id !== null) {
+        this.clearRoomDoNotDisturb(existing.room_id, { actorType: 'ADMIN', actorId: principal.adminId }, requestId);
+      }
       return this.getDevice(id) ?? this.assertImpossible('Updated device disappeared.');
     });
     if (!nextActive && Boolean(existing.active)) {
@@ -931,6 +934,9 @@ export class HotelService {
       const revision = this.bumpConfiguration();
       this.audit({ actorType: 'ADMIN', actorId: principal.adminId }, 'DEVICE_ASSIGNMENT_CHANGED', 'DEVICE', id, requestId, { reason: input.reason, assignmentMode: input.assignmentMode });
       this.appendDeviceConfigEvent(id, revision, nextVersion, input.assignmentMode, assignment.roomId, assignment.areaId, 'ASSIGNMENT_CHANGED');
+      if (existing.assignment_mode === 'ROOM' && existing.room_id !== null && (input.assignmentMode !== 'ROOM' || assignment.roomId !== existing.room_id)) {
+        this.clearRoomDoNotDisturb(existing.room_id, { actorType: 'ADMIN', actorId: principal.adminId }, requestId);
+      }
       return { device: this.getDevice(id) ?? this.assertImpossible('Assigned device disappeared.'), configurationRevision: revision };
     });
   }
@@ -1059,6 +1065,9 @@ export class HotelService {
       this.db.prepare('UPDATE devices SET active = 0, retired_at = ?, updated_at = ? WHERE id = ? AND retired_at IS NULL').run(retiredAt, retiredAt, deviceId);
       this.db.prepare('UPDATE device_tokens SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL').run(retiredAt, deviceId);
       this.db.prepare("UPDATE device_token_rotations SET state = 'CANCELLED', cancelled_at = ? WHERE device_id = ? AND state IN ('ROTATION_PENDING', 'CLAIMED')").run(retiredAt, deviceId);
+      if (existing.assignment_mode === 'ROOM' && existing.room_id !== null) {
+        this.clearRoomDoNotDisturb(existing.room_id, { actorType: 'ADMIN', actorId: principal.adminId }, requestId);
+      }
       const configurationRevision = this.bumpConfiguration();
       this.audit({ actorType: 'ADMIN', actorId: principal.adminId }, 'DEVICE_RETIRED', 'DEVICE', deviceId, requestId, { retiredAt });
       this.appendDeviceConfigEvent(deviceId, configurationRevision, existing.device_config_version, existing.assignment_mode, existing.room_id, existing.area_id, 'DEVICE_RETIRED');
@@ -1190,7 +1199,14 @@ export class HotelService {
 
   private listActiveDoNotDisturbRooms(): CompactRoom[] {
     const rows = this.db.prepare(
-      'SELECT id, code, display_name, do_not_disturb FROM rooms WHERE active = 1 AND do_not_disturb = 1 ORDER BY display_order, code, id'
+      `SELECT r.id, r.code, r.display_name, r.do_not_disturb
+       FROM rooms r
+       WHERE r.active = 1 AND r.do_not_disturb = 1
+         AND EXISTS (
+           SELECT 1 FROM devices d
+           WHERE d.assignment_mode = 'ROOM' AND d.room_id = r.id AND d.active = 1 AND d.retired_at IS NULL
+         )
+       ORDER BY r.display_order, r.code, r.id`
     ).all() as Array<Pick<RoomRow, 'id' | 'code' | 'display_name' | 'do_not_disturb'>>;
     return rows.map((row) => ({
       id: row.id,
@@ -1653,6 +1669,19 @@ export class HotelService {
 
   private appendRoomUpdatedEvent(room: RoomDTO): void {
     this.appendOutbox('room.updated', 'ROOM', room.id, null, { room });
+  }
+
+  private clearRoomDoNotDisturb(roomId: string, actor: Actor, requestId: string): void {
+    const current = this.getRoomRow(roomId);
+    if (!current.do_not_disturb) return;
+
+    const now = new Date().toISOString();
+    const update = this.db.prepare('UPDATE rooms SET do_not_disturb = 0, updated_at = ? WHERE id = ? AND do_not_disturb = 1').run(now, roomId);
+    if (update.changes !== 1) return;
+
+    const room = this.getRoom(roomId) ?? this.assertImpossible('Updated room disappeared.');
+    this.audit(actor, 'ROOM_UPDATED', 'ROOM', roomId, requestId, { doNotDisturb: false });
+    this.appendRoomUpdatedEvent(room);
   }
 
   private appendOutbox(eventName: string, aggregateType: OutboxRow['aggregate_type'], aggregateId: string, aggregateVersion: number | null, payload: unknown): number {
