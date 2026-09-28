@@ -89,6 +89,8 @@ describe('accessible UI styles', () => {
     expect(areaFrameRule).toContain('overflow: hidden;');
     expect(areaContentRule).toContain('flex: 1;');
     expect(areaContentRule).toContain('min-height: 0;');
+    expect(areaContentRule).toContain('min-width: 0;');
+    expect(areaContentRule).toContain('width: 100%;');
     expect(areaContentRule).toContain('overflow: hidden;');
     expect(areaLayoutRule).toContain('flex: 1;');
     expect(areaLayoutRule).toContain('min-height: 0;');

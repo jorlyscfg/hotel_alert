@@ -290,7 +290,7 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
 .room-dnd-control__error { color: #a94634; font-size: 0.7rem; max-width: 160px; }
 
 .device-content { margin: 0 auto; max-width: none; padding: clamp(34px, 6vw, 80px) 0 34px; position: relative; }
-.app-frame--device:not(.app-frame--room) .device-content { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; padding: clamp(12px, 2vw, 28px) 0 16px; }
+.app-frame--device:not(.app-frame--room) .device-content { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; padding: clamp(12px, 2vw, 28px) 0 16px; width: 100%; }
 .app-frame--device:not(.app-frame--room) .device-layout { gap: clamp(12px, 2vw, 24px); }
 .device-layout { display: grid; gap: clamp(40px, 6vw, 72px); }
 .app-frame--device:not(.app-frame--room) .device-layout--area { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
