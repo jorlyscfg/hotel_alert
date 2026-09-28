@@ -127,11 +127,33 @@ describe('accessible UI styles', () => {
     expect(areaFilterRowRule).toContain('width: 100%;');
     expect(areaFilterPillRule).toContain('flex: 1 1 0;');
     expect(areaFilterPillRule).toContain('min-width: 0;');
+    expect(areaFilterPillRule).toContain('border: 0;');
+    expect(areaFilterPillRule).toContain('border-radius: 0;');
     expect(activeFilterRule).toContain('background: rgba(215, 109, 84, 0.12);');
-    expect(activeFilterRule).toContain('border-color: var(--coral);');
     expect(activeFilterRule).toContain('color: var(--ink);');
     expect(activeFilterRule).not.toContain('background: var(--ink);');
     expect(completedQueueRule).toContain('grid-template-columns: minmax(0, 1fr);');
+  });
+
+  it('compacts AREA spacing on desktop and mobile while suppressing tap highlight', () => {
+    const areaFrameRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \{[^}]*\}/s)?.[0] ?? '';
+    const areaContentRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \.device-content \{[^}]*\}/s)?.[0] ?? '';
+    const areaTopbarRule = styles.match(/\.topbar--area \{[^}]*\}/s)?.[0] ?? '';
+    const globalButtonRule = styles.match(/^button \{[^}]*\}/m)?.[0] ?? '';
+    const keyboardFocusRule = styles.match(/button:focus-visible, input:focus-visible, select:focus-visible, dialog:focus-visible \{[^}]*\}/s)?.[0] ?? '';
+    const mobileStyles = styles.slice(styles.indexOf('@media (max-width: 720px)'), styles.indexOf('@media (min-width: 721px)'));
+    const mobileFrameRule = mobileStyles.match(/\.app-frame--device:not\(\.app-frame--room\) \{[^}]*\}/s)?.[0] ?? '';
+    const mobileContentRule = mobileStyles.match(/\.app-frame--device:not\(\.app-frame--room\) \.device-content \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(areaFrameRule).toContain('padding-top: 4px;');
+    expect(areaFrameRule).toContain('padding-bottom: 4px;');
+    expect(areaContentRule).toContain('padding: 4px 0 0;');
+    expect(areaTopbarRule).toContain('background: #e3ded2;');
+    expect(globalButtonRule).toContain('-webkit-tap-highlight-color: transparent;');
+    expect(keyboardFocusRule).toContain('outline: 3px solid rgba(204, 132, 40, 0.55);');
+    expect(mobileFrameRule).toContain('padding-top: 4px;');
+    expect(mobileFrameRule).toContain('padding-bottom: 4px;');
+    expect(mobileContentRule).toContain('padding-top: 4px;');
   });
 
   it('provides bounded overlay and listbox surfaces', () => {

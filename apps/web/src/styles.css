@@ -24,7 +24,7 @@
 body { margin: 0; min-width: 320px; min-height: var(--app-viewport-height); background: #e9e5db; }
 
 button, input, select { font: inherit; }
-button { cursor: pointer; }
+button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 button:focus-visible, input:focus-visible, select:focus-visible, dialog:focus-visible {
@@ -41,7 +41,7 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
 .app-frame { min-height: var(--app-viewport-height); padding: 28px 42px 34px; position: relative; width: 100%; }
 .app-frame--centered { display: flex; flex-direction: column; justify-content: center; min-height: var(--app-viewport-height); }
 .app-frame--device { background: #e9e5db; }
-.app-frame--device:not(.app-frame--room) { display: flex; flex-direction: column; height: var(--app-viewport-height); min-height: 0; overflow: hidden; }
+.app-frame--device:not(.app-frame--room) { display: flex; flex-direction: column; height: var(--app-viewport-height); min-height: 0; overflow: hidden; padding-bottom: 4px; padding-top: 4px; }
 .app-frame--room {
   --room-bg: #0d1315;
   --room-background-square: url("/fondo-playa.jpg");
@@ -245,7 +245,7 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
 
 .topbar { align-items: center; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; margin: 0 auto; max-width: none; padding: 0 0 20px; position: relative; z-index: 1; }
 .topbar--admin { z-index: 5; }
-.topbar--area { background: var(--paper-deep); min-width: 0; padding: 6px 0; position: sticky; top: 0; width: 100%; z-index: 30; }
+.topbar--area { background: #e3ded2; min-width: 0; padding: 6px 0; position: sticky; top: 0; width: 100%; z-index: 30; }
 .topbar--room { align-items: center; background: transparent; backdrop-filter: none; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; position: sticky; top: 0; width: 100%; z-index: 5; }
 .topbar__identity { align-items: center; display: flex; flex: 1 1 auto; gap: 22px; min-width: 0; }
 .topbar__actions { align-items: center; border-left: 1px solid var(--line); display: flex; flex: 0 1 auto; gap: 22px; min-width: 0; padding-left: 22px; }
@@ -290,7 +290,7 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
 .room-dnd-control__error { color: #a94634; font-size: 0.7rem; max-width: 160px; }
 
 .device-content { margin: 0 auto; max-width: none; padding: clamp(34px, 6vw, 80px) 0 34px; position: relative; }
-.app-frame--device:not(.app-frame--room) .device-content { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; padding: clamp(12px, 2vw, 28px) 0 16px; width: 100%; }
+.app-frame--device:not(.app-frame--room) .device-content { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; padding: 4px 0 0; width: 100%; }
 .app-frame--device:not(.app-frame--room) .device-layout { gap: clamp(12px, 2vw, 24px); }
 .device-layout { display: grid; gap: clamp(40px, 6vw, 72px); }
 .app-frame--device:not(.app-frame--room) .device-layout--area { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
@@ -562,9 +562,10 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
 .filter-row { display: flex; flex-wrap: wrap; gap: 7px; }
 .app-frame--device:not(.app-frame--room) .filter-row { flex-wrap: nowrap; min-width: 0; width: 100%; }
 .filter-pill { background: transparent; border: 1px solid var(--line); border-radius: 20px; color: var(--ink-soft); font-size: 0.68rem; font-weight: 800; min-height: 48px; padding: 8px 13px; }
-.app-frame--device:not(.app-frame--room) .filter-pill { flex: 1 1 0; min-width: 0; text-align: center; }
+.app-frame--device:not(.app-frame--room) .filter-pill { border: 0; border-radius: 0; flex: 1 1 0; min-width: 0; text-align: center; }
 .filter-pill:hover, .filter-pill--active { background: var(--ink); border-color: var(--ink); color: var(--paper); }
-.app-frame--device:not(.app-frame--room) .filter-pill:hover, .app-frame--device:not(.app-frame--room) .filter-pill--active { background: rgba(215, 109, 84, 0.12); border-color: var(--coral); color: var(--ink); }
+.app-frame--device:not(.app-frame--room) .filter-pill:hover { background: var(--paper-deep); color: var(--ink); }
+.app-frame--device:not(.app-frame--room) .filter-pill--active { background: rgba(215, 109, 84, 0.12); color: var(--ink); }
 .queue-filter-grid { align-items: end; display: grid; gap: 10px; grid-template-columns: repeat(4, minmax(120px, 1fr)); }
 .queue-filter-clear { min-height: 48px; }
 .request-table { overflow-x: auto; }
@@ -734,6 +735,7 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
 
 @media (max-width: 720px) {
   .app-frame { padding: 20px 16px 25px; }
+  .app-frame--device:not(.app-frame--room) { padding-bottom: 4px; padding-top: 4px; }
   .app-frame--room { align-items: stretch; padding-bottom: 0; }
   .auth-layout { align-items: stretch; display: flex; flex-direction: column; gap: 38px; margin: 40px auto; }
   .intro-panel h1 { font-size: clamp(2.9rem, 13vw, 4.3rem); }
@@ -747,6 +749,7 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
   .app-frame--room .topbar__actions { border-left: 0; gap: 12px; justify-content: flex-end; max-width: 100%; padding-left: 12px; }
   .station-context { display: none; }
   .device-content { padding-top: 39px; }
+  .app-frame--device:not(.app-frame--room) .device-content { padding-top: 4px; }
     .service-grid { grid-template-columns: 1fr; }
    .app-frame--room .service-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .service-tile { min-height: 100px; }
