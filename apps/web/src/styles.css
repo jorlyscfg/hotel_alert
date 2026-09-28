@@ -244,6 +244,7 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
 
 .topbar { align-items: center; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; margin: 0 auto; max-width: none; padding: 0 0 20px; position: relative; z-index: 1; }
 .topbar--admin { z-index: 5; }
+.topbar--area { background: var(--paper-deep); padding: 6px 0; position: sticky; top: 0; z-index: 30; }
 .topbar--room { align-items: center; background: transparent; backdrop-filter: none; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; position: sticky; top: 0; width: 100%; z-index: 5; }
 .topbar__identity { align-items: center; display: flex; flex: 1 1 auto; gap: 22px; min-width: 0; }
 .topbar__actions { align-items: center; border-left: 1px solid var(--line); display: flex; flex: 0 1 auto; gap: 22px; min-width: 0; padding-left: 22px; }
@@ -418,7 +419,8 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
 .area-dnd-room svg { color: var(--coral); flex: 0 0 auto; }
 .area-dnd-room strong { font-size: 0.78rem; }
 .area-dnd-room span { color: var(--muted); font-size: 0.72rem; }
-.queue-board { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); min-width: 0; }
+.queue-board { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; }
+.queue-board--completed { grid-template-columns: minmax(0, 1fr); }
 .queue-column { background: rgba(247, 244, 235, 0.68); border-top: 3px solid var(--muted); min-height: 240px; min-width: 0; padding: 13px; transition: background 160ms ease, box-shadow 160ms ease; }
 .queue-column--pending { border-top-color: var(--coral); }
 .queue-column--accepted { border-top-color: var(--amber-deep); }
@@ -556,6 +558,7 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
 .filter-row { display: flex; flex-wrap: wrap; gap: 7px; }
 .filter-pill { background: transparent; border: 1px solid var(--line); border-radius: 20px; color: var(--ink-soft); font-size: 0.68rem; font-weight: 800; min-height: 48px; padding: 8px 13px; }
 .filter-pill:hover, .filter-pill--active { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+.app-frame--device:not(.app-frame--room) .filter-pill:hover, .app-frame--device:not(.app-frame--room) .filter-pill--active { background: rgba(215, 109, 84, 0.12); border-color: var(--coral); color: var(--ink); }
 .queue-filter-grid { align-items: end; display: grid; gap: 10px; grid-template-columns: repeat(4, minmax(120px, 1fr)); }
 .queue-filter-clear { min-height: 48px; }
 .request-table { overflow-x: auto; }

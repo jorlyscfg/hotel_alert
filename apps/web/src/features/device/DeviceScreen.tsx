@@ -62,7 +62,7 @@ const TRANSITION_PATH: Record<Exclude<RequestStatus, 'COMPLETED'>, string> = {
   IN_PROGRESS: 'complete'
 };
 
-const AREA_FILTERS = ['ALL', 'PENDING', 'ACCEPTED', 'IN_PROGRESS'] as const;
+const AREA_FILTERS = ['ALL', 'PENDING', 'IN_PROGRESS', 'COMPLETED'] as const;
 const ROOM_SERVICE_PAGE_SIZE = 9;
 const ROOM_AREA_PAGE_SIZE = 4;
 const ROOM_SQUARE_BREAKPOINT = 520;
@@ -279,8 +279,16 @@ export function formatRoomRequestAge(createdAt: string, currentTime: Date, local
   return formatElapsed(createdAt, currentTime, locale);
 }
 
+export function resolveAreaRequestBucket(status: RequestStatus): Exclude<AreaQueueFilter, 'ALL'> {
+  if (status === 'PENDING') return 'PENDING';
+  if (status === 'COMPLETED') return 'COMPLETED';
+  return 'IN_PROGRESS';
+}
+
 export function filterAreaRequests(requests: RequestDTO[], filter: AreaQueueFilter): RequestDTO[] {
-  return requests.filter((request) => request.status !== 'COMPLETED' && (filter === 'ALL' || request.status === filter));
+  return requests.filter((request) => filter === 'ALL'
+    ? resolveAreaRequestBucket(request.status) !== 'COMPLETED'
+    : resolveAreaRequestBucket(request.status) === filter);
 }
 
 function requestStatusLabel(status: RequestStatus, locale: Locale): string {
@@ -319,7 +327,7 @@ export function DeviceScreen({ snapshot, deviceToken, connectionStatus, onRefres
 
   return (
     <main className={`app-frame app-frame--device${mode === 'ROOM' ? ' app-frame--room' : ''}`} style={roomBackgroundStyle}>
-      <header className={`topbar${mode === 'ROOM' ? ' topbar--room' : ''}`}>
+      <header className={`topbar${mode === 'ROOM' ? ' topbar--room' : ' topbar--area'}`}>
         {mode === 'ROOM' ? (
           <>
             <div className="topbar__identity">
@@ -864,7 +872,7 @@ function AreaDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
   const pendingToneAttemptRef = useRef<{ requestId: string; played: boolean } | null>(null);
   const pendingRequestWarningControllerRef = useRef<PendingRequestWarningController | null>(null);
   const pointerDragRef = useRef<{ requestId: string; pointerId: number } | null>(null);
-  const columns: Exclude<RequestStatus, 'COMPLETED'>[] = ['PENDING', 'ACCEPTED', 'IN_PROGRESS'];
+  const columns: RequestStatus[] = filter === 'COMPLETED' ? ['COMPLETED'] : ['PENDING', 'IN_PROGRESS'];
   const visibleRequests = filterAreaRequests(snapshot.activeRequests, filter);
   const pendingRequestIdKey = snapshot.activeRequests.filter((request) => request.status === 'PENDING').map((request) => request.id).join('|');
   const pendingRequestWarningKey = snapshot.activeRequests
@@ -1088,25 +1096,18 @@ function AreaDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
          </section>
        )}
 
-       <section aria-labelledby="queue-title">
-         <div className="section-heading">
-          <div>
-            <p className="eyebrow eyebrow--muted">{t('device.liveQueue')}</p>
-            <h2 id="queue-title">{t('device.serviceRequests')}</h2>
-           </div>
-          <span className="section-count">{t('device.shown', { count: formatNumber(visibleRequests.length, locale) })}</span>
-         </div>
+       <section aria-label={t('device.serviceRequests')}>
         <div className="filter-row" role="group" aria-label={t('device.filterAreaRequests')}>
           {AREA_FILTERS.map((value) => (
-            <button className={`filter-pill${filter === value ? ' filter-pill--active' : ''}`} type="button" key={value} onClick={() => setFilter(value)}>
+            <button className={`filter-pill${filter === value ? ' filter-pill--active' : ''}`} type="button" key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}>
               {value === 'ALL' ? t('device.allActive') : requestStatusLabel(value, locale)}
             </button>
           ))}
         </div>
-         <div className="queue-board">
+         <div className={`queue-board${filter === 'COMPLETED' ? ' queue-board--completed' : ''}`}>
            {columns.map((status) => {
             const requests = visibleRequests
-              .filter((request) => request.status === status)
+              .filter((request) => resolveAreaRequestBucket(request.status) === status)
               .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
              return (
              <div

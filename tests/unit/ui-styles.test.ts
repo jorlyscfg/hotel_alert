@@ -67,11 +67,27 @@ describe('accessible UI styles', () => {
     expect(styles).toMatch(/\.area-dnd-room \{[^}]*min-height: 48px;/s);
   });
 
-  it('uses three AREA queue columns on desktop, two on tablets, and one on phones', () => {
-    expect(styles).toMatch(/\.queue-board \{[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/s);
+  it('uses two AREA queue columns on desktop and tablets, and one on phones', () => {
+    expect(styles).toMatch(/\.queue-board \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/s);
     expect(styles).toMatch(/@media \(max-width: 980px\) \{[\s\S]*?\.queue-board \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/s);
     expect(styles).toMatch(/@media \(max-width: 720px\) \{[\s\S]*?\.queue-board \{[^}]*grid-template-columns: 1fr;/s);
     expect(styles).toMatch(/\.device-layout--area \{[^}]*min-width: 0;/s);
+  });
+
+  it('keeps the AREA topbar sticky and compact and gives its filters a light active state', () => {
+    const topbarRule = styles.match(/\.topbar--area \{[^}]*\}/s)?.[0] ?? '';
+    const activeFilterRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \.filter-pill--active \{[^}]*\}/s)?.[0] ?? '';
+    const completedQueueRule = styles.match(/\.queue-board--completed \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(topbarRule).toContain('position: sticky;');
+    expect(topbarRule).toContain('top: 0;');
+    expect(topbarRule).toContain('padding: 6px 0;');
+    expect(topbarRule).toContain('z-index: 30;');
+    expect(activeFilterRule).toContain('background: rgba(215, 109, 84, 0.12);');
+    expect(activeFilterRule).toContain('border-color: var(--coral);');
+    expect(activeFilterRule).toContain('color: var(--ink);');
+    expect(activeFilterRule).not.toContain('background: var(--ink);');
+    expect(completedQueueRule).toContain('grid-template-columns: minmax(0, 1fr);');
   });
 
   it('provides bounded overlay and listbox surfaces', () => {

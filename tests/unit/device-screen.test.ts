@@ -167,15 +167,18 @@ describe('device pending alert helpers', () => {
     )).toBe('2 min');
   });
 
-  it('keeps completed requests out of the active area filters', () => {
+  it('keeps only operational requests in active AREA filters and exposes completed requests separately', () => {
     const requests = [
       { id: 'pending', status: 'PENDING' },
       { id: 'accepted', status: 'ACCEPTED' },
+      { id: 'in-progress', status: 'IN_PROGRESS' },
       { id: 'completed', status: 'COMPLETED' }
     ] as RequestDTO[];
 
-    expect(filterAreaRequests(requests, 'ALL').map((request) => request.id)).toEqual(['pending', 'accepted']);
-    expect(filterAreaRequests(requests, 'ACCEPTED').map((request) => request.id)).toEqual(['accepted']);
+    expect(filterAreaRequests(requests, 'ALL').map((request) => request.id)).toEqual(['pending', 'accepted', 'in-progress']);
+    expect(filterAreaRequests(requests, 'PENDING').map((request) => request.id)).toEqual(['pending']);
+    expect(filterAreaRequests(requests, 'IN_PROGRESS').map((request) => request.id)).toEqual(['accepted', 'in-progress']);
+    expect(filterAreaRequests(requests, 'COMPLETED').map((request) => request.id)).toEqual(['completed']);
   });
 
   it('only invalidates device auth for 401 or HTTP 403 DEVICE_INACTIVE', () => {
@@ -621,7 +624,7 @@ describe('device pending alert helpers', () => {
     expect(markup).toContain('lucide-moon');
   });
 
-  it('removes the AREA hero copy while keeping the live queue and explicit request actions', () => {
+  it('removes the redundant AREA queue heading and shows only operational columns by default', () => {
     const markup = renderToStaticMarkup(createElement(DeviceScreen, {
       snapshot: createAreaSnapshot(),
       deviceToken: 'device-token',
@@ -634,7 +637,12 @@ describe('device pending alert helpers', () => {
     expect(markup).not.toContain('display-hero');
     expect(markup).not.toContain('Keep the floor moving');
     expect(markup).not.toContain('Every request has an owner');
-    expect(markup).toContain('class="section-heading"');
+    expect(markup).not.toContain('Live queue');
+    expect(markup).not.toContain('class="section-heading"');
+    expect(markup.match(/class="queue-column /g)).toHaveLength(2);
+    expect(markup).toContain('data-area-drop-status="PENDING"');
+    expect(markup).toContain('data-area-drop-status="IN_PROGRESS"');
+    expect(markup).toContain('aria-pressed="true"');
     expect(markup).toContain('queue-card__action');
   });
 
