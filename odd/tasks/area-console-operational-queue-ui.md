@@ -16,6 +16,8 @@ Follow-up: the AREA page currently allows the overall screen to scroll as reques
 - Constrain scrolling to each AREA request-column body independently; keep the overall AREA console viewport stationary and do not alter ROOM/admin scrolling.
 - Preserve the AREA console's responsive full available width; do not constrain it to a fixed content width.
 - Show only two AREA tabs: Pendientes (retaining both Pending and In progress columns) and Completadas (completed-only); expand both tabs and the navbar across the same responsive available width as the board.
+- Keep the two AREA tabs square and borderless; substantially reduce vertical gaps above the navbar, before the tabs, and below the device status/information footer.
+- Darken the AREA navbar slightly; suppress browser blue tap highlight across app buttons while preserving the app's visible keyboard-focus outline.
 - Interpret “less wide” as a slimmer/shorter bar (reduced vertical padding) so it frees screen space for the queue.
 - Preserve all unrelated changes in the heavily dirty worktree. This is a web-only change; no APK build or installation is needed.
 - Forecast: approximately 300 authored changed lines across ACU-01–ACU-03, generated files excluded; below the delivery slice budget. Delivery strategy: feature-branch-chain (user selected for this feature branch).
@@ -35,12 +37,15 @@ The user explicitly authorized these AREA console UI corrections. Do not expand 
 - The AREA board expands to the available viewport width at wide and narrow screen sizes without a fixed-width layout.
 - Only Pendientes and Completadas tabs are visible; Pendientes keeps both operational columns and Completadas stays completed-only.
 - Both AREA tabs stretch evenly across available width, and the navbar follows that same responsive width without fixed sizing.
+- AREA tabs have no border or rounded corners; AREA-only top, inter-section, and bottom spacing is compact at desktop and mobile widths.
+- The AREA navbar background is slightly darker; app buttons do not show the browser's blue touch highlight, and keyboard focus remains visibly indicated.
 - Focused unit tests pass; lint/typecheck are run where applicable.
 
 ## Tasks
 - [x] **ACU-01 — Refine the AREA operational queue and layout** (route: delegated direct; trigger: 3 non-trivial files are involved—`DeviceScreen.tsx`, `styles.css`, and focused unit tests—so the writer trigger applies). Update queue filtering/columns, the completed view and completion drop path, remove the redundant heading, and scope the tab/header styles to AREA. Add/adjust behavior and style tests, then run the focused test command and applicable checks.
 - [x] **ACU-02 — Isolate AREA request-column scrolling and preserve responsive width** (route: delegated direct; trigger: CSS layout and unit-style tests are two non-trivial files, so the writer trigger applies). Bound the AREA console to the viewport, let each request-column body scroll independently, and preserve its full responsive width. Add regression assertions proving both AREA-only scroll behavior and width responsiveness without changing ROOM/admin behavior. Reopened after the user reported that the flex containment caused the AREA board to shrink to its content width.
 - [x] **ACU-03 — Simplify AREA tabs and align responsive widths** (route: delegated direct; mapping trigger: understanding spans four non-trivial files, so read-only mapping was delegated to `area_tabs_map`; writer trigger: component, styling, and two focused test files, so implementation is delegated). Display only Pendientes and Completadas; keep both operational columns under Pendientes and completed requests only under Completadas. Make both tabs evenly fill the available width and make the AREA navbar match the responsive board width without fixed pixel dimensions. Preserve ROOM/admin behavior and reuse existing localized status labels where possible.
+- [x] **ACU-04 — Tighten AREA vertical spacing and touch styling** (route: delegated direct; writer trigger: AREA stylesheet and focused style tests are two non-trivial files). Remove tab borders and rounded corners; substantially reduce AREA-only whitespace above the navbar, between navbar and tabs, and below the device footer; slightly darken the AREA navbar; suppress blue tap highlight across app buttons while preserving keyboard-visible focus. Keep other ROOM/Admin styling unchanged.
 
 ## Progress and Evidence
 - Exploration: CodeGraph mapped `AreaDisplay`, `filterAreaRequests`, and the AREA header. Narrow stylesheet/test inspection confirmed current dark pill styling, three desktop queue columns, and a relative AREA top bar.
@@ -60,10 +65,15 @@ The user explicitly authorized these AREA console UI corrections. Do not expand 
 - ACU-03 implementation: visible tabs are now only Pendientes (`ALL`, preserving both Pending and In progress columns) and Completadas (`COMPLETED` only); the existing localized Pending status label is reused. AREA navbar width is explicitly responsive (`width: 100%`, `min-width: 0`), while the two tab buttons share available row width equally without fixed dimensions. Strict TDD RED was observed (2 expected failures); GREEN passed (119/119 focused tests). Focused ESLint, scoped `git diff --check`, and `corepack pnpm --filter @hotel/web build` passed; Vite emitted the existing >500 kB chunk warning. The web typecheck remains affected by two unrelated existing `DeviceScreen.tsx` errors: optional `onDoNotDisturbTap` mismatch and missing `CompactRoom` import.
 - ACU-03 work-unit commit: `edf9fe4` (`fix(area): simplify responsive status tabs`), isolated to `DeviceScreen.tsx`, `styles.css`, and their two focused test files using a temporary Git index. Receipt-driven review outcome: `disabled/unmanaged`.
 - Mirror status: final ACU-03 implementation and verification report is synchronized to Engram topic `odd/area-console-operational-queue-ui/tasks` (observation #1638).
-- Cumulative forecast: approximately 300 authored lines across ACU-01–ACU-03, still below the ~400-line delivery slice budget; preserve the feature-branch-chain strategy.
+- ACU-04 exploration: AREA vertical whitespace comes from the shared app-frame top/bottom padding plus AREA device-content top/bottom padding; the mobile rules also reset those values. Generic app buttons inherit browser tap highlight while the app's keyboard `:focus-visible` outline is amber; remove only tap highlight app-wide and preserve focus styling. Keep all spacing/background/tab overrides scoped to AREA.
+- ACU-04 TDD mode: strict TDD; runner: `corepack pnpm exec vitest run tests/unit/ui-styles.test.ts`.
+- ACU-04 implementation: AREA tabs are borderless/square; AREA top and bottom padding are 4px and navbar-to-tabs/content gap is 4px, including mobile; navbar background is slightly darker. Removed WebKit tap highlight globally from buttons while retaining the amber keyboard `:focus-visible` outline. Strict TDD RED observed (2 expected failures), then GREEN passed (68/68). Focused ESLint and scoped `git diff --check` passed; production web build passed with existing Vite CJS API deprecation and >500 kB bundle warnings. No typecheck was run because changes are CSS-only.
+- ACU-04 work-unit commit: `4799602` (`fix(area): compact console chrome and touch feedback`), isolated to `styles.css` and `ui-styles.test.ts` using a temporary Git index. Receipt-driven review outcome: `disabled/unmanaged`.
+- Mirror status: ACU-04 completion report is synchronized to Engram topic `odd/area-console-operational-queue-ui/tasks` (observation #1638).
+- Cumulative forecast: approximately 340 authored lines across ACU-01–ACU-04, generated files excluded, still below the ~400-line delivery slice budget; preserve the feature-branch-chain strategy.
 
 ## Next Step
-ACU-01 through ACU-03 are implemented, verified, and committed. No remaining in-scope work.
+ACU-01 through ACU-04 are implemented, verified, and committed. No remaining in-scope work.
 
 ## Relevant Files
 - `apps/web/src/features/device/DeviceScreen.tsx` — AREA filters, request columns, section heading, and shared top-bar markup.
