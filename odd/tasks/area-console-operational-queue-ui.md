@@ -20,7 +20,7 @@ Follow-up: the AREA page currently allows the overall screen to scroll as reques
 - Darken the AREA navbar slightly; suppress browser blue tap highlight across app buttons while preserving the app's visible keyboard-focus outline.
 - Interpret “less wide” as a slimmer/shorter bar (reduced vertical padding) so it frees screen space for the queue.
 - Preserve all unrelated changes in the heavily dirty worktree. This is a web-only change; no APK build or installation is needed.
-- Forecast: approximately 300 authored changed lines across ACU-01–ACU-03, generated files excluded; below the delivery slice budget. Delivery strategy: feature-branch-chain (user selected for this feature branch).
+- Forecast: approximately 650 authored changed lines across ACU-01–ACU-05, generated files excluded; ACU-05 is a separate ~310-line work-unit slice. The user-selected feature-branch-chain strategy applies because the cumulative feature exceeds the ~400-line delivery budget. No push or PR is authorized here.
 - Effective TDD: strict TDD, based on the explicit user-approved TDD workflow in the active runtime session. Runner: `corepack pnpm exec vitest run tests/unit/device-screen.test.ts tests/unit/ui-styles.test.ts`.
 
 ## Authorized Scope
@@ -39,6 +39,9 @@ The user explicitly authorized these AREA console UI corrections. Do not expand 
 - Both AREA tabs stretch evenly across available width, and the navbar follows that same responsive width without fixed sizing.
 - AREA tabs have no border or rounded corners; AREA-only top, inter-section, and bottom spacing is compact at desktop and mobile widths.
 - The AREA navbar background is slightly darker; app buttons do not show the browser's blue touch highlight, and keyboard focus remains visibly indicated.
+- Add a third AREA tab after Completadas named No molestar. Move the existing active-DND room grid into this tab without changing its room-card markup or styling.
+- Show a red-background, white-number badge to the right of the No molestar tab title, with the count derived from the current activeDoNotDisturbRooms snapshot so realtime updates are reflected without duplicate local state.
+- Keep the DND tab visible when its count is zero, and keep DND transition sound handling independent of the selected tab.
 - Focused unit tests pass; lint/typecheck are run where applicable.
 
 ## Tasks
@@ -46,6 +49,7 @@ The user explicitly authorized these AREA console UI corrections. Do not expand 
 - [x] **ACU-02 — Isolate AREA request-column scrolling and preserve responsive width** (route: delegated direct; trigger: CSS layout and unit-style tests are two non-trivial files, so the writer trigger applies). Bound the AREA console to the viewport, let each request-column body scroll independently, and preserve its full responsive width. Add regression assertions proving both AREA-only scroll behavior and width responsiveness without changing ROOM/admin behavior. Reopened after the user reported that the flex containment caused the AREA board to shrink to its content width.
 - [x] **ACU-03 — Simplify AREA tabs and align responsive widths** (route: delegated direct; mapping trigger: understanding spans four non-trivial files, so read-only mapping was delegated to `area_tabs_map`; writer trigger: component, styling, and two focused test files, so implementation is delegated). Display only Pendientes and Completadas; keep both operational columns under Pendientes and completed requests only under Completadas. Make both tabs evenly fill the available width and make the AREA navbar match the responsive board width without fixed pixel dimensions. Preserve ROOM/admin behavior and reuse existing localized status labels where possible.
 - [x] **ACU-04 — Tighten AREA vertical spacing and touch styling** (route: delegated direct; writer trigger: AREA stylesheet and focused style tests are two non-trivial files). Remove tab borders and rounded corners; substantially reduce AREA-only whitespace above the navbar, between navbar and tabs, and below the device footer; slightly darken the AREA navbar; suppress blue tap highlight across app buttons while preserving keyboard-visible focus. Keep other ROOM/Admin styling unchanged.
+- [ ] **ACU-05 — Move active DND rooms into a counted tab** (route: delegated direct; mapping trigger: the relevant UI flow spans the component, stylesheet, localization, and behavior/style tests, so read-only mapping was delegated to `area_tabs_map`; writer trigger: component, stylesheet, and behavior/style tests are multiple non-trivial files, so implementation is delegated). Add No molestar after Completadas, display a live red/white count badge, and conditionally render the existing DND room grid under that tab while preserving request views and independent DND sounds. Add behavior/style regression tests and run focused tests, lint, build, and diff checks.
 
 ## Progress and Evidence
 - Exploration: CodeGraph mapped `AreaDisplay`, `filterAreaRequests`, and the AREA header. Narrow stylesheet/test inspection confirmed current dark pill styling, three desktop queue columns, and a relative AREA top bar.
@@ -71,9 +75,16 @@ The user explicitly authorized these AREA console UI corrections. Do not expand 
 - ACU-04 work-unit commit: `4799602` (`fix(area): compact console chrome and touch feedback`), isolated to `styles.css` and `ui-styles.test.ts` using a temporary Git index. Receipt-driven review outcome: `disabled/unmanaged`.
 - Mirror status: ACU-04 completion report is synchronized to Engram topic `odd/area-console-operational-queue-ui/tasks` (observation #1638).
 - Cumulative forecast: approximately 340 authored lines across ACU-01–ACU-04, generated files excluded, still below the ~400-line delivery slice budget; preserve the feature-branch-chain strategy.
+- ACU-05 mapping: CodeGraph and a delegated read-only map found the DND grid rendered outside the tab row in `AreaDisplay`, while the existing tab state is limited to ALL/COMPLETED. Reuse the existing localized `device.doNotDisturb` label; derive badge count directly from `snapshot.activeDoNotDisturbRooms` (optional array, default count 0), move rather than rebuild the `.area-dnd-strip` grid, and leave the DND audio effect independent of tab selection. The DND grid already has a dedicated interaction test harness; style tests can assert a new tab-badge selector.
+- ACU-05 TDD mode: strict TDD remains enabled; focused runner: `corepack pnpm exec vitest run tests/unit/device-screen.test.ts tests/unit/ui-styles.test.ts tests/unit/area-dnd-tab.test.ts`.
+- ACU-05 route and delivery: delegated direct due to the mapping and writer triggers above. The measured ACU-05 diff is approximately 310 authored lines; total feature forecast is approximately 650, generated files excluded. The cached user-selected `feature-branch-chain` strategy applies; preserve all unrelated staged and unstaged changes and keep ACU-05 as a distinct work-unit commit. Do not push or create a PR without separate user authorization.
+- ACU-05 implementation: the tab is third after Completadas and remains visible at zero; the red/white count is derived directly from the optional snapshot array. Selecting it hides the request board and completion drop zone and shows the existing room cards; selecting request tabs hides the grid. The DND sound effect remains outside the selected-view conditional. The duplicate-room-code display guard from the current grid is preserved.
+- ACU-05 strict-TDD evidence: four expected failures were observed before implementation. Parent verification passed 122/122 focused tests (`device-screen`, `ui-styles`, and the standalone DND-tab test); the writer also passed 127/127 when including the existing DND-transition suite. Focused ESLint and scoped `git diff --check` passed. `corepack pnpm --filter @hotel/web build` passed with the existing >500 kB chunk warning.
+- ACU-05 typecheck: `corepack pnpm --filter @hotel/web typecheck` still reports only the two previously documented working-tree issues: optional `onDoNotDisturbTap` (`TS2375`) and missing `CompactRoom` (`TS2304`) in `DeviceScreen.tsx`; neither is introduced by this tab change.
+- ACU-05 commit state: implementation and checks are complete; create the isolated work-unit commit from the ACU-05 patch only. Existing unrelated staged/unstaged changes and the pre-existing untracked DND sound suite are intentionally excluded.
 
 ## Next Step
-ACU-01 through ACU-04 are implemented, verified, and committed. No remaining in-scope work.
+ACU-01 through ACU-04 are implemented, verified, and committed. ACU-05 is implemented and verified; create its isolated work-unit commit, then record the commit identity and synchronize the final tracker.
 
 ## Relevant Files
 - `apps/web/src/features/device/DeviceScreen.tsx` — AREA filters, request columns, section heading, and shared top-bar markup.

@@ -81,6 +81,15 @@ describe('accessible UI styles', () => {
     const requestSectionRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \.device-layout--area > section\[aria-label\] \{[^}]*\}/s)?.[0] ?? '';
     const queueBoardRule = styles.match(/\.queue-board \{[^}]*\}/s)?.[0] ?? '';
     const queueColumnRule = styles.match(/\.queue-column \{[^}]*\}/s)?.[0] ?? '';
+  it('styles the AREA No molestar count badge with a red background and white number', () => {
+    const badgeRule = styles.match(/\.area-dnd-tab-count \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(badgeRule).toContain('background: #a94d3a;');
+    expect(badgeRule).toContain('color: #fff;');
+    expect(badgeRule).toContain('display: inline-flex;');
+    expect(badgeRule).toContain('border-radius: 999px;');
+  });
+
     const queueBodyRule = styles.match(/\.queue-column__body \{[^}]*\}/s)?.[0] ?? '';
 
     expect(areaFrameRule).toContain('display: flex;');

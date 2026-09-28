@@ -63,7 +63,11 @@ const TRANSITION_PATH: Record<Exclude<RequestStatus, 'COMPLETED'>, string> = {
 };
 
 const AREA_FILTERS = ['ALL', 'PENDING', 'IN_PROGRESS', 'COMPLETED'] as const;
-const AREA_FILTER_TABS = AREA_FILTERS.filter((value): value is 'ALL' | 'COMPLETED' => value === 'ALL' || value === 'COMPLETED');
+const AREA_FILTER_TABS = [
+  ...AREA_FILTERS.filter((value): value is 'ALL' | 'COMPLETED' => value === 'ALL' || value === 'COMPLETED'),
+  'DO_NOT_DISTURB'
+] as const;
+type AreaFilterTab = typeof AREA_FILTER_TABS[number];
 const ROOM_SERVICE_PAGE_SIZE = 9;
 const ROOM_AREA_PAGE_SIZE = 4;
 const ROOM_SQUARE_BREAKPOINT = 520;
@@ -136,6 +140,15 @@ function resolveAreaDropStatusAtPoint(clientX: number, clientY: number): Request
 
 function resolveLocalizedDisplayName(value: { displayName: string; displayNameVariants?: LocalizedTextVariants }, locale: Locale): string {
   return resolveLocalizedValue(value.displayName, locale, value.displayNameVariants) ?? value.displayName;
+}
+
+function localizedNameContainsRoomCode(displayName: string, roomCode: string, locale: Locale): boolean {
+  const normalizedCode = roomCode.trim().toLocaleLowerCase(locale);
+  if (normalizedCode.length === 0) return false;
+
+  const escapedCode = normalizedCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const roomCodeToken = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapedCode}(?:$|[^\\p{L}\\p{N}])`, 'u');
+  return roomCodeToken.test(displayName.toLocaleLowerCase(locale));
 }
 
 export type RoomRequestSubmissionMode = 'queue' | 'post';
@@ -861,7 +874,8 @@ function AreaDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
   const { locale, t } = useI18n();
   const [busyRequestId, setBusyRequestId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<AreaQueueFilter>('ALL');
+  const [filter, setFilter] = useState<AreaFilterTab>('ALL');
+  const activeDoNotDisturbRoomCount = snapshot.activeDoNotDisturbRooms?.length ?? 0;
   const initialPendingModalQueue = seedAreaPendingModalQueue(snapshot.activeRequests.filter((request) => request.status === 'PENDING').map((request) => request.id));
   const [pendingModalQueue, setPendingModalQueue] = useState<string[]>(() => initialPendingModalQueue);
   const [draggingRequestId, setDraggingRequestId] = useState<string | null>(null);
@@ -873,8 +887,12 @@ function AreaDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
   const pendingToneAttemptRef = useRef<{ requestId: string; played: boolean } | null>(null);
   const pendingRequestWarningControllerRef = useRef<PendingRequestWarningController | null>(null);
   const pointerDragRef = useRef<{ requestId: string; pointerId: number } | null>(null);
-  const columns: RequestStatus[] = filter === 'COMPLETED' ? ['COMPLETED'] : ['PENDING', 'IN_PROGRESS'];
-  const visibleRequests = filterAreaRequests(snapshot.activeRequests, filter);
+  const columns: RequestStatus[] = filter === 'COMPLETED'
+    ? ['COMPLETED']
+    : filter === 'DO_NOT_DISTURB'
+      ? []
+      : ['PENDING', 'IN_PROGRESS'];
+  const visibleRequests = filter === 'DO_NOT_DISTURB' ? [] : filterAreaRequests(snapshot.activeRequests, filter);
   const pendingRequestIdKey = snapshot.activeRequests.filter((request) => request.status === 'PENDING').map((request) => request.id).join('|');
   const pendingRequestWarningKey = snapshot.activeRequests
     .filter((request) => request.status === 'PENDING')
@@ -1079,32 +1097,35 @@ function AreaDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
 
        {error !== null && <div className="inline-alert" role="alert"><span aria-hidden="true"><CircleAlert size={16} strokeWidth={1.8} /></span><span>{error}</span></div>}
 
-       {snapshot.activeDoNotDisturbRooms !== undefined && snapshot.activeDoNotDisturbRooms.length > 0 && (
-         <section className="area-dnd-strip" aria-labelledby="area-dnd-title">
-           <div className="area-dnd-strip__heading">
-             <span className="eyebrow eyebrow--muted" id="area-dnd-title"><Moon size={14} aria-hidden="true" />{t('device.activeDoNotDisturbRooms')}</span>
-             <span className="section-count">{formatNumber(snapshot.activeDoNotDisturbRooms.length, locale)}</span>
-           </div>
-           <div className="area-dnd-strip__rooms" role="list">
-             {snapshot.activeDoNotDisturbRooms.map((room) => (
-               <div className="area-dnd-room" role="listitem" key={room.id}>
-                 <Moon size={16} aria-hidden="true" />
-                 <strong>{room.code}</strong>
-                 <span>{resolveLocalizedDisplayName(room, locale)}</span>
-               </div>
-             ))}
-           </div>
-         </section>
-       )}
-
        <section aria-label={t('device.serviceRequests')}>
         <div className="filter-row" role="group" aria-label={t('device.filterAreaRequests')}>
           {AREA_FILTER_TABS.map((value) => (
             <button className={`filter-pill${filter === value ? ' filter-pill--active' : ''}`} type="button" key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}>
-              {requestStatusLabel(value === 'ALL' ? 'PENDING' : value, locale)}
+              {value === 'DO_NOT_DISTURB' ? t('device.doNotDisturb') : requestStatusLabel(value === 'ALL' ? 'PENDING' : value, locale)}
+              {value === 'DO_NOT_DISTURB' && <span className="area-dnd-tab-count" aria-live="polite">{formatNumber(activeDoNotDisturbRoomCount, locale)}</span>}
             </button>
           ))}
         </div>
+        {filter === 'DO_NOT_DISTURB' ? (
+          snapshot.activeDoNotDisturbRooms !== undefined && snapshot.activeDoNotDisturbRooms.length > 0 && (
+            <section className="area-dnd-strip" aria-label={t('device.activeDoNotDisturbRooms')}>
+              <div className="area-dnd-strip__rooms" role="list">
+                {snapshot.activeDoNotDisturbRooms.map((room) => {
+                  const displayName = resolveLocalizedDisplayName(room, locale);
+                  const nameIncludesRoomCode = localizedNameContainsRoomCode(displayName, room.code, locale);
+
+                  return <div className="area-dnd-room" role="listitem" key={room.id}>
+                    <Moon size={16} aria-hidden="true" />
+                    {nameIncludesRoomCode
+                      ? <strong>{displayName}</strong>
+                      : <><strong>{room.code}</strong><span>{displayName}</span></>}
+                  </div>;
+                })}
+              </div>
+            </section>
+          )
+        ) : (
+          <>
          <div className={`queue-board${filter === 'COMPLETED' ? ' queue-board--completed' : ''}`}>
            {columns.map((status) => {
             const requests = visibleRequests
@@ -1168,6 +1189,8 @@ function AreaDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
          >
            <span>{t('device.dropToComplete')}</span>
          </div>
+          </>
+        )}
        </section>
 
        {pendingModalRequest !== null && (

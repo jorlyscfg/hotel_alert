@@ -558,6 +558,7 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
 .empty-panel p { font-size: 0.74rem; line-height: 1.4; margin: 0; }
 .audit-preview { max-width: 680px; }
 .activity-row__mark { color: var(--coral) !important; font-size: 1.5rem !important; }
+.area-dnd-tab-count { align-items: center; background: #a94d3a; border-radius: 999px; color: #fff; display: inline-flex; flex: 0 0 auto; font-size: 0.66rem; font-weight: 800; justify-content: center; line-height: 1; margin-left: 8px; min-height: 20px; min-width: 20px; padding: 0 6px; }
 
 .filter-row { display: flex; flex-wrap: wrap; gap: 7px; }
 .app-frame--device:not(.app-frame--room) .filter-row { flex-wrap: nowrap; min-width: 0; width: 100%; }
