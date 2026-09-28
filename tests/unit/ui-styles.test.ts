@@ -74,6 +74,39 @@ describe('accessible UI styles', () => {
     expect(styles).toMatch(/\.device-layout--area \{[^}]*min-width: 0;/s);
   });
 
+  it('keeps the AREA console viewport fixed and scrolls each request column independently', () => {
+    const areaFrameRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \{[^}]*\}/s)?.[0] ?? '';
+    const areaContentRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \.device-content \{[^}]*\}/s)?.[0] ?? '';
+    const areaLayoutRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \.device-layout--area \{[^}]*\}/s)?.[0] ?? '';
+    const requestSectionRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \.device-layout--area > section\[aria-label\] \{[^}]*\}/s)?.[0] ?? '';
+    const queueBoardRule = styles.match(/\.queue-board \{[^}]*\}/s)?.[0] ?? '';
+    const queueColumnRule = styles.match(/\.queue-column \{[^}]*\}/s)?.[0] ?? '';
+    const queueBodyRule = styles.match(/\.queue-column__body \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(areaFrameRule).toContain('display: flex;');
+    expect(areaFrameRule).toContain('flex-direction: column;');
+    expect(areaFrameRule).toContain('height: var(--app-viewport-height);');
+    expect(areaFrameRule).toContain('overflow: hidden;');
+    expect(areaContentRule).toContain('flex: 1;');
+    expect(areaContentRule).toContain('min-height: 0;');
+    expect(areaContentRule).toContain('overflow: hidden;');
+    expect(areaLayoutRule).toContain('flex: 1;');
+    expect(areaLayoutRule).toContain('min-height: 0;');
+    expect(requestSectionRule).toContain('display: flex;');
+    expect(requestSectionRule).toContain('min-height: 0;');
+    expect(queueBoardRule).toContain('flex: 1 1 0;');
+    expect(queueBoardRule).toContain('min-height: 0;');
+    expect(queueColumnRule).toContain('display: flex;');
+    expect(queueColumnRule).toContain('flex-direction: column;');
+    expect(queueColumnRule).toContain('overflow: hidden;');
+    expect(queueBodyRule).toContain('flex: 1 1 0;');
+    expect(queueBodyRule).toContain('min-height: 0;');
+    expect(queueBodyRule).toContain('overflow-y: auto;');
+    expect(queueBodyRule).toContain('overscroll-behavior: contain;');
+    expect(styles).not.toMatch(/\.app-frame--room \.queue-column__body \{[^}]*overflow-y: auto;/s);
+    expect(styles).not.toMatch(/\.app-frame--admin \.queue-column__body \{[^}]*overflow-y: auto;/s);
+  });
+
   it('keeps the AREA topbar sticky and compact and gives its filters a light active state', () => {
     const topbarRule = styles.match(/\.topbar--area \{[^}]*\}/s)?.[0] ?? '';
     const activeFilterRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \.filter-pill--active \{[^}]*\}/s)?.[0] ?? '';
