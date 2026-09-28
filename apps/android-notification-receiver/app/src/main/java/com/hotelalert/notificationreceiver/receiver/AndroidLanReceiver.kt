@@ -46,8 +46,14 @@ class AndroidLanReceiver(
     private val onAuthFailure: (String) -> Unit = {},
     private val onDeviceInvalidated: suspend (String) -> Unit = {},
     private val onError: (String) -> Unit = {},
-    private val onSnapshotChanged: (String?) -> Unit = {}
+    private val onSnapshotChanged: (String?) -> Unit = {},
+    onPendingRequestWarning: () -> Unit = {}
 ) {
+    private val pendingRequestWarningController = PendingRequestWarningController(
+        scope = scope,
+        onWarning = onPendingRequestWarning
+    )
+
     private data class BufferedEvent(val eventName: String, val payload: Any?)
 
     private var configuration: ReceiverConfiguration? = null
@@ -108,6 +114,7 @@ class AndroidLanReceiver(
     fun stop() {
         if (stopped) return
         stopped = true
+        pendingRequestWarningController.dispose()
         streamSynchronized = false
         heartbeatJob?.cancel()
         heartbeatJob = null
@@ -396,6 +403,7 @@ class AndroidLanReceiver(
         val previousAreaId = snapshot?.areaId
         snapshot = nextSnapshot
         onSnapshotChanged(nextSnapshot.payloadJson)
+        pendingRequestWarningController.updateSnapshot(nextSnapshot.payloadJson)
         core = NotificationReceiverCore(nextSnapshot.areaId, cursorStore, sink)
         val token = tokenStore.read()
         if (token != null && config != null) {
@@ -426,6 +434,7 @@ class AndroidLanReceiver(
         socket?.disconnect()
         setState(ReceiverState.AUTH_FAILED)
         if (errorCode in INVALID_DEVICE_ASSIGNMENT_CODES) {
+            pendingRequestWarningController.updateSnapshot(null)
             onDeviceInvalidated(errorCode)
         }
         onAuthFailure(errorCode)

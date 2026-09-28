@@ -6,6 +6,8 @@ import com.hotelalert.notificationreceiver.network.HttpDeviceRequestCommandClien
 import com.hotelalert.notificationreceiver.network.HttpRoomPresenceClient
 import com.hotelalert.notificationreceiver.network.SocketIoRealtimeSocketFactory
 import com.hotelalert.notificationreceiver.notification.AndroidNotificationSink
+import com.hotelalert.notificationreceiver.notification.AudibleAlertFallback
+import com.hotelalert.notificationreceiver.notification.AudibleAlertPlayerConfiguration
 import com.hotelalert.notificationreceiver.protocol.NativePairingCoordinator
 import com.hotelalert.notificationreceiver.protocol.NativeRoomSessionCoordinator
 import com.hotelalert.notificationreceiver.protocol.RoomPresenceCoordinator
@@ -47,7 +49,7 @@ class HotelAlertApplication : Application() {
     }
 }
 
-class AndroidReceiverComponent(context: Application) {
+class AndroidReceiverComponent(private val context: Application) {
     val statusStore = ReceiverStatusStore()
     private val roomPresenceSessionStore = AndroidRoomPresenceSessionStore(context)
     val roomPresenceStatusStore = RoomPresenceStatusStore(
@@ -130,7 +132,10 @@ class AndroidReceiverComponent(context: Application) {
         onAuthFailure = { statusStore.update(com.hotelalert.notificationreceiver.protocol.ReceiverState.AUTH_FAILED) },
         onDeviceInvalidated = { clearInvalidatedDeviceState() },
         onError = { statusStore.update(com.hotelalert.notificationreceiver.protocol.ReceiverState.ERROR) },
-        onSnapshotChanged = snapshotStore::update
+        onSnapshotChanged = snapshotStore::update,
+        onPendingRequestWarning = {
+            AudibleAlertFallback.schedule(context, AudibleAlertPlayerConfiguration.requestAlert())
+        }
     )
 
     private suspend fun clearInvalidatedDeviceState() {
