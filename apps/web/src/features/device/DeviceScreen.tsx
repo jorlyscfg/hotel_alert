@@ -18,6 +18,7 @@ import {
   type QueuedRoomRequest
 } from '../../offline-queue';
 import { closeNotificationAudioContext, createNotificationAudioContext, playNotificationTone, replaceNotificationAudioContext } from '../../notification-audio';
+import { PendingRequestWarningController, resolveBrowserPendingWarningRequests } from './pending-request-warning';
 
 const { isRoomBackgroundValue } = Shared;
 
@@ -861,10 +862,16 @@ function AreaDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
   const knownPendingIdsRef = useRef<string[]>(initialPendingModalQueue);
   const audioContextRef = useRef<AudioContext | null>(null);
   const pendingToneAttemptRef = useRef<{ requestId: string; played: boolean } | null>(null);
+  const pendingRequestWarningControllerRef = useRef<PendingRequestWarningController | null>(null);
   const pointerDragRef = useRef<{ requestId: string; pointerId: number } | null>(null);
   const columns: Exclude<RequestStatus, 'COMPLETED'>[] = ['PENDING', 'ACCEPTED', 'IN_PROGRESS'];
   const visibleRequests = filterAreaRequests(snapshot.activeRequests, filter);
   const pendingRequestIdKey = snapshot.activeRequests.filter((request) => request.status === 'PENDING').map((request) => request.id).join('|');
+  const pendingRequestWarningKey = snapshot.activeRequests
+    .filter((request) => request.status === 'PENDING')
+    .map((request) => `${request.id}:${request.createdAt}`)
+    .sort()
+    .join('|');
   const pendingModalRequest = pendingModalQueue
     .map((requestId) => snapshot.activeRequests.find((request) => request.id === requestId && request.status === 'PENDING'))
     .find((request): request is RequestDTO => request !== undefined) ?? null;
@@ -876,6 +883,35 @@ function AreaDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
     knownPendingIdsRef.current = nextQueue.knownPendingIds;
     setPendingModalQueue(nextQueue.queue);
   }, [pendingRequestIdKey]);
+
+  useEffect(() => {
+    const controller = new PendingRequestWarningController(() => {
+      const existingContext = audioContextRef.current;
+      const context = existingContext?.state === 'closed'
+        ? createNotificationAudioContext()
+        : existingContext ?? createNotificationAudioContext();
+      if (context === null) return;
+      audioContextRef.current = context;
+      void playNotificationTone(context);
+    });
+    pendingRequestWarningControllerRef.current = controller;
+    return () => {
+      controller.dispose();
+      if (pendingRequestWarningControllerRef.current === controller) pendingRequestWarningControllerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const controller = pendingRequestWarningControllerRef.current;
+    if (controller === null) return;
+    const nativeBridgeCandidate = typeof window === 'undefined'
+      ? null
+      : (window as Window & { HotelAlertNative?: unknown }).HotelAlertNative;
+    controller.update(
+      resolveBrowserPendingWarningRequests(snapshot.activeRequests, nativeBridgeCandidate !== null && nativeBridgeCandidate !== undefined),
+      currentTime.getTime()
+    );
+  }, [currentTime, pendingRequestWarningKey, snapshot.activeRequests]);
 
   useEffect(() => {
     if (pendingModalRequest === null) return;
