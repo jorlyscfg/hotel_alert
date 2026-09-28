@@ -111,6 +111,8 @@ describe('accessible UI styles', () => {
 
   it('keeps the AREA topbar sticky and compact and gives its filters a light active state', () => {
     const topbarRule = styles.match(/\.topbar--area \{[^}]*\}/s)?.[0] ?? '';
+    const areaFilterRowRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \.filter-row \{[^}]*\}/s)?.[0] ?? '';
+    const areaFilterPillRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \.filter-pill \{[^}]*\}/s)?.[0] ?? '';
     const activeFilterRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \.filter-pill--active \{[^}]*\}/s)?.[0] ?? '';
     const completedQueueRule = styles.match(/\.queue-board--completed \{[^}]*\}/s)?.[0] ?? '';
 
@@ -118,6 +120,13 @@ describe('accessible UI styles', () => {
     expect(topbarRule).toContain('top: 0;');
     expect(topbarRule).toContain('padding: 6px 0;');
     expect(topbarRule).toContain('z-index: 30;');
+    expect(topbarRule).toContain('width: 100%;');
+    expect(topbarRule).toContain('min-width: 0;');
+    expect(topbarRule).not.toContain('max-width:');
+    expect(areaFilterRowRule).toContain('flex-wrap: nowrap;');
+    expect(areaFilterRowRule).toContain('width: 100%;');
+    expect(areaFilterPillRule).toContain('flex: 1 1 0;');
+    expect(areaFilterPillRule).toContain('min-width: 0;');
     expect(activeFilterRule).toContain('background: rgba(215, 109, 84, 0.12);');
     expect(activeFilterRule).toContain('border-color: var(--coral);');
     expect(activeFilterRule).toContain('color: var(--ink);');

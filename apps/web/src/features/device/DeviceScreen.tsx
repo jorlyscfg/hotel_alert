@@ -63,6 +63,7 @@ const TRANSITION_PATH: Record<Exclude<RequestStatus, 'COMPLETED'>, string> = {
 };
 
 const AREA_FILTERS = ['ALL', 'PENDING', 'IN_PROGRESS', 'COMPLETED'] as const;
+const AREA_FILTER_TABS = AREA_FILTERS.filter((value): value is 'ALL' | 'COMPLETED' => value === 'ALL' || value === 'COMPLETED');
 const ROOM_SERVICE_PAGE_SIZE = 9;
 const ROOM_AREA_PAGE_SIZE = 4;
 const ROOM_SQUARE_BREAKPOINT = 520;
@@ -1098,9 +1099,9 @@ function AreaDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
 
        <section aria-label={t('device.serviceRequests')}>
         <div className="filter-row" role="group" aria-label={t('device.filterAreaRequests')}>
-          {AREA_FILTERS.map((value) => (
+          {AREA_FILTER_TABS.map((value) => (
             <button className={`filter-pill${filter === value ? ' filter-pill--active' : ''}`} type="button" key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}>
-              {value === 'ALL' ? t('device.allActive') : requestStatusLabel(value, locale)}
+              {requestStatusLabel(value === 'ALL' ? 'PENDING' : value, locale)}
             </button>
           ))}
         </div>

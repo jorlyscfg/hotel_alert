@@ -19,7 +19,7 @@ import {
   resolveRoomBackgroundStyle
 } from '../../apps/web/src/features/device/DeviceScreen';
 import { ApiError, isDeviceAuthFailure } from '../../apps/web/src/api';
-import { I18nProvider } from '../../apps/web/src/i18n';
+import { I18nProvider, SpanishI18nProvider } from '../../apps/web/src/i18n';
 import type { DeviceSyncSnapshot, RequestDTO, ServiceDTO } from '@hotel/shared';
 
 type RoomSwipePageResolver = (
@@ -644,6 +644,24 @@ describe('device pending alert helpers', () => {
     expect(markup).toContain('data-area-drop-status="IN_PROGRESS"');
     expect(markup).toContain('aria-pressed="true"');
     expect(markup).toContain('queue-card__action');
+  });
+
+  it('shows only the Pendientes and Completadas AREA tabs', () => {
+    const markup = renderToStaticMarkup(createElement(SpanishI18nProvider, {
+      children: createElement(DeviceScreen, {
+        snapshot: createAreaSnapshot(),
+        deviceToken: 'device-token',
+        connectionStatus: 'online',
+        onRefresh: async () => undefined,
+        onOpenAdmin: () => undefined,
+        onAuthFailure: () => undefined
+      })
+    }));
+    const filterRowMarkup = markup.match(/<div class="filter-row"[^>]*>([\s\S]*?)<\/div><div class="queue-board/ )?.[1] ?? '';
+    const tabLabels = [...filterRowMarkup.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map(([, label]) => label);
+
+    expect(tabLabels).toEqual(['Pendientes', 'Completadas']);
+    expect(filterRowMarkup).toMatch(/class="filter-pill filter-pill--active"[^>]*aria-pressed="true"[^>]*>Pendientes<\/button>/);
   });
 
   it('renders active do-not-disturb rooms even when the AREA has no requests', () => {
