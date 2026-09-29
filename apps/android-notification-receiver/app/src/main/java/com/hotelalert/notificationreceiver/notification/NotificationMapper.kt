@@ -1,6 +1,7 @@
 package com.hotelalert.notificationreceiver.notification
 
 import com.hotelalert.notificationreceiver.protocol.RequestNotification
+import com.hotelalert.notificationreceiver.protocol.DoNotDisturbNotification
 
 enum class NotificationAction {
     OPEN_DIAGNOSTICS,
@@ -35,11 +36,17 @@ object NotificationMapper {
     fun shouldPostOperatorAlert(notification: RequestNotification, appInForeground: Boolean): Boolean =
         !appInForeground && notification.eventName == "request.created"
 
+    fun shouldPostOperatorAlert(notification: DoNotDisturbNotification, appInForeground: Boolean): Boolean =
+        !appInForeground
+
     /**
      * The audible fallback is deliberately limited to the same event boundary as
      * the operator alert. Status changes must never ring the tablet.
      */
     fun shouldPlayAudibleFallback(notification: RequestNotification, appInForeground: Boolean): Boolean =
+        shouldPostOperatorAlert(notification, appInForeground)
+
+    fun shouldPlayAudibleFallback(notification: DoNotDisturbNotification, appInForeground: Boolean): Boolean =
         shouldPostOperatorAlert(notification, appInForeground)
 
     /** A stable, per-request id required by Android 11+ bubble shortcuts. */
@@ -53,12 +60,12 @@ object NotificationMapper {
         val request = notification.request
         val isCreated = notification.eventName == "request.created"
         val text = if (isCreated) {
-            "${request.serviceDisplayName} · ${request.responsibleAreaDisplayName}"
+            "Área: ${request.responsibleAreaDisplayName}"
         } else {
-            "Request update: ${request.serviceDisplayName} (${request.status})"
+            "Actualización de solicitud · ${request.serviceDisplayName}"
         }
         val expandedText = if (isCreated) {
-            "Room: ${request.roomDisplayName}\nService: ${request.serviceDisplayName}\nArea: ${request.responsibleAreaDisplayName}"
+            "Habitación: ${request.roomCode}\nServicio: ${request.serviceDisplayName}\nÁrea: ${request.responsibleAreaDisplayName}"
         } else {
             text
         }
@@ -66,7 +73,11 @@ object NotificationMapper {
             notificationId = stableNotificationId(notification.eventId),
             channelId = REQUEST_CHANNEL_ID,
             groupKey = "hotel-alert-area:${request.responsibleAreaId}",
-            title = if (isCreated) "New request · ${request.roomDisplayName}" else "${request.roomDisplayName} · ${request.responsibleAreaDisplayName}",
+            title = if (isCreated) {
+                "Habitación ${request.roomCode} · ${request.serviceDisplayName}"
+            } else {
+                "${request.roomDisplayName} · ${request.responsibleAreaDisplayName}"
+            },
             text = text,
             expandedText = expandedText,
             action = if (canStartRequest(notification)) NotificationAction.START_REQUEST else NotificationAction.OPEN_DIAGNOSTICS,
@@ -79,6 +90,25 @@ object NotificationMapper {
             )
         )
     }
+
+    fun mapDoNotDisturb(
+        notification: DoNotDisturbNotification,
+        title: String,
+        text: String
+    ): NotificationContent = NotificationContent(
+        notificationId = stableNotificationId(notification.eventId),
+        channelId = REQUEST_CHANNEL_ID,
+        groupKey = "hotel-alert-do-not-disturb",
+        title = title,
+        text = text,
+        expandedText = text,
+        action = NotificationAction.OPEN_DIAGNOSTICS,
+        metadata = mapOf(
+            "eventId" to notification.eventId,
+            "roomId" to notification.roomId,
+            "doNotDisturb" to notification.enabled.toString()
+        )
+    )
 
     fun failureNotificationId(sourceNotificationId: Int): Int = sourceNotificationId xor 0x40000000
 

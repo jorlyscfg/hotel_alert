@@ -64,6 +64,7 @@ class AndroidLanReceiver(
     private var lastSeenEventSequence = cursorStore.lastSeenEventSequence
     private var synchronizedInFlight = false
     private var resyncRequested = false
+    private var authoritativeResyncRequested = false
     private var startRequested = false
     private var stopped = false
     private var authFailed = false
@@ -74,7 +75,12 @@ class AndroidLanReceiver(
     private val handlers = mutableMapOf<String, (Any?) -> Unit>()
 
     suspend fun start() {
-        if (startRequested) return
+        if (startRequested) {
+            if (!stopped && streamSynchronized && !authFailed) {
+                synchronize(refreshSnapshot = true, preserveProcessedEventState = true)
+            }
+            return
+        }
         if (stopped) throw IllegalStateException("The Android LAN receiver has been stopped.")
         startRequested = true
         setState(ReceiverState.FETCHING_SNAPSHOT)
@@ -178,17 +184,27 @@ class AndroidLanReceiver(
             return
         }
         resyncRequested = true
+        authoritativeResyncRequested = true
         synchronize(refreshSnapshot = true)
     }
 
-    private suspend fun synchronize(refreshSnapshot: Boolean) {
+    /**
+     * Event-triggered refreshes must retain processed state: their snapshot can already include
+     * buffered later events, and rebasing here would skip those durable transitions.
+     */
+    private suspend fun synchronize(refreshSnapshot: Boolean, preserveProcessedEventState: Boolean = false) {
         if (synchronizedInFlight) {
-            if (refreshSnapshot) resyncRequested = true
+            if (refreshSnapshot) {
+                resyncRequested = true
+                if (!preserveProcessedEventState) authoritativeResyncRequested = true
+            }
             return
         }
         synchronizedInFlight = true
         var shouldRefresh = refreshSnapshot || resyncRequested
+        var preserveEventStateForRefresh = preserveProcessedEventState && !authoritativeResyncRequested
         resyncRequested = false
+        authoritativeResyncRequested = false
         streamSynchronized = false
         heartbeatJob?.cancel()
         heartbeatJob = null
@@ -201,7 +217,8 @@ class AndroidLanReceiver(
                         ?: throw IllegalStateException("The Android receiver has no device token.")
                     replaceSnapshot(
                         snapshotClient.fetch(config.serverOrigin, config.deviceId, token),
-                        advanceCursor = true
+                        advanceCursor = !preserveEventStateForRefresh,
+                        preserveProcessedEventState = preserveEventStateForRefresh
                     )
                     shouldRefresh = false
                 }
@@ -219,6 +236,7 @@ class AndroidLanReceiver(
                 }
                 if (response.sync == SyncMode.FULL_SNAPSHOT_REQUIRED) {
                     shouldRefresh = true
+                    preserveEventStateForRefresh = false
                     continue
                 }
                 streamSynchronized = true
@@ -227,6 +245,8 @@ class AndroidLanReceiver(
                 scheduleHeartbeat()
                 if (resyncRequested) {
                     resyncRequested = false
+                    if (authoritativeResyncRequested) preserveEventStateForRefresh = false
+                    authoritativeResyncRequested = false
                     shouldRefresh = true
                     continue
                 }
@@ -254,7 +274,7 @@ class AndroidLanReceiver(
             handleRuntimeError(safeErrorCode(error))
             return
         }
-        if (requiresResync) synchronize(refreshSnapshot = true)
+        if (requiresResync) synchronize(refreshSnapshot = true, preserveProcessedEventState = true)
     }
 
     private suspend fun processEvent(eventName: String, payload: Any?): Boolean {
@@ -281,7 +301,7 @@ class AndroidLanReceiver(
         if (result.cursorAdvanced) {
             acknowledgeEvent(result, event)
         }
-        if (eventName == "device.config.changed" || eventName == "request.created" || eventName == "request.updated") {
+        if (eventName == "device.config.changed" || eventName == "request.created" || eventName == "request.updated" || eventName == "room.updated") {
             resyncRequested = true
             return true
         }
@@ -391,7 +411,11 @@ class AndroidLanReceiver(
         }
     }
 
-    private suspend fun replaceSnapshot(nextSnapshot: DeviceSessionSnapshot, advanceCursor: Boolean) {
+    private suspend fun replaceSnapshot(
+        nextSnapshot: DeviceSessionSnapshot,
+        advanceCursor: Boolean,
+        preserveProcessedEventState: Boolean = false
+    ) {
         val config = configuration
         if (config != null && nextSnapshot.deviceId != config.deviceId) {
             throw IllegalStateException("The device session snapshot does not match the configured device.")
@@ -401,10 +425,24 @@ class AndroidLanReceiver(
             lastSeenEventSequence = nextSnapshot.currentEventSequence
         }
         val previousAreaId = snapshot?.areaId
+        val previousCore = core
+        val previousDndBaseline = if (preserveProcessedEventState && previousCore != null) {
+            previousCore.activeDoNotDisturbRoomIdsSnapshot()
+        } else {
+            nextSnapshot.activeDoNotDisturbRoomIds
+        }
         snapshot = nextSnapshot
         onSnapshotChanged(nextSnapshot.payloadJson)
         pendingRequestWarningController.updateSnapshot(nextSnapshot.payloadJson)
-        core = NotificationReceiverCore(nextSnapshot.areaId, cursorStore, sink)
+        val canKeepCore = preserveProcessedEventState && previousAreaId == nextSnapshot.areaId && previousCore != null
+        if (!canKeepCore) {
+            core = NotificationReceiverCore(
+                nextSnapshot.areaId,
+                cursorStore,
+                sink,
+                initialActiveDoNotDisturbRoomIds = previousDndBaseline
+            )
+        }
         val token = tokenStore.read()
         if (token != null && config != null) {
             socket?.updateAuth(buildAuth(token))

@@ -41,8 +41,21 @@ data class RequestNotification(
     val request: RequestSnapshot
 )
 
+data class DoNotDisturbNotification(
+    val eventName: String,
+    val eventId: String,
+    val eventSequence: Long,
+    val occurredAt: String,
+    val roomId: String,
+    val roomCode: String,
+    val roomDisplayName: String,
+    val enabled: Boolean
+)
+
 interface NotificationSink {
     suspend fun deliver(notification: RequestNotification)
+
+    suspend fun deliver(notification: DoNotDisturbNotification) = Unit
 }
 
 interface DurableCursorStore {
@@ -56,7 +69,8 @@ interface DurableCursorStore {
 class NotificationReceiverCore(
     private val assignedAreaId: String,
     private val cursor: DurableCursorStore,
-    internal val sink: NotificationSink
+    internal val sink: NotificationSink,
+    initialActiveDoNotDisturbRoomIds: Set<String>? = null
 ) {
     enum class HandleOutcome {
         DEFERRED,
@@ -70,7 +84,9 @@ class NotificationReceiverCore(
         UNASSIGNED_AREA,
         DUPLICATE,
         OUT_OF_ORDER,
-        OLDER_AGGREGATE_VERSION
+        OLDER_AGGREGATE_VERSION,
+        DO_NOT_DISTURB_BASELINE_UNKNOWN,
+        DO_NOT_DISTURB_STATE_UNCHANGED
     }
 
     sealed interface HandleResult {
@@ -105,6 +121,15 @@ class NotificationReceiverCore(
         override val cursorAdvanced = true
     }
 
+    data class DoNotDisturbDeliveredResult(
+        val notification: DoNotDisturbNotification,
+        override val cursorSequence: Long
+    ) : HandleResult {
+        override val outcome = HandleOutcome.DELIVERED
+        override val reason: IgnoreReason? = null
+        override val cursorAdvanced = true
+    }
+
     private data class FailedEvent(
         val rawEvent: JSONObject,
         val eventId: String?,
@@ -114,8 +139,11 @@ class NotificationReceiverCore(
     private val mutex = Mutex()
     private val seenEventIds = LinkedHashSet<String>()
     private val aggregateVersions = LinkedHashMap<String, Long>()
+    private var activeDoNotDisturbRoomIds = initialActiveDoNotDisturbRoomIds?.toMutableSet()
     private var lastSeenEventSequence = cursor.lastSeenEventSequence
     private var failedEvent: FailedEvent? = null
+
+    internal fun activeDoNotDisturbRoomIdsSnapshot(): Set<String>? = activeDoNotDisturbRoomIds?.toSet()
 
     suspend fun handle(rawEvent: JSONObject, synchronized: Boolean): HandleResult = mutex.withLock {
         val event = parseDurableRealtimeEvent(rawEvent)
@@ -140,6 +168,11 @@ class NotificationReceiverCore(
         if (!synchronized) return DeferredResult(lastSeenEventSequence)
         if (seenEventIds.contains(event.eventId)) return ignored(IgnoreReason.DUPLICATE, false)
         if (event.eventSequence <= lastSeenEventSequence) return ignored(IgnoreReason.OUT_OF_ORDER, false)
+
+        val doNotDisturbNotification = parseDoNotDisturbNotification(event)
+        if (doNotDisturbNotification != null) {
+            return processDoNotDisturbEvent(event, doNotDisturbNotification)
+        }
 
         val requestNotification = parseRequestNotification(event)
         val isRecognizedRequestName = event.aggregateType == "REQUEST"
@@ -174,6 +207,31 @@ class NotificationReceiverCore(
         advanceCursor(event.eventSequence)
         rememberAcceptedEvent(event.eventId, aggregateKey, aggregateVersion)
         return DeliveredResult(requestNotification, lastSeenEventSequence)
+    }
+
+    private suspend fun processDoNotDisturbEvent(
+        event: DurableRealtimeEvent,
+        notification: DoNotDisturbNotification
+    ): HandleResult {
+        val knownRoomIds = activeDoNotDisturbRoomIds
+        if (knownRoomIds == null) {
+            advanceCursor(event.eventSequence)
+            rememberEvent(event.eventId)
+            return ignored(IgnoreReason.DO_NOT_DISTURB_BASELINE_UNKNOWN, true)
+        }
+
+        val wasEnabled = notification.roomId in knownRoomIds
+        val changed = wasEnabled != notification.enabled
+        if (changed) sink.deliver(notification)
+
+        advanceCursor(event.eventSequence)
+        rememberEvent(event.eventId)
+        if (changed) {
+            if (notification.enabled) knownRoomIds += notification.roomId
+            else knownRoomIds -= notification.roomId
+            return DoNotDisturbDeliveredResult(notification, lastSeenEventSequence)
+        }
+        return ignored(IgnoreReason.DO_NOT_DISTURB_STATE_UNCHANGED, true)
     }
 
     private suspend fun advanceCursor(eventSequence: Long) {
@@ -216,6 +274,26 @@ class NotificationReceiverCore(
         private const val MAX_TRACKED_EVENT_IDS = 2_048
         private const val MAX_TRACKED_AGGREGATES = 2_048
     }
+}
+
+private fun parseDoNotDisturbNotification(event: DurableRealtimeEvent): DoNotDisturbNotification? {
+    if (event.aggregateType != "ROOM" || event.name != "room.updated") return null
+    val room = event.payload.optJSONObject("room") ?: return null
+    val roomId = room.requiredString("id") ?: return null
+    if (roomId != event.aggregateId) return null
+    val roomCode = room.requiredString("code") ?: return null
+    val roomDisplayName = room.requiredString("displayName") ?: return null
+    val enabled = room.opt("doNotDisturb") as? Boolean ?: return null
+    return DoNotDisturbNotification(
+        eventName = event.name,
+        eventId = event.eventId,
+        eventSequence = event.eventSequence,
+        occurredAt = event.occurredAt,
+        roomId = roomId,
+        roomCode = roomCode,
+        roomDisplayName = roomDisplayName,
+        enabled = enabled
+    )
 }
 
 fun parseDurableRealtimeEvent(value: JSONObject): DurableRealtimeEvent? {

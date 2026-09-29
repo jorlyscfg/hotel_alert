@@ -27,9 +27,9 @@ class RoomHomeLauncherPolicyTest {
     }
 
     @Test
-    fun `HOME status reads the RoleManager role on modern Android and resolved Home on older versions`() {
+    fun `concrete resolved HOME package takes precedence and RoleManager is the fallback`() {
         assertEquals(
-            RoomHomeStatus.HOTEL_ALERT_DEFAULT,
+            RoomHomeStatus.ANOTHER_APP_DEFAULT,
             resolveRoomHomeStatus(35, true, true, "other.launcher", "hotel.alert")
         )
         assertEquals(
@@ -43,6 +43,14 @@ class RoomHomeLauncherPolicyTest {
         assertEquals(
             RoomHomeStatus.ANOTHER_APP_DEFAULT,
             resolveRoomHomeStatus(28, false, false, "other.launcher", "hotel.alert")
+        )
+        assertEquals(
+            RoomHomeStatus.HOTEL_ALERT_DEFAULT,
+            resolveRoomHomeStatus(35, true, true, null, "hotel.alert")
+        )
+        assertEquals(
+            RoomHomeStatus.ANOTHER_APP_DEFAULT,
+            resolveRoomHomeStatus(35, true, false, null, "hotel.alert")
         )
         assertEquals(
             RoomHomeStatus.UNKNOWN,

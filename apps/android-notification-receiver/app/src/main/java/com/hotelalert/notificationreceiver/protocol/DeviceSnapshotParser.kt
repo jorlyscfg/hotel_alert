@@ -68,8 +68,22 @@ object DeviceSnapshotParser {
             areaDisplayName = areaDisplayName,
             currentEventSequence = currentEventSequence,
             deviceConfigVersion = deviceConfigVersion,
-            heartbeatIntervalMs = heartbeatIntervalMs
+            heartbeatIntervalMs = heartbeatIntervalMs,
+            activeDoNotDisturbRoomIds = data.activeDoNotDisturbRoomIds()
         )
+    }
+
+    private fun JSONObject.activeDoNotDisturbRoomIds(): Set<String>? {
+        if (!has("activeDoNotDisturbRooms")) return null
+        val rooms = optJSONArray("activeDoNotDisturbRooms") ?: return null
+        val roomIds = linkedSetOf<String>()
+        for (index in 0 until rooms.length()) {
+            val room = rooms.optJSONObject(index) ?: return null
+            val id = room.requiredString("id") ?: return null
+            if (room.opt("doNotDisturb") != true) return null
+            roomIds += id
+        }
+        return roomIds
     }
 
     private fun JSONObject.requiredString(key: String): String? {

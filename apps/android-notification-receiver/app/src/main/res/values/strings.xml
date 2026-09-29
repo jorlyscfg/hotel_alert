@@ -3,6 +3,9 @@
     <string name="app_name">Hotel Alert</string>
     <string name="receiver_channel_name">Solicitudes de Hotel Alert</string>
     <string name="receiver_channel_description">Notificaciones de solicitudes de servicio de habitaciones con acciones.</string>
+    <string name="receiver_dnd_notification_title">No molestar · Habitación %1$s</string>
+    <string name="receiver_dnd_enabled_notification">No molestar activado en la habitación %1$s.</string>
+    <string name="receiver_dnd_disabled_notification">No molestar desactivado en la habitación %1$s.</string>
     <string name="receiver_service_notification">El receptor de Hotel Alert está en ejecución</string>
     <string name="room_presence_service_notification">La estación de habitación de Hotel Alert está activa</string>
     <string name="room_presence_service_description">Manteniendo la conexión de la estación de habitación</string>

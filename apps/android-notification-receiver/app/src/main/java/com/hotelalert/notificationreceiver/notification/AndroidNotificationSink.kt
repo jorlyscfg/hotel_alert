@@ -18,6 +18,7 @@ import com.hotelalert.notificationreceiver.MainActivity
 import com.hotelalert.notificationreceiver.R
 import com.hotelalert.notificationreceiver.protocol.NotificationSink
 import com.hotelalert.notificationreceiver.protocol.RequestNotification
+import com.hotelalert.notificationreceiver.protocol.DoNotDisturbNotification
 import com.hotelalert.notificationreceiver.receiver.NotificationActionReceiver
 
 class AndroidNotificationSink(
@@ -29,7 +30,8 @@ class AndroidNotificationSink(
     }
 
     override suspend fun deliver(notification: RequestNotification) {
-        if (!NotificationMapper.shouldPostOperatorAlert(notification, isAppInForeground())) return
+        val appInForeground = isAppInForeground()
+        if (!NotificationMapper.shouldPostOperatorAlert(notification, appInForeground)) return
         val manager = NotificationManagerCompat.from(context)
         if (!manager.areNotificationsEnabled()
             || android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU
@@ -129,8 +131,61 @@ class AndroidNotificationSink(
             )
         }
         manager.notify(content.notificationId, builder.build())
-        if (NotificationMapper.shouldPlayAudibleFallback(notification, isAppInForeground())) {
+        if (NotificationMapper.shouldPlayAudibleFallback(notification, appInForeground)) {
             AudibleAlertFallback.schedule(context)
+        }
+    }
+
+    override suspend fun deliver(notification: DoNotDisturbNotification) {
+        val appInForeground = isAppInForeground()
+        if (!NotificationMapper.shouldPostOperatorAlert(notification, appInForeground)) return
+        val manager = NotificationManagerCompat.from(context)
+        if (!manager.areNotificationsEnabled()
+            || android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU
+            && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            throw NotificationPermissionDeniedException()
+        }
+
+        val stateText = context.getString(
+            if (notification.enabled) R.string.receiver_dnd_enabled_notification
+            else R.string.receiver_dnd_disabled_notification,
+            notification.roomCode
+        )
+        val content = NotificationMapper.mapDoNotDisturb(
+            notification,
+            title = context.getString(R.string.receiver_dnd_notification_title, notification.roomCode),
+            text = stateText
+        )
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(MainActivity.EXTRA_EVENT_ID, notification.eventId)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            content.notificationId,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val builder = NotificationCompat.Builder(context, content.channelId)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(content.title)
+            .setContentText(content.text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(content.expandedText))
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setGroup(content.groupKey)
+            .setOnlyAlertOnce(false)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_EVENT)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setDefaults(0)
+            .setSound(null)
+        manager.notify(content.notificationId, builder.build())
+        if (NotificationMapper.shouldPlayAudibleFallback(notification, appInForeground)) {
+            AudibleAlertFallback.schedule(
+                context,
+                AudibleAlertPlayerConfiguration.doNotDisturb(notification.enabled)
+            )
         }
     }
 

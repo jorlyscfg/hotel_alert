@@ -33,6 +33,6 @@ internal class RoomMaintenanceTapGate(
 
     companion object {
         const val REQUIRED_TAPS = 4
-        const val MAXIMUM_GAP_MILLIS = 1_500L
+        const val MAXIMUM_GAP_MILLIS = 500L
     }
 }

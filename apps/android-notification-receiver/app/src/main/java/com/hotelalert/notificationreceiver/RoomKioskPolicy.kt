@@ -16,6 +16,12 @@ internal fun shouldRequestHomeRole(
 ): Boolean = apiLevel >= 29 && hasRoomSession && roleAvailable && !roleHeld && !requestAlreadyAttempted
 
 internal fun shouldRestoreRoomPresence(action: String?, hasRoomSession: Boolean): Boolean =
+    shouldHandleRoomRestoreAction(action, hasRoomSession)
+
+internal fun shouldAttemptRoomActivityLaunch(action: String?, hasRoomSession: Boolean): Boolean =
+    shouldHandleRoomRestoreAction(action, hasRoomSession)
+
+private fun shouldHandleRoomRestoreAction(action: String?, hasRoomSession: Boolean): Boolean =
     hasRoomSession && action != null && action in ROOM_PRESENCE_RESTORE_ACTIONS
 
 internal fun shouldAttemptRoomWakeRecovery(

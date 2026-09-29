@@ -6,13 +6,13 @@ import org.junit.Test
 
 class RoomMaintenancePolicyTest {
     @Test
-    fun `opens the PIN gate only after four consecutive quick taps in a ROOM session`() {
+    fun `opens the PIN gate on four taps spaced at the 500 ms limit`() {
         val gate = RoomMaintenanceTapGate()
 
         assertFalse(gate.onTap(hasRoomSession = true, maintenanceOpen = false, nowMillis = 0L))
-        assertFalse(gate.onTap(hasRoomSession = true, maintenanceOpen = false, nowMillis = 200L))
-        assertFalse(gate.onTap(hasRoomSession = true, maintenanceOpen = false, nowMillis = 400L))
-        assertTrue(gate.onTap(hasRoomSession = true, maintenanceOpen = false, nowMillis = 600L))
+        assertFalse(gate.onTap(hasRoomSession = true, maintenanceOpen = false, nowMillis = 500L))
+        assertFalse(gate.onTap(hasRoomSession = true, maintenanceOpen = false, nowMillis = 1_000L))
+        assertTrue(gate.onTap(hasRoomSession = true, maintenanceOpen = false, nowMillis = 1_500L))
     }
 
     @Test
@@ -28,12 +28,15 @@ class RoomMaintenancePolicyTest {
     }
 
     @Test
-    fun `a pause longer than the tap window begins a new sequence`() {
+    fun `a 501 ms pause resets the sequence`() {
         val gate = RoomMaintenanceTapGate()
         gate.onTap(hasRoomSession = true, maintenanceOpen = false, nowMillis = 1_000L)
         gate.onTap(hasRoomSession = true, maintenanceOpen = false, nowMillis = 1_100L)
         gate.onTap(hasRoomSession = true, maintenanceOpen = false, nowMillis = 1_200L)
 
+        assertFalse(gate.onTap(hasRoomSession = true, maintenanceOpen = false, nowMillis = 1_701L))
+        assertFalse(gate.onTap(hasRoomSession = true, maintenanceOpen = false, nowMillis = 2_201L))
         assertFalse(gate.onTap(hasRoomSession = true, maintenanceOpen = false, nowMillis = 2_701L))
+        assertTrue(gate.onTap(hasRoomSession = true, maintenanceOpen = false, nowMillis = 3_201L))
     }
 }

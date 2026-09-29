@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import com.hotelalert.notificationreceiver.notification.NotificationMapper
+import com.hotelalert.notificationreceiver.notification.NotificationAction
 import com.hotelalert.notificationreceiver.notification.AudibleAlertBlockReason
 import com.hotelalert.notificationreceiver.notification.AudibleAlertEligibility
 import com.hotelalert.notificationreceiver.notification.AudibleAlertEligibilityState
@@ -16,6 +17,7 @@ import com.hotelalert.notificationreceiver.notification.verifyBuiltInSpeakerRout
 import com.hotelalert.notificationreceiver.notification.SpeakerRouteCheckResult
 import com.hotelalert.notificationreceiver.notification.requestChannelImportance
 import com.hotelalert.notificationreceiver.protocol.RequestNotification
+import com.hotelalert.notificationreceiver.protocol.DoNotDisturbNotification
 import com.hotelalert.notificationreceiver.protocol.ReceiverState
 import com.hotelalert.notificationreceiver.R
 import com.hotelalert.notificationreceiver.ui.receiverStateLabel
@@ -53,6 +55,52 @@ class NotificationSurfacesTest {
         assertTrue(NotificationMapper.shouldPlayAudibleFallback(created, appInForeground = false))
         assertFalse(NotificationMapper.shouldPlayAudibleFallback(created, appInForeground = true))
         assertFalse(NotificationMapper.shouldPlayAudibleFallback(updated, appInForeground = false))
+    }
+
+    @Test
+    fun doNotDisturbNotificationsAreBackgroundOnlyAndNeverExposeRequestActions() {
+        val notification = DoNotDisturbNotification(
+            eventName = "room.updated",
+            eventId = "event-dnd-alert",
+            eventSequence = 18,
+            occurredAt = "2026-09-19T00:00:00Z",
+            roomId = "room-1",
+            roomCode = "101",
+            roomDisplayName = "Room 101",
+            enabled = true
+        )
+        val content = NotificationMapper.mapDoNotDisturb(
+            notification,
+            title = "No molestar · Habitación 101",
+            text = "No molestar activado en la habitación 101"
+        )
+
+        assertTrue(NotificationMapper.shouldPostOperatorAlert(notification, appInForeground = false))
+        assertFalse(NotificationMapper.shouldPostOperatorAlert(notification, appInForeground = true))
+        assertTrue(NotificationMapper.shouldPlayAudibleFallback(notification, appInForeground = false))
+        assertFalse(NotificationMapper.shouldPlayAudibleFallback(notification, appInForeground = true))
+        assertEquals(NotificationMapper.REQUEST_CHANNEL_ID, content.channelId)
+        assertEquals(NotificationAction.OPEN_DIAGNOSTICS, content.action)
+        assertNull(content.metadata["requestId"])
+        assertEquals("room-1", content.metadata["roomId"])
+        assertEquals("No molestar · Habitación 101", content.title)
+        assertEquals("No molestar activado en la habitación 101", content.text)
+    }
+
+    @Test
+    fun doNotDisturbAudioUsesOppositeContoursDistinctFromRequestBell() {
+        val request = AudibleAlertPlayerConfiguration.requestAlert()
+        val activated = AudibleAlertPlayerConfiguration.doNotDisturb(enabled = true)
+        val deactivated = AudibleAlertPlayerConfiguration.doNotDisturb(enabled = false)
+
+        assertEquals(R.raw.hotel_alert_bell, request.resourceId)
+        assertEquals(R.raw.hotel_alert_dnd_active, activated.resourceId)
+        assertEquals(R.raw.hotel_alert_dnd_inactive, deactivated.resourceId)
+        assertTrue(activated.resourceId != deactivated.resourceId)
+        assertTrue(activated.resourceId != request.resourceId)
+        assertTrue(deactivated.resourceId != request.resourceId)
+        assertEquals(AudioAttributes.USAGE_NOTIFICATION, activated.usage)
+        assertEquals(AudioAttributes.CONTENT_TYPE_SONIFICATION, deactivated.contentType)
     }
 
     @Test

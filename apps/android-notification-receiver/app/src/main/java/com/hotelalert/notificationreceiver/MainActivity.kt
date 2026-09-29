@@ -196,6 +196,7 @@ class MainActivity : ComponentActivity() {
                                     onOpenHomeSelectionSettings = ::openHomeSelectionSettings,
                                     onClearManagedHome = ::clearManagedHome,
                                     onOpenAndroidSettings = ::openAndroidSettings,
+                                    onOpenWirelessDebuggingSettings = ::openWirelessDebuggingSettings,
                                     onManageOverlayPermission = ::openOverlayPermissionSettings,
                                     onStrictModeChange = { strictModeDraft = it },
                                     onChangePin = ::changeMaintenancePin,
@@ -643,6 +644,26 @@ class MainActivity : ComponentActivity() {
         }.onFailure {
             kioskControlMessage = "No se pudo abrir la configuración de Android en este dispositivo."
         }
+    }
+
+    private fun openWirelessDebuggingSettings() {
+        if (!isMaintenanceSettingsOpen() || !ensureRoomLockTaskExitedSafely()) return
+        try {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
+        } catch (_: ActivityNotFoundException) {
+            openGeneralSettingsForWirelessDebugging()
+        } catch (error: Exception) {
+            Log.w(TAG, "Android developer settings could not be opened.", error)
+            openGeneralSettingsForWirelessDebugging()
+        }
+    }
+
+    private fun openGeneralSettingsForWirelessDebugging() {
+        kioskControlMessage = "Las opciones de desarrollador no están disponibles. Se abrirá la configuración general de Android; busca allí las opciones de desarrollador."
+        runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+            .onFailure {
+                kioskControlMessage = "No se pudieron abrir las opciones de desarrollador ni la configuración de Android."
+            }
     }
 
     private fun openOverlayPermissionSettings() {

@@ -90,6 +90,7 @@ internal fun RoomMaintenanceSettingsScreen(
     onOpenHomeSelectionSettings: () -> Unit,
     onClearManagedHome: () -> Unit,
     onOpenAndroidSettings: () -> Unit,
+    onOpenWirelessDebuggingSettings: () -> Unit,
     onManageOverlayPermission: () -> Unit,
     onStrictModeChange: (Boolean) -> Unit,
     onChangePin: (String) -> Unit,
@@ -135,6 +136,14 @@ internal fun RoomMaintenanceSettingsScreen(
                 }
                 Button(onClick = onOpenAndroidSettings, modifier = Modifier.fillMaxWidth()) {
                     Text("Abrir la configuración de Android")
+                }
+                Text("Depuración inalámbrica", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Abre las opciones de desarrollador y activa Depuración inalámbrica manualmente. Después de reiniciar, Android puede mostrar un puerto distinto; utiliza el puerto que aparezca allí. Hotel Alert no puede activar esta opción automáticamente.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Button(onClick = onOpenWirelessDebuggingSettings, modifier = Modifier.fillMaxWidth()) {
+                    Text("Configurar depuración inalámbrica")
                 }
                 Text("Volver a la habitación al activar la pantalla", style = MaterialTheme.typography.titleMedium)
                 Text(

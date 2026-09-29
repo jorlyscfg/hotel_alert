@@ -3,6 +3,7 @@ package com.hotelalert.notificationreceiver
 import com.hotelalert.notificationreceiver.notification.NotificationAction
 import com.hotelalert.notificationreceiver.notification.NotificationMapper
 import com.hotelalert.notificationreceiver.protocol.DurableCursorStore
+import com.hotelalert.notificationreceiver.protocol.DoNotDisturbNotification
 import com.hotelalert.notificationreceiver.protocol.NotificationReceiverCore
 import com.hotelalert.notificationreceiver.protocol.NotificationSink
 import com.hotelalert.notificationreceiver.protocol.RequestNotification
@@ -99,6 +100,73 @@ class NotificationReceiverCoreTest {
         assertEquals(8L, cursor.lastSeenEventSequence)
     }
 
+    @Test
+    fun roomDoNotDisturbTransitionsAlertOnlyAgainstTheSnapshotBaseline() = runTest {
+        val cursor = TestCursor()
+        val sink = RecordingSink()
+        val receiver = NotificationReceiverCore(
+            "area-a",
+            cursor,
+            sink,
+            initialActiveDoNotDisturbRoomIds = emptySet()
+        )
+
+        val activation = roomUpdatedEvent("event-dnd-on", 1, enabled = true)
+        receiver.handle(activation, synchronized = true)
+        val duplicate = receiver.handle(activation, synchronized = true)
+        val older = receiver.handle(roomUpdatedEvent("event-dnd-old", 0, enabled = false), synchronized = true)
+        val metadataOnly = receiver.handle(
+            roomUpdatedEvent("event-dnd-metadata", 2, enabled = true, code = "101 refreshed"),
+            synchronized = true
+        )
+        receiver.handle(roomUpdatedEvent("event-dnd-off", 3, enabled = false), synchronized = true)
+
+        assertEquals(NotificationReceiverCore.IgnoreReason.DUPLICATE, duplicate.reason)
+        assertEquals(NotificationReceiverCore.IgnoreReason.OUT_OF_ORDER, older.reason)
+        assertEquals(NotificationReceiverCore.IgnoreReason.DO_NOT_DISTURB_STATE_UNCHANGED, metadataOnly.reason)
+        assertEquals(listOf(true, false), sink.doNotDisturbDelivered.map(DoNotDisturbNotification::enabled))
+        assertEquals(3L, cursor.lastSeenEventSequence)
+    }
+
+    @Test
+    fun roomDoNotDisturbChangesDoNotAlertWhenTheSnapshotBaselineIsUnknown() = runTest {
+        val cursor = TestCursor()
+        val sink = RecordingSink()
+        val receiver = NotificationReceiverCore("area-a", cursor, sink)
+
+        val result = receiver.handle(roomUpdatedEvent("event-dnd-unknown", 1, enabled = true), synchronized = true)
+
+        assertEquals(NotificationReceiverCore.IgnoreReason.DO_NOT_DISTURB_BASELINE_UNKNOWN, result.reason)
+        assertTrue(sink.doNotDisturbDelivered.isEmpty())
+        assertEquals(1L, cursor.lastSeenEventSequence)
+    }
+
+    @Test
+    fun doNotDisturbSinkFailureDoesNotAdvanceStateAndRetriesTheDurableEvent() = runTest {
+        val cursor = TestCursor()
+        val sink = RecordingSink(failuresRemaining = 1)
+        val receiver = NotificationReceiverCore(
+            "area-a",
+            cursor,
+            sink,
+            initialActiveDoNotDisturbRoomIds = emptySet()
+        )
+        val activation = roomUpdatedEvent("event-dnd-retry", 1, enabled = true)
+
+        assertSuspendingFailure { receiver.handle(activation, synchronized = true) }
+        assertEquals(0L, cursor.lastSeenEventSequence)
+        assertTrue(sink.doNotDisturbDelivered.isEmpty())
+        assertSuspendingFailure {
+            receiver.handle(roomUpdatedEvent("event-dnd-later", 2, enabled = true), synchronized = true)
+        }
+
+        receiver.handle(activation, synchronized = true)
+        receiver.handle(roomUpdatedEvent("event-dnd-later", 2, enabled = true), synchronized = true)
+
+        assertEquals(listOf(true), sink.doNotDisturbDelivered.map(DoNotDisturbNotification::enabled))
+        assertEquals(2L, cursor.lastSeenEventSequence)
+    }
+
     private suspend fun assertSuspendingFailure(block: suspend () -> Unit) {
         try {
             block()
@@ -125,7 +193,7 @@ class NotificationReceiverCoreTest {
         assertEquals("request-1", content.metadata["requestId"])
         assertEquals("1", content.metadata["expectedVersion"])
         assertTrue(content.metadata["idempotencyKey"]?.startsWith("notification-") == true)
-        assertTrue(content.title.contains("Room 101"))
+        assertEquals("Habitación 101 · Fresh towels", content.title)
     }
 
     @Test
@@ -192,10 +260,14 @@ class NotificationReceiverCoreTest {
         val content = NotificationMapper.map(notification)
 
         assertEquals(NotificationAction.START_REQUEST, content.action)
-        assertTrue(content.title.contains("Room 101"))
-        assertTrue(content.text.contains("Fresh towels"))
-        assertTrue(content.text.contains("Housekeeping"))
-        assertTrue(content.expandedText.contains("Room 101"))
+        assertEquals("Habitación 101 · Fresh towels", content.title)
+        assertEquals("Área: Housekeeping", content.text)
+        assertFalse(content.title.contains("New request"))
+        assertEquals(
+            "Habitación: 101\nServicio: Fresh towels\nÁrea: Housekeeping",
+            content.expandedText
+        )
+        assertTrue(content.expandedText.contains("Habitación: 101"))
         assertTrue(content.expandedText.contains("Fresh towels"))
         assertTrue(content.expandedText.contains("Housekeeping"))
     }
@@ -227,6 +299,7 @@ class NotificationReceiverCoreTest {
 
     private class RecordingSink(var failuresRemaining: Int = 0) : NotificationSink {
         val delivered = mutableListOf<RequestNotification>()
+        val doNotDisturbDelivered = mutableListOf<DoNotDisturbNotification>()
 
         override suspend fun deliver(notification: RequestNotification) {
             if (failuresRemaining > 0) {
@@ -235,8 +308,42 @@ class NotificationReceiverCoreTest {
             }
             delivered += notification
         }
+
+        override suspend fun deliver(notification: DoNotDisturbNotification) {
+            if (failuresRemaining > 0) {
+                failuresRemaining -= 1
+                throw IllegalStateException("sink unavailable")
+            }
+            doNotDisturbDelivered += notification
+        }
     }
 }
+
+internal fun roomUpdatedEvent(
+    eventId: String,
+    sequence: Long,
+    enabled: Boolean,
+    code: String = "101"
+): JSONObject = JSONObject()
+    .put("schemaVersion", 1)
+    .put("eventId", eventId)
+    .put("eventSequence", sequence)
+    .put("name", "room.updated")
+    .put("occurredAt", "2026-09-19T00:00:00Z")
+    .put("aggregateType", "ROOM")
+    .put("aggregateId", "room-1")
+    .put("aggregateVersion", sequence)
+    .put(
+        "payload",
+        JSONObject().put(
+            "room",
+            JSONObject()
+                .put("id", "room-1")
+                .put("code", code)
+                .put("displayName", "Room 101")
+                .put("doNotDisturb", enabled)
+        )
+    )
 
 internal fun requestCreatedEvent(
     eventId: String,

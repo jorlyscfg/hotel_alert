@@ -46,7 +46,9 @@ data class DeviceSessionSnapshot(
     val currentEventSequence: Long,
     val deviceConfigVersion: Long,
     val heartbeatIntervalMs: Long,
-    val payloadJson: String? = null
+    val payloadJson: String? = null,
+    /** Null means this snapshot version cannot establish authoritative DND state. */
+    val activeDoNotDisturbRoomIds: Set<String>? = null
 )
 
 interface DeviceSnapshotClient {

@@ -1,6 +1,8 @@
 # Android Kiosk Guide
 
-The web application supports Android room devices through a modern kiosk browser. Hardware power, auto-start, Wi-Fi persistence, and watchdog behavior are deployment responsibilities rather than browser guarantees.
+This guide covers the existing managed browser/MDM kiosk deployment only. The web application supports Android room devices through a modern kiosk browser, but hardware power, auto-start, Wi-Fi persistence, and watchdog behavior are deployment responsibilities rather than browser guarantees. It does not provide native OS background notification delivery.
+
+The separate native Jetpack Compose target is not implemented yet. Its lifecycle, notification permission, secure storage, cursor, and verification boundary are documented in [`notification-receiver.md`](notification-receiver.md).
 
 ## Device checklist
 
@@ -41,6 +43,12 @@ If browser storage is cleared, the device cannot recover its bearer token from t
 - `DISABLED`: administrator disabled the device.
 
 The device reports connection and synchronization state, but presence does not prove that the physical display is visible or that audio is audible. Enable audio from a user gesture and define a visible fallback for pending alerts.
+
+## Managed kiosk boundary
+
+MDM can keep the kiosk URL, browser site data, screen policy, and crash-restart policy in place. It cannot guarantee that the browser process, JavaScript event loop, or WebSocket remains alive after the page is hidden, the process is reclaimed, or the device is force-stopped. Browser permissions and site-data storage are also not equivalent to a native OS notification sink or a Keystore-backed token store.
+
+Use the kiosk as the current web-display path. Do not describe it as T3-A support or as a substitute for a native Compose application with a platform-owned background delivery lifecycle.
 
 ## Recovery checks
 

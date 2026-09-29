@@ -1,5 +1,6 @@
 package com.hotelalert.notificationreceiver
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -32,12 +33,39 @@ class RoomKioskPolicyTest {
     }
 
     @Test
+    fun `canceled automatic HOME selection stays one-shot while maintenance can explicitly retry`() {
+        val automaticAttemptWasPersistedBeforeOpeningChooser = true
+        assertFalse(
+            shouldRequestHomeRole(
+                apiLevel = 35,
+                hasRoomSession = true,
+                roleAvailable = true,
+                roleHeld = false,
+                requestAlreadyAttempted = automaticAttemptWasPersistedBeforeOpeningChooser
+            )
+        )
+        assertEquals(
+            HomeSelectionAction.REQUEST_HOME_ROLE,
+            chooseHomeSelectionAction(apiLevel = 35, roleAvailable = true, isDeviceOwner = false)
+        )
+    }
+
+    @Test
     fun `system restoration accepts only boot and package replacement with a ROOM session`() {
         assertTrue(shouldRestoreRoomPresence(ACTION_BOOT_COMPLETED, hasRoomSession = true))
         assertTrue(shouldRestoreRoomPresence(ACTION_MY_PACKAGE_REPLACED, hasRoomSession = true))
         assertFalse(shouldRestoreRoomPresence(ACTION_BOOT_COMPLETED, hasRoomSession = false))
         assertFalse(shouldRestoreRoomPresence(null, hasRoomSession = true))
         assertFalse(shouldRestoreRoomPresence("android.intent.action.OTHER", hasRoomSession = true))
+    }
+
+    @Test
+    fun `best effort ROOM activity launch is limited to configured ROOM restore events`() {
+        assertTrue(shouldAttemptRoomActivityLaunch(ACTION_BOOT_COMPLETED, hasRoomSession = true))
+        assertTrue(shouldAttemptRoomActivityLaunch(ACTION_MY_PACKAGE_REPLACED, hasRoomSession = true))
+        assertFalse(shouldAttemptRoomActivityLaunch(ACTION_BOOT_COMPLETED, hasRoomSession = false))
+        assertFalse(shouldAttemptRoomActivityLaunch(null, hasRoomSession = true))
+        assertFalse(shouldAttemptRoomActivityLaunch("android.intent.action.OTHER", hasRoomSession = true))
     }
 
     @Test

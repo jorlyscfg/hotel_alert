@@ -51,7 +51,6 @@ internal fun resolveRoomHomeStatus(
     hotelAlertPackage: String
 ): RoomHomeStatus {
     val isHotelAlertDefault = when {
-        roleAvailable && roleHeldByHotelAlert -> true
         resolvedHomePackage != null -> resolvedHomePackage == hotelAlertPackage
         apiLevel >= 29 && roleAvailable -> roleHeldByHotelAlert
         else -> null

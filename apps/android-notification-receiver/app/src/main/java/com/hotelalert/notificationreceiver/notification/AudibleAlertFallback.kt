@@ -39,7 +39,10 @@ internal object AudibleAlertFallback {
         var routeVerified = false
     }
 
-    fun schedule(context: Context) {
+    fun schedule(
+        context: Context,
+        playerConfiguration: AudibleAlertPlayerConfiguration = AudibleAlertPlayerConfiguration.requestAlert()
+    ) {
         val appContext = context.applicationContext
         synchronized(lock) {
             if (pendingStart || activePlayback != null) {
@@ -52,10 +55,10 @@ internal object AudibleAlertFallback {
             }
             pendingStart = true
         }
-        handler.postDelayed({ play(appContext) }, START_DELAY_MS)
+        handler.postDelayed({ play(appContext, playerConfiguration) }, START_DELAY_MS)
     }
 
-    private fun play(context: Context) {
+    private fun play(context: Context, playerConfiguration: AudibleAlertPlayerConfiguration) {
         val blockReason = synchronized(lock) {
             pendingStart = false
             if (activePlayback != null) {
@@ -70,7 +73,7 @@ internal object AudibleAlertFallback {
         }
 
         val player = createAlertMediaPlayer(
-            configuration = AudibleAlertPlayerConfiguration.requestAlert(),
+            configuration = playerConfiguration,
             createPlayer = { configuration ->
                 val audioAttributes = AudioAttributes.Builder()
                     .setUsage(configuration.usage)
@@ -392,6 +395,10 @@ internal data class AudibleAlertPlayerConfiguration(
             usage = AudioAttributes.USAGE_NOTIFICATION,
             contentType = AudioAttributes.CONTENT_TYPE_SONIFICATION,
             audioSessionId = AudioManager.AUDIO_SESSION_ID_GENERATE
+        )
+
+        fun doNotDisturb(enabled: Boolean) = requestAlert().copy(
+            resourceId = if (enabled) R.raw.hotel_alert_dnd_active else R.raw.hotel_alert_dnd_inactive
         )
     }
 }

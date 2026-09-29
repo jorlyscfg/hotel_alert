@@ -1,6 +1,7 @@
 package com.hotelalert.notificationreceiver
 
 import com.hotelalert.notificationreceiver.protocol.DeviceSessionSnapshot
+import com.hotelalert.notificationreceiver.protocol.DoNotDisturbNotification
 import com.hotelalert.notificationreceiver.protocol.DurableCursorStore
 import com.hotelalert.notificationreceiver.protocol.NotificationSink
 import com.hotelalert.notificationreceiver.protocol.RequestNotification
@@ -12,6 +13,7 @@ import com.hotelalert.notificationreceiver.protocol.ReceiverState
 import com.hotelalert.notificationreceiver.protocol.DeviceSnapshotClient
 import com.hotelalert.notificationreceiver.receiver.AndroidLanReceiver
 import com.hotelalert.notificationreceiver.storage.DeviceTokenStore
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -65,6 +67,40 @@ class AndroidLanReceiverTest {
     }
 
     @Test
+    fun repeatedSynchronizedStartRefreshesSnapshotWithoutReplacingSocket() = runTest {
+        val socket = FakeSocket()
+        val socketFactory = FakeSocketFactory(socket)
+        val snapshotClient = CountingSnapshotClient(
+            payloadJsons = listOf(
+                """{"serverTime":"2026-09-19T00:00:00Z"}""",
+                """{"serverTime":"2026-09-19T03:00:00Z"}"""
+            )
+        )
+        val snapshots = mutableListOf<String?>()
+        val receiver = createReceiver(
+            this,
+            socket,
+            mutableListOf(),
+            snapshotClient,
+            onSnapshotChanged = { snapshots += it },
+            socketFactory = socketFactory
+        )
+
+        receiver.start()
+        socket.fire("connect")
+        socket.fire("connection.ready", JSONObject().put("serverTime", "2026-09-19T00:00:00Z").put("currentEventSequence", 0).put("sync", "UP_TO_DATE"))
+        runCurrent()
+
+        receiver.start()
+
+        assertEquals(2, snapshotClient.fetchCount)
+        assertEquals("""{"serverTime":"2026-09-19T03:00:00Z"}""", snapshots.last())
+        assertEquals(1, socketFactory.createCalls)
+        assertEquals(0, socket.disconnectCalls)
+        receiver.stop()
+    }
+
+    @Test
     fun syncRequiredRefreshesTheSnapshotBeforeContinuing() = runTest {
         val socket = FakeSocket()
         val snapshotClient = CountingSnapshotClient()
@@ -96,6 +132,86 @@ class AndroidLanReceiverTest {
         runCurrent()
 
         assertEquals(2, snapshotClient.fetchCount)
+        receiver.stop()
+    }
+
+    @Test
+    fun roomUpdatesRefreshTheNativeSnapshotDeliveredToTheWebViewConsole() = runTest {
+        val socket = FakeSocket()
+        val initialSnapshot = """{"device":{"id":"device-1","assignmentMode":"AREA"},"config":{"mode":"AREA"},"activeDoNotDisturbRooms":[]}"""
+        val updatedSnapshot = """{"device":{"id":"device-1","assignmentMode":"AREA"},"config":{"mode":"AREA"},"activeDoNotDisturbRooms":[{"id":"room-1","code":"101","displayName":"101","doNotDisturb":true}]}"""
+        val snapshotClient = CountingSnapshotClient(listOf(initialSnapshot, updatedSnapshot))
+        val deliveredSnapshots = mutableListOf<String?>()
+        val receiver = createReceiver(
+            scope = this,
+            socket = socket,
+            states = mutableListOf(),
+            snapshotClient = snapshotClient,
+            onSnapshotChanged = { deliveredSnapshots += it }
+        )
+
+        receiver.start()
+        socket.fire("connect")
+        socket.fire("connection.ready", JSONObject().put("serverTime", "2026-09-19T00:00:00Z").put("currentEventSequence", 0).put("sync", "UP_TO_DATE"))
+        runCurrent()
+        assertEquals(listOf(initialSnapshot), deliveredSnapshots)
+
+        socket.fire("room.updated", roomUpdatedEvent("event-room-1", 1, "room-1"))
+        runCurrent()
+
+        assertEquals(2, snapshotClient.fetchCount)
+        assertEquals(listOf(initialSnapshot, updatedSnapshot), deliveredSnapshots)
+        receiver.stop()
+    }
+
+    @Test
+    fun roomDndTransitionsUseTheLatestAuthoritativeSnapshotBaseline() = runTest {
+        val socket = FakeSocket()
+        val snapshotClient = DoNotDisturbSnapshotClient()
+        val sink = RecordingDoNotDisturbSink()
+        val cursor = FakeCursorStore()
+        val receiver = createReceiver(this, socket, mutableListOf(), snapshotClient, sink, cursor)
+
+        receiver.start()
+        socket.fire("connect")
+        socket.fire("connection.ready", JSONObject().put("serverTime", "2026-09-19T00:00:00Z").put("currentEventSequence", 0).put("sync", "UP_TO_DATE"))
+        runCurrent()
+
+        socket.fire("room.updated", roomUpdatedEvent("event-dnd-on", 1, "room-1", enabled = true))
+        runCurrent()
+        socket.fire("room.updated", roomUpdatedEvent("event-dnd-off", 2, "room-1", enabled = false))
+        runCurrent()
+
+        assertEquals(listOf(true, false), sink.delivered.map(DoNotDisturbNotification::enabled))
+        assertEquals(3, snapshotClient.fetchCount)
+        assertEquals(2L, cursor.lastSeenEventSequence)
+        receiver.stop()
+    }
+
+    @Test
+    fun bufferedDndTransitionSurvivesSnapshotRefreshThatAlreadyContainsItsState() = runTest {
+        val socket = FakeSocket()
+        val snapshotClient = RacingDoNotDisturbSnapshotClient()
+        val sink = RecordingDoNotDisturbSink()
+        val cursor = FakeCursorStore()
+        val receiver = createReceiver(this, socket, mutableListOf(), snapshotClient, sink, cursor)
+
+        receiver.start()
+        socket.fire("connect")
+        socket.fire("connection.ready", JSONObject().put("serverTime", "2026-09-19T00:00:00Z").put("currentEventSequence", 0).put("sync", "UP_TO_DATE"))
+        runCurrent()
+
+        socket.fire("room.updated", roomUpdatedEvent("event-dnd-on-race", 1, "room-1", enabled = true))
+        runCurrent()
+        assertEquals(listOf(true), sink.delivered.map(DoNotDisturbNotification::enabled))
+
+        socket.fire("room.updated", roomUpdatedEvent("event-dnd-off-race", 2, "room-1", enabled = false))
+        runCurrent()
+        snapshotClient.releaseRefresh.complete(Unit)
+        runCurrent()
+
+        assertEquals(listOf(true, false), sink.delivered.map(DoNotDisturbNotification::enabled))
+        assertEquals(2L, cursor.lastSeenEventSequence)
         receiver.stop()
     }
 
@@ -315,20 +431,46 @@ class AndroidLanReceiverTest {
         cursor: FakeCursorStore = FakeCursorStore(),
         onAuthFailure: (String) -> Unit = {},
         onError: (String) -> Unit = {},
-        onDeviceInvalidated: (String) -> Unit = {}
+        onDeviceInvalidated: (String) -> Unit = {},
+        onSnapshotChanged: (String?) -> Unit = {},
+        socketFactory: FakeSocketFactory = FakeSocketFactory(socket)
     ): AndroidLanReceiver = AndroidLanReceiver(
         configurationStore = FakeConfigurationStore(),
         tokenStore = FakeTokenStore(),
         cursorStore = cursor,
         snapshotClient = snapshotClient,
-        socketFactory = FakeSocketFactory(socket),
+        socketFactory = socketFactory,
         sink = sink,
         scope = scope,
         onStateChanged = { states += it },
         onAuthFailure = onAuthFailure,
         onError = onError,
-        onDeviceInvalidated = onDeviceInvalidated
+        onDeviceInvalidated = onDeviceInvalidated,
+        onSnapshotChanged = onSnapshotChanged
     )
+
+    private fun roomUpdatedEvent(eventId: String, eventSequence: Long, roomId: String, enabled: Boolean = true): JSONObject = JSONObject()
+        .put("schemaVersion", 1)
+        .put("eventId", eventId)
+        .put("eventSequence", eventSequence)
+        .put("name", "room.updated")
+        .put("occurredAt", "2026-09-19T00:00:00Z")
+        .put("aggregateType", "ROOM")
+        .put("aggregateId", roomId)
+        .put(
+            "payload",
+            JSONObject().put(
+                "room",
+                JSONObject()
+                    .put("id", roomId)
+                    .put("code", "101")
+                    .put("displayName", "101")
+                    .put("active", true)
+                    .put("doNotDisturb", enabled)
+                    .put("createdAt", "2026-09-19T00:00:00Z")
+                    .put("updatedAt", "2026-09-19T00:00:00Z")
+            )
+        )
 
     private class FakeConfigurationStore : ReceiverConfigurationStore {
         private var configuration = ReceiverConfiguration(
@@ -364,6 +506,52 @@ class AndroidLanReceiverTest {
         override suspend fun deliver(notification: RequestNotification) = Unit
     }
 
+    private class RecordingDoNotDisturbSink : NotificationSink {
+        val delivered = mutableListOf<DoNotDisturbNotification>()
+
+        override suspend fun deliver(notification: RequestNotification) = Unit
+
+        override suspend fun deliver(notification: DoNotDisturbNotification) {
+            delivered += notification
+        }
+    }
+
+    private class DoNotDisturbSnapshotClient : DeviceSnapshotClient {
+        var fetchCount = 0
+
+        override suspend fun fetch(serverOrigin: String, deviceId: String, token: String): DeviceSessionSnapshot {
+            fetchCount += 1
+            return DeviceSessionSnapshot(
+                deviceId = deviceId,
+                areaId = "area-a",
+                areaDisplayName = "Housekeeping",
+                currentEventSequence = 0,
+                deviceConfigVersion = 1,
+                heartbeatIntervalMs = 1_000,
+                activeDoNotDisturbRoomIds = if (fetchCount == 1) emptySet() else setOf("room-1")
+            )
+        }
+    }
+
+    private class RacingDoNotDisturbSnapshotClient : DeviceSnapshotClient {
+        var fetchCount = 0
+        val releaseRefresh = CompletableDeferred<Unit>()
+
+        override suspend fun fetch(serverOrigin: String, deviceId: String, token: String): DeviceSessionSnapshot {
+            fetchCount += 1
+            if (fetchCount == 2) releaseRefresh.await()
+            return DeviceSessionSnapshot(
+                deviceId = deviceId,
+                areaId = "area-a",
+                areaDisplayName = "Housekeeping",
+                currentEventSequence = if (fetchCount == 1) 0 else 2,
+                deviceConfigVersion = 1,
+                heartbeatIntervalMs = 1_000,
+                activeDoNotDisturbRoomIds = emptySet()
+            )
+        }
+    }
+
     private class FailingOnceSink : NotificationSink {
         var failuresRemaining = 1
         val delivered = mutableListOf<RequestNotification>()
@@ -377,7 +565,7 @@ class AndroidLanReceiverTest {
         }
     }
 
-    private class CountingSnapshotClient : DeviceSnapshotClient {
+    private class CountingSnapshotClient(private val payloadJsons: List<String?> = emptyList()) : DeviceSnapshotClient {
         var fetchCount = 0
 
         override suspend fun fetch(serverOrigin: String, deviceId: String, token: String): DeviceSessionSnapshot {
@@ -388,7 +576,8 @@ class AndroidLanReceiverTest {
                 areaDisplayName = "Housekeeping",
                 currentEventSequence = 0,
                 deviceConfigVersion = 1,
-                heartbeatIntervalMs = 1_000
+                heartbeatIntervalMs = 1_000,
+                payloadJson = payloadJsons.getOrNull(fetchCount - 1)
             )
         }
     }
@@ -417,7 +606,12 @@ class AndroidLanReceiverTest {
     }
 
     private class FakeSocketFactory(private val socket: FakeSocket) : RealtimeSocketFactory {
-        override fun create(serverOrigin: String, auth: JSONObject): RealtimeSocket = socket
+        var createCalls = 0
+
+        override fun create(serverOrigin: String, auth: JSONObject): RealtimeSocket {
+            createCalls += 1
+            return socket
+        }
     }
 
     private class FakeSocket : RealtimeSocket {
