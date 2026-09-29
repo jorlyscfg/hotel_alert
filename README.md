@@ -56,6 +56,32 @@ Demo seeding is rejected in production and writes newly generated credentials to
 
 For a production LAN installation, use `HOST=0.0.0.0`, set `APP_ORIGIN` to the exact production browser origin such as `http://192.168.1.20:3000`, and allow only TCP `3000` from the trusted LAN. Keep the server on an isolated/private network, do not expose it through port forwarding, and use a reverse proxy with TLS before allowing access from an untrusted network.
 
+### Docker Compose
+
+The repository includes a single-service production image. It runs migrations on startup and stores SQLite, backups, and information images in the named `hotel-data` volume.
+
+```bash
+cp .env.example .env
+# Set NODE_ENV=production, APP_ORIGIN, SESSION_SECRET, and TOKEN_PEPPER in .env.
+docker compose up -d --build
+docker compose ps
+curl http://localhost:3000/api/v1/system/health
+```
+
+Set `APP_ORIGIN` to the exact browser origin used by room devices. Override the host port with `HOTEL_APP_PORT` when port `3000` is already occupied. Do not mount the repository's `data/` directory over `/app/data` unless its permissions and backup policy are controlled; never commit `.env` or SQLite files.
+
+### FreeKiosk REST control
+
+The optional backend control route uses the device's most recent private LAN heartbeat address to call FreeKiosk's `POST /api/audio/beep` endpoint. Configure it only when FreeKiosk REST is enabled on the kiosk:
+
+```dotenv
+FREEKIOSK_API_PORT=8080
+FREEKIOSK_API_KEY=replace-with-the-kiosk-api-key
+FREEKIOSK_API_TIMEOUT_MS=3000
+```
+
+The API key is required outside test mode. FreeKiosk REST and the Hotel Local App must remain on a private LAN or VPN; do not publish either service to the internet.
+
 Production deployment and recovery procedures are in [`docs/deployment.md`](docs/deployment.md) and [`docs/operations-runbook.md`](docs/operations-runbook.md).
 
 ## Useful commands

@@ -6,6 +6,12 @@ Run one Node.js process on a trusted hotel-LAN host with the SQLite database and
 
 The application listens on `HOST` and `PORT` and serves Socket.IO at `/socket.io` with the `/realtime` namespace. Keep the HTTP and WebSocket routes reachable from every configured room tablet and staff workstation.
 
+## Notification receiver boundary
+
+The verified T2 TypeScript LAN runtime is an additive, read-only receiver boundary around the device snapshot and Socket.IO event stream. It is not a native Windows service or Android application, and its presence does not claim platform notification support. The Windows Node.js service and native Android Compose targets remain future T3 work; their contracts, secure-storage responsibilities, and verification gates are defined in [`notification-receiver.md`](notification-receiver.md).
+
+When either future adapter is deployed, keep it on the trusted hotel LAN/VPN and point it at the same server origin. Do not expose the receiver or Socket.IO port to the public internet, and do not replace the existing web/kiosk deployment with an unverified native adapter.
+
 ## Prerequisites
 
 - Node.js `>=20.18.0 <26`
@@ -106,4 +112,4 @@ The built-in server is HTTP. If the application is exposed outside the trusted L
 
 The health endpoint reports process readiness, database readability, migration state, and the unpublished outbox backlog. A non-ready database or migration state is a deployment blocker. Use SIGINT or SIGTERM for shutdown so HTTP, Socket.IO, and SQLite resources can close cleanly.
 
-The browser cannot guarantee Android screen-on, Wi-Fi persistence, auto-start, or watchdog recovery. Those controls belong to the kiosk/MDM deployment described in [`android-kiosk.md`](android-kiosk.md).
+The browser cannot guarantee Android screen-on, Wi-Fi persistence, auto-start, or watchdog recovery. Those controls belong to the kiosk/MDM deployment described in [`android-kiosk.md`](android-kiosk.md). A managed browser is not equivalent to native background notification delivery; see [`notification-receiver.md`](notification-receiver.md) before deploying a future platform adapter.

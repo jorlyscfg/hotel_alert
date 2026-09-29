@@ -1,0 +1,33 @@
+services:
+  hotel-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hotel-local-app:local
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      DATABASE_PATH: /app/data/hotel.sqlite
+      BACKUP_DIRECTORY: /app/data/backups
+      INFORMATION_IMAGE_DIRECTORY: /app/data/information-images
+    ports:
+      - "${HOTEL_APP_PORT:-3000}:3000"
+    volumes:
+      - hotel-data:/app/data
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/v1/system/health').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  hotel-data:

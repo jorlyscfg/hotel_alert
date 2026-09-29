@@ -8,6 +8,18 @@
 4. Check for services without active areas, rooms without active services, and invalid assignments.
 5. Confirm that the host has free disk space for the database and backups.
 
+## Notification receiver checks (when deployed)
+
+The current browser/kiosk path remains valid while the native T3 adapters are unavailable. When a verified receiver adapter is deployed, add these checks without treating them as request mutations:
+
+1. Confirm the platform service/application is running and reports `synchronized` rather than only “process started”.
+2. Confirm the assigned area, last heartbeat, and last safe error code in the platform diagnostics.
+3. Send one controlled request and verify the OS notification. A request restored from `activeRequests` after restart must not create a synthetic duplicate alert.
+4. Exercise a reconnect or server restart and confirm replay/full-snapshot recovery.
+5. If delivery fails, preserve the cursor and inspect the sink/storage error before restarting or rebinding the device.
+
+The Windows Node.js service and native Android Compose application are future T3 targets, not current deployment claims. See [`notification-receiver.md`](notification-receiver.md) for their implementation and platform-verification gates.
+
 ## Start and health check
 
 ```bash
@@ -44,6 +56,8 @@ The durable realtime replay window retains at least 60 minutes and at least 100,
 4. If the device is still trusted, use protected rebind and provision the replacement token.
 5. Record the incident reason in the audit trail without recording the token itself.
 
+For a platform receiver, also confirm that the replacement token is written only to the platform's protected store. Do not reset the durable event cursor as a substitute for token recovery.
+
 ### Administrator session concern
 
 Log out the affected session or revoke all sessions for the administrator. Connected administrator sockets are disconnected after revocation. If administrator access is unavailable, use the local credential-management procedure rather than creating a web first-admin route.
@@ -56,6 +70,12 @@ Log out the affected session or revoke all sessions for the administrator. Conne
 4. Restart the server gracefully if the process is unhealthy.
 5. Confirm clients reconnect, replay when possible, or request a full snapshot.
 6. If the event backlog remains stuck, preserve the database and backup before investigating or purging.
+
+For a receiver adapter, check the `synchronized` state, heartbeat, sink result, durable cursor write, and `client.event.received` receipt in that order. A transport receipt never means that the hotel request was accepted or completed.
+
+## Receiver rollback
+
+Receiver rollback is additive: stop or disable only the affected platform service/application and return operators to the existing web/kiosk path. Preserve the server, database, outbox, replay history, and durable cursor. Revoke and rebind the device only for a credential incident or an intentional replacement; do not delete receiver state as a routine rollback.
 
 ## Data handling rules
 
