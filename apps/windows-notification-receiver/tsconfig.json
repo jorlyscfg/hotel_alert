@@ -1,0 +1,22 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "baseUrl": ".",
+    "paths": {
+      "@hotel/notification-receiver": ["../../packages/notification-receiver/dist/index"],
+      "@hotel/notification-receiver-lan": ["../../packages/notification-receiver-lan/dist/index"]
+    },
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "declaration": true,
+    "declarationMap": true,
+    "types": ["node"]
+  },
+  "references": [
+    { "path": "../../packages/notification-receiver-lan" }
+  ],
+  "include": ["src/**/*.ts"]
+}

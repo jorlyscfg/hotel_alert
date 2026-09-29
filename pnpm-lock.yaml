@@ -128,11 +128,29 @@ importers:
         specifier: 6.0.7
         version: 6.0.7(@types/node@22.10.5)(jiti@2.7.0)(lightningcss@1.33.0)(tsx@4.19.2)
 
+  apps/windows-notification-receiver:
+    dependencies:
+      '@hotel/notification-receiver-lan':
+        specifier: workspace:*
+        version: link:../../packages/notification-receiver-lan
+
   packages/notification-receiver:
     dependencies:
       '@hotel/shared':
         specifier: workspace:*
         version: link:../shared
+
+  packages/notification-receiver-lan:
+    dependencies:
+      '@hotel/notification-receiver':
+        specifier: workspace:*
+        version: link:../notification-receiver
+      '@hotel/shared':
+        specifier: workspace:*
+        version: link:../shared
+      socket.io-client:
+        specifier: 4.8.1
+        version: 4.8.1
 
   packages/shared:
     dependencies:

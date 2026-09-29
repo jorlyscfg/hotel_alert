@@ -3,7 +3,9 @@
   "references": [
     { "path": "./packages/shared" },
     { "path": "./packages/notification-receiver" },
+    { "path": "./packages/notification-receiver-lan" },
     { "path": "./apps/server" },
-    { "path": "./apps/web" }
+    { "path": "./apps/web" },
+    { "path": "./apps/windows-notification-receiver" }
   ]
 }

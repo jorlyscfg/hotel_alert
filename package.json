@@ -17,7 +17,7 @@
     "restore:check": "corepack pnpm --filter @hotel/shared build && tsx scripts/restore-check.ts",
     "purge:retention": "corepack pnpm --filter @hotel/shared build && tsx scripts/purge-retention.ts",
     "test": "corepack pnpm test:unit && corepack pnpm test:integration",
-    "test:unit": "corepack pnpm --filter @hotel/shared build && vitest run tests/unit",
+    "test:unit": "corepack pnpm --filter @hotel/shared build && corepack pnpm --filter @hotel/notification-receiver build && vitest run tests/unit",
     "test:integration": "corepack pnpm --filter @hotel/shared build && vitest run tests/integration",
     "test:e2e": "corepack pnpm --filter @hotel/shared build && playwright test",
     "test:faults": "corepack pnpm --filter @hotel/shared build && vitest run tests/fault-injection",

@@ -210,7 +210,7 @@ export function isRequestNotificationEvent(value: unknown): value is RequestNoti
   const payload = value['payload'];
   if (!isRecord(payload) || !isRequestDTO(payload['request'])) return false;
   if (name === 'request.created') {
-    return isRecord(payload['alert']) && payload['alert']['repeatUntil'] === 'ACCEPTED';
+    return isRecord(payload['alert']) && (payload['alert']['repeatUntil'] === 'ACCEPTED' || payload['alert']['repeatUntil'] === 'IN_PROGRESS');
   }
   if (name !== 'request.updated' || !isRecord(payload['transition'])) return false;
   const transition = payload['transition'];
