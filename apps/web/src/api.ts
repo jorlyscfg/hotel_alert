@@ -1,5 +1,5 @@
 import { createTranslator, type Locale, type MessageKey } from './i18n';
-import type { ClaimedTokenResult } from '@hotel/shared';
+import { INFORMATION_IMAGE_LANGUAGES, INFORMATION_IMAGE_VARIANTS, type ClaimedTokenResult, type InformationImageDTO, type InformationImageLanguage, type InformationImageVariant } from '@hotel/shared';
 
 export interface ApiEnvelope<T> {
   data: T;
@@ -18,7 +18,7 @@ interface ApiErrorBody {
   };
 }
 
-interface RequestOptions {
+export interface RequestOptions {
   token?: string;
   headers?: HeadersInit;
   signal?: AbortSignal;
@@ -34,6 +34,10 @@ const API_ERROR_MESSAGE_KEYS: Record<string, MessageKey> = {
   AUTH_LOCKED: 'errors.authLocked',
   FORBIDDEN_ASSIGNMENT: 'errors.forbiddenAssignment',
   DEVICE_INACTIVE: 'errors.deviceInactive',
+  DEVICE_CONTROL_NOT_CONFIGURED: 'errors.serviceUnavailable',
+  DEVICE_CONTROL_UNAVAILABLE: 'errors.serviceUnavailable',
+  DEVICE_CONTROL_REJECTED: 'errors.internal',
+  DEVICE_CONTROL_INVALID_RESPONSE: 'errors.internal',
   DEVICE_TOKEN_REVOKED: 'errors.deviceTokenRevoked',
   AUTH_AMBIGUOUS_CREDENTIALS: 'errors.authInvalid',
   INACTIVE_DEPENDENCY: 'errors.inactiveDependency',
@@ -51,6 +55,23 @@ const API_ERROR_MESSAGE_KEYS: Record<string, MessageKey> = {
   RATE_LIMITED: 'errors.rateLimited',
   DATABASE_UNAVAILABLE: 'errors.databaseUnavailable',
   INTERNAL_ERROR: 'errors.internal'
+};
+
+const NATIVE_ERROR_MESSAGE_KEYS: Record<string, MessageKey> = {
+  NATIVE_DEVICE_COMMANDS_UNAVAILABLE: 'device.nativeDeviceCommandsUnavailable',
+  INVALID_REQUEST_COMMAND: 'errors.requestUpdateFailed',
+  NATIVE_REQUEST_COMMAND_REJECTED: 'errors.requestUpdateFailed',
+  NATIVE_REQUEST_COMMAND_FAILED: 'errors.requestUpdateFailed',
+  NATIVE_REQUEST_COMMAND_TIMEOUT: 'errors.serviceUnavailable',
+  INVALID_NATIVE_REQUEST_COMMAND_STATUS: 'errors.requestUpdateFailed',
+  UNKNOWN_REQUEST_COMMAND: 'errors.requestUpdateFailed',
+  DEVICE_INACTIVE: 'errors.deviceInactive',
+  DEVICE_TOKEN_REVOKED: 'errors.deviceTokenRevoked',
+  FORBIDDEN_ASSIGNMENT: 'errors.forbiddenAssignment',
+  REQUEST_VERSION_CONFLICT: 'errors.versionConflict',
+  REQUEST_INVALID_TRANSITION: 'errors.invalidTransition',
+  IDEMPOTENCY_KEY_REUSE_MISMATCH: 'errors.idempotencyMismatch',
+  POST_NOTIFICATIONS_DENIED: 'errors.notificationPermissionDenied'
 };
 
 export class ApiError extends Error {
@@ -108,7 +129,7 @@ export function startupErrorMessage(error: unknown, locale: Locale = 'en'): stri
 
 async function request<T>(path: string, init: RequestInit = {}, options: RequestOptions = {}): Promise<ApiEnvelope<T>> {
   const headers = new Headers(init.headers ?? options.headers);
-  if (init.body !== undefined && !headers.has('content-type')) {
+  if (init.body !== undefined && !headers.has('content-type') && !(typeof FormData !== 'undefined' && init.body instanceof FormData)) {
     headers.set('content-type', 'application/json');
   }
   if (options.token !== undefined) {
@@ -117,7 +138,7 @@ async function request<T>(path: string, init: RequestInit = {}, options: Request
 
   const requestInit: RequestInit = {
     ...init,
-    credentials: 'include',
+    credentials: options.token === undefined ? 'include' : 'omit',
     headers
   };
   if (options.signal !== undefined) requestInit.signal = options.signal;
@@ -144,8 +165,92 @@ export const api = {
   },
   patch<T>(path: string, body: unknown, options: RequestOptions = {}): Promise<ApiEnvelope<T>> {
     return request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }, options);
+  },
+  delete<T>(path: string, options: RequestOptions = {}): Promise<ApiEnvelope<T>> {
+    return request<T>(path, { method: 'DELETE' }, options);
   }
 };
+
+export type InformationImageUploadField = InformationImageVariant | `${InformationImageLanguage}-${InformationImageVariant}`;
+export type InformationImageUploadSet = Partial<Record<InformationImageUploadField, Blob>>;
+
+export function uploadInformationImage(file: Blob | InformationImageUploadSet, options: RequestOptions = {}): Promise<ApiEnvelope<InformationImageDTO>> {
+  const formData = createInformationImageFormData(file);
+  return request<InformationImageDTO>('/information/images', { method: 'POST', body: formData }, options);
+}
+
+export function repairInformationImageVariants(id: string, files: InformationImageUploadSet, options: RequestOptions = {}): Promise<ApiEnvelope<InformationImageDTO>> {
+  const formData = createInformationImageFormData(files);
+  return request<InformationImageDTO>(`/information/images/${encodeURIComponent(id)}/variants`, { method: 'POST', body: formData }, options);
+}
+
+export function getInformationImages(options: RequestOptions = {}): Promise<ApiEnvelope<InformationImageDTO[]>> {
+  return api.get<InformationImageDTO[]>('/information/images', options);
+}
+
+export function reorderInformationImages(ids: string[], options: RequestOptions = {}): Promise<ApiEnvelope<InformationImageDTO[]>> {
+  return api.patch<InformationImageDTO[]>('/information/images/order', { ids }, options);
+}
+
+export function deleteInformationImage(id: string, options: RequestOptions = {}): Promise<ApiEnvelope<{ deleted: true }>> {
+  return api.delete<{ deleted: true }>(`/information/images/${encodeURIComponent(id)}`, options);
+}
+
+export function getDeviceInformationImages(token: string, options: RequestOptions = {}): Promise<ApiEnvelope<InformationImageDTO[]>> {
+  return api.get<InformationImageDTO[]>('/device/information/images', { ...options, token });
+}
+
+export function setDeviceInformationScreensaver(enabled: boolean, token: string, options: RequestOptions = {}): Promise<ApiEnvelope<{ command: 'screenSaverOff' | 'screenSaverOn'; executed: true }>> {
+  return api.post(`/device/information/screensaver/${enabled ? 'on' : 'off'}`, undefined, { ...options, token });
+}
+
+export interface InformationImageContentOptions extends RequestOptions {
+  variant?: InformationImageVariant;
+  language?: InformationImageLanguage;
+}
+
+export async function fetchDeviceInformationImageContent(id: string, token: string, options: InformationImageContentOptions = {}): Promise<Blob> {
+  const headers = new Headers(options.headers);
+  headers.set('authorization', `Bearer ${token}`);
+  const query = new URLSearchParams();
+  if (options.variant !== undefined) query.set('variant', options.variant);
+  if (options.language !== undefined) query.set('language', options.language);
+  const queryString = query.size === 0 ? '' : `?${query.toString()}`;
+  const requestInit: RequestInit = {
+    method: 'GET',
+    credentials: 'omit',
+    headers
+  };
+  if (options.signal !== undefined) requestInit.signal = options.signal;
+  if (options.cache !== undefined) requestInit.cache = options.cache;
+  const response = await fetch(`/api/v1/device/information/images/${encodeURIComponent(id)}/content${queryString}`, requestInit);
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as ApiErrorBody | null;
+    throw new ApiError(response.status, body);
+  }
+  return response.blob();
+}
+
+function createInformationImageFormData(file: Blob | InformationImageUploadSet): FormData {
+  const formData = new FormData();
+  if (file instanceof Blob) {
+    const fileName = 'name' in file && typeof file.name === 'string' ? file.name : 'information-image';
+    formData.append('image', file, fileName);
+    return formData;
+  }
+  INFORMATION_IMAGE_VARIANTS.forEach((variant) => appendInformationImageVariant(formData, variant, file[variant]));
+  INFORMATION_IMAGE_LANGUAGES.forEach((language) => INFORMATION_IMAGE_VARIANTS.forEach((variant) => {
+    const field = `${language}-${variant}` as const;
+    appendInformationImageVariant(formData, field, file[field]);
+  }));
+  return formData;
+}
+
+function appendInformationImageVariant(formData: FormData, variant: InformationImageUploadField, file: Blob | undefined): void {
+  if (file === undefined) return;
+  const fileName = 'name' in file && typeof file.name === 'string' ? file.name : `information-${variant}`;
+  formData.append(variant, file, fileName);
+}
 
 export async function claimDeviceTokenRotation(rotationId: string, currentToken: string): Promise<ClaimedTokenResult> {
   const result = await api.post<ClaimedTokenResult>('/device/token-rotation/claim', { rotationId }, { token: currentToken });
@@ -169,7 +274,13 @@ export function errorMessage(error: unknown, fallback = 'Something went wrong. T
     }
     return appendRequestReference(error.message, error, 'en');
   }
-  if (error instanceof Error) return fallback;
+  if (error instanceof Error) {
+    if (locale !== undefined) {
+      const key = NATIVE_ERROR_MESSAGE_KEYS[error.message];
+      if (key !== undefined) return createTranslator(locale)(key);
+    }
+    return fallback;
+  }
   return fallback;
 }
 

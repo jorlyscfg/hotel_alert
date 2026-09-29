@@ -33,9 +33,20 @@ interface ModalProps {
   describedBy?: string;
   className?: string;
   scrimClassName?: string;
+  visuallyHideTitle?: boolean;
 }
 
-export function Modal({ open, title, onClose, children, closeLabel, describedBy, className = '', scrimClassName = '' }: ModalProps) {
+export function Modal({
+  open,
+  title,
+  onClose,
+  children,
+  closeLabel,
+  describedBy,
+  className = '',
+  scrimClassName = '',
+  visuallyHideTitle = false
+}: ModalProps) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -108,7 +119,7 @@ export function Modal({ open, title, onClose, children, closeLabel, describedBy,
         onPointerDown={(event) => event.stopPropagation()}
       >
         <button ref={closeButtonRef} className="modal-card__close" type="button" onClick={onClose} aria-label={closeLabel ?? t('common.closeDialog')}><X aria-hidden="true" size={20} strokeWidth={1.8} /></button>
-        <h2 id={titleId}>{title}</h2>
+        <h2 id={titleId} className={visuallyHideTitle ? 'visually-hidden' : undefined}>{title}</h2>
         <div id={descriptionId}>{children}</div>
       </div>
     </div>

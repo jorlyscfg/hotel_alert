@@ -54,6 +54,7 @@ import {
   stageNativeRoomToken,
   supportsNativeRoomPresence
 } from './native-room-bridge';
+import { getNativeWebViewBridge, supportsNativeDeviceCommands, type NativeWebViewBridge } from './native-bridge';
 import {
   getNativeStationBridge,
   pairNativeStation,
@@ -134,7 +135,7 @@ async function waitForNativeSnapshot(bridge: NativeStationBridge): Promise<Devic
 export function App() {
   const [installationId, setInstallationId] = useState(getOrCreateInstallationId);
   const [view, setView] = useState<ViewState>({ kind: 'loading' });
-  const { locale: roomLocale, t } = useI18n();
+  const { locale: roomLocale } = useI18n();
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [adminLoginOpen, setAdminLoginOpen] = useState(false);
   const [roomRequestNotificationsUnread, setRoomRequestNotificationsUnread] = useState(false);
@@ -767,7 +768,14 @@ export function App() {
   if (view.kind === 'bootstrap') return <SpanishI18nProvider><BootstrapScreen installationId={installationId} bootstrapState={view.bootstrapState} error={view.error} onRetry={() => void retryBootstrap()} onAdminLogin={completeAdminLogin} /></SpanishI18nProvider>;
   if (view.kind === 'assignment') return <SpanishI18nProvider><DeviceRoleAssignmentScreen role={view.role} snapshot={view.snapshot} busy={view.busy} error={view.error} onSelect={(target) => void provisionSelectedTarget(target)} onAdmin={() => { persistAdminSession({ result: view.session, installationId: view.installationId }); setView({ kind: 'admin', snapshot: view.snapshot, session: view.session, installationId: view.installationId }); }} /></SpanishI18nProvider>;
   if (view.kind === 'device') {
-    const deviceScreen = <DeviceScreen snapshot={view.snapshot} deviceToken={localStorage.getItem(DEVICE_TOKEN_STORAGE_KEY) ?? ''} connectionStatus={connectionStatus} onRefresh={refreshDevice} onOpenAdmin={() => setAdminLoginOpen(true)} onAuthFailure={handleAuthFailure} roomRequestNotificationsUnread={roomRequestNotificationsUnread} onClearRoomRequestNotifications={clearRoomRequestNotifications} />;
+    const isAreaDevice = view.snapshot.config.mode === 'AREA';
+    const nativeBridge: NativeWebViewBridge | null = isAreaDevice && nativeStationBridgeAvailable
+      ? getNativeWebViewBridge()
+      : null;
+    const deviceCommandsSupported = isAreaDevice
+      ? !nativeStationBridgeAvailable || (nativeBridge !== null && supportsNativeDeviceCommands(nativeBridge))
+      : undefined;
+    const deviceScreen = <DeviceScreen snapshot={view.snapshot} deviceToken={localStorage.getItem(DEVICE_TOKEN_STORAGE_KEY) ?? ''} {...(deviceCommandsSupported === undefined ? {} : { deviceCommandsSupported, nativeBridge })} connectionStatus={connectionStatus} onRefresh={refreshDevice} onOpenAdmin={() => setAdminLoginOpen(true)} onAuthFailure={handleAuthFailure} roomRequestNotificationsUnread={roomRequestNotificationsUnread} onClearRoomRequestNotifications={clearRoomRequestNotifications} />;
     const adminLoginDialog = adminLoginOpen && <AdminLoginDialog onSuccess={(result) => completeAdminLogin(result, 'ADMIN')} onCancel={() => setAdminLoginOpen(false)} />;
     if (view.snapshot.config.mode === 'ROOM') return <>{deviceScreen}<SpanishI18nProvider>{adminLoginDialog}</SpanishI18nProvider></>;
     return <SpanishI18nProvider>{deviceScreen}{adminLoginDialog}</SpanishI18nProvider>;

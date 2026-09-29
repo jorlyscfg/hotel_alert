@@ -13,7 +13,7 @@ interface RealtimeConnectionOptions {
   lastSeenEventSequence?: number | undefined;
   heartbeatIntervalMs?: number | undefined;
   onEvent: (eventName?: string, payload?: unknown) => RealtimeRefreshResult | void | Promise<RealtimeRefreshResult | void>;
-  onAuthFailure: () => void;
+  onAuthFailure: (error?: unknown) => void;
   onStatus: (status: ConnectionStatus) => void;
 }
 
@@ -191,6 +191,9 @@ export function useRealtimeConnection(options: RealtimeConnectionOptions): void 
 
     onStatus('connecting');
     const clientInstanceId = getOrCreateClientInstanceId();
+    const documentTarget = typeof document === 'undefined' ? undefined : document;
+    const windowTarget = typeof window === 'undefined' ? undefined : window;
+    const isDocumentVisible = (): boolean => documentTarget === undefined || documentTarget.visibilityState === 'visible';
     const currentAuth = (): RealtimeAuth => buildRealtimeAuth({
       clientInstanceId,
       deviceId,
@@ -285,7 +288,7 @@ export function useRealtimeConnection(options: RealtimeConnectionOptions): void 
         if (timeoutError !== null || ack === undefined || !ack.ok) {
           if (isAuthErrorCode(ack?.errorCode)) {
             cancelRefresh();
-            onAuthFailure();
+            onAuthFailure(ack?.errorCode);
             return;
           }
           scheduleSyncRetry(result, attempt);
@@ -318,7 +321,7 @@ export function useRealtimeConnection(options: RealtimeConnectionOptions): void 
     };
 
     const scheduleRefresh = (attempt = 0, eventName?: string, eventPayload?: unknown): void => {
-      if (!transportConnected || !readyReceived) return;
+      if (!isDocumentVisible() || !transportConnected || !readyReceived) return;
       if (syncTimer !== undefined) clearTimeout(syncTimer);
       cancelSyncRetry();
       synchronized = false;
@@ -326,6 +329,7 @@ export function useRealtimeConnection(options: RealtimeConnectionOptions): void 
       const generation = ++refreshGeneration;
       syncTimer = setTimeout(() => {
         syncTimer = undefined;
+        if (!isDocumentVisible()) return;
         void Promise.resolve()
           .then(() => onEvent(eventName, eventPayload))
           .then((result) => {
@@ -351,6 +355,16 @@ export function useRealtimeConnection(options: RealtimeConnectionOptions): void 
     };
     const refreshAuth = (): void => {
       socket.auth = currentAuth();
+    };
+
+    const handleResume = (): void => {
+      if (!isDocumentVisible()) return;
+      refreshAuth();
+      if (!transportConnected || !socket.connected) {
+        socket.connect();
+        return;
+      }
+      if (readyReceived) scheduleRefresh();
     };
 
     socket.on('connect', () => {
@@ -389,7 +403,7 @@ export function useRealtimeConnection(options: RealtimeConnectionOptions): void 
       cancelRefresh();
       refreshAuth();
       publishStatus();
-      if (isAuthError(error)) onAuthFailure();
+      if (isAuthError(error)) onAuthFailure(error);
     });
     socket.onAny((eventName: string, payload: unknown) => {
        if (!isReactiveRealtimeEvent(eventName)) return;
@@ -400,6 +414,9 @@ export function useRealtimeConnection(options: RealtimeConnectionOptions): void 
       }
       scheduleRefresh(0, eventName, payload);
     });
+    documentTarget?.addEventListener('visibilitychange', handleResume);
+    windowTarget?.addEventListener('pageshow', handleResume);
+    windowTarget?.addEventListener('online', handleResume);
 
     const heartbeat = deviceToken === undefined ? undefined : setInterval(() => {
       void api.post('/device/heartbeat', {
@@ -407,13 +424,16 @@ export function useRealtimeConnection(options: RealtimeConnectionOptions): void 
         socketConnected: socket.connected && synchronized,
         screenVisible: document.visibilityState === 'visible'
       }, { token: deviceToken }).catch((error: unknown) => {
-        if (isApiError(error, 401) || isDeviceInvalidationError(error)) onAuthFailure();
+        if (isApiError(error, 401) || isDeviceInvalidationError(error)) onAuthFailure(error);
       });
     }, resolveHeartbeatIntervalMs(heartbeatIntervalMs));
 
     return () => {
       cancelRefresh();
       transportConnected = false;
+      documentTarget?.removeEventListener('visibilitychange', handleResume);
+      windowTarget?.removeEventListener('pageshow', handleResume);
+      windowTarget?.removeEventListener('online', handleResume);
       if (heartbeat !== undefined) clearInterval(heartbeat);
       socket.disconnect();
     };

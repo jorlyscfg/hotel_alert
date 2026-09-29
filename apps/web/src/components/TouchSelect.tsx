@@ -37,6 +37,10 @@ export function hasSelectableValue(value: string, options: TouchSelectOption[]):
   return options.some((option) => option.value === value);
 }
 
+export function getTouchSelectClassName(modal: boolean, open: boolean, className?: string): string {
+  return `form-field touch-select${modal ? ' touch-select--modal' : ''}${open ? ' touch-select--open' : ''}${className === undefined ? '' : ` ${className}`}`;
+}
+
 export function TouchSelect({ label, value, options, onChange, selectedLabel, className, placeholder, required = false, disabled = false, modal = false, id, error }: TouchSelectProps) {
   const { t } = useI18n();
   const resolvedPlaceholder = placeholder ?? t('common.select', { label: label.toLowerCase() });
@@ -140,7 +144,7 @@ export function TouchSelect({ label, value, options, onChange, selectedLabel, cl
   }
 
   return (
-     <div className={`form-field touch-select${modal ? ' touch-select--modal' : ''}${className === undefined ? '' : ` ${className}`}`} data-modal-interaction-blocker={modal ? 'true' : undefined} ref={rootRef}>
+     <div className={getTouchSelectClassName(modal, open, className)} data-modal-interaction-blocker={modal ? 'true' : undefined} ref={rootRef}>
        <label id={labelId} htmlFor={triggerId}>{label}</label>
       <button
         id={triggerId}

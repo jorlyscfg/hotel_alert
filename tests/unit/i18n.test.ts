@@ -8,6 +8,8 @@ import {
   createTranslator,
   getDocumentMetadata,
   getStoredLocale,
+  resolveAreaDescription,
+  resolveAreaDisplayName,
   resolveServiceDescription,
   resolveServiceDisplayName,
   resolveLocale,
@@ -50,6 +52,14 @@ describe('web localization helpers', () => {
 
     expect(translate('language.spanish')).toBe('Español');
     expect(translate('requests.waitingToSend', { count: 2 })).toBe('2 solicitudes pendientes de envío.');
+    expect(translate('device.nativeDeviceCommandsUnavailable')).toBe('Las acciones de solicitudes no están disponibles en esta consola Android. Usa la consola web para gestionarlas.');
+  });
+
+  it('localizes DND activation age and unknown legacy activation time', () => {
+    expect(createTranslator('en')('device.doNotDisturbActiveFor', { time: '2h 5m' })).toBe('Active for 2h 5m');
+    expect(createTranslator('es')('device.doNotDisturbActiveFor', { time: '2 h 5 min' })).toBe('Activo desde hace 2 h 5 min');
+    expect(createTranslator('en')('device.doNotDisturbTimeUnavailable')).toBe('Time unavailable');
+    expect(createTranslator('es')('device.doNotDisturbTimeUnavailable')).toBe('Tiempo no disponible');
   });
 
   it('provides a localized label for horizontally overflowing room services', () => {
@@ -95,6 +105,38 @@ describe('web localization helpers', () => {
       code: 'fresh-towels',
       description: 'A custom towel arrangement'
     }, 'es')).toBe('A custom towel arrangement');
+  });
+
+  it('localizes every default area label and description while preserving custom areas', () => {
+    const defaultAreas = [
+      ['front-desk', 'Front Desk', 'Recepción', 'Reception and general guest assistance', 'Recepción y atención general al huésped'],
+      ['housekeeping', 'Housekeeping', 'Limpieza', 'Room cleaning and guest-room amenities', 'Limpieza de habitaciones y amenidades para huéspedes'],
+      ['maintenance', 'Maintenance', 'Mantenimiento', 'Repairs and technical issues', 'Reparaciones y problemas técnicos'],
+      ['concierge', 'Concierge', 'Conserjería', 'Guest assistance, arrivals, and local arrangements', 'Asistencia al huésped, llegadas y gestiones locales'],
+      ['food-beverage', 'Food & Beverage', 'Alimentos y bebidas', 'Room service and refreshments', 'Servicio de habitaciones y bebidas']
+    ] as const;
+
+    for (const [code, englishName, spanishName, englishDescription, spanishDescription] of defaultAreas) {
+      const area = {
+        id: `area_default_${code}`,
+        code,
+        displayName: englishName,
+        description: englishDescription
+      };
+      expect(resolveAreaDisplayName(area, 'en')).toBe(englishName);
+      expect(resolveAreaDisplayName(area, 'es')).toBe(spanishName);
+      expect(resolveAreaDescription(area, 'en')).toBe(englishDescription);
+      expect(resolveAreaDescription(area, 'es')).toBe(spanishDescription);
+    }
+
+    const customArea = {
+      id: 'area_custom_front-desk',
+      code: 'front-desk',
+      displayName: 'Guest relations',
+      description: 'A custom guest-relations team'
+    };
+    expect(resolveAreaDisplayName(customArea, 'es')).toBe('Guest relations');
+    expect(resolveAreaDescription(customArea, 'es')).toBe('A custom guest-relations team');
   });
 
   it('persists and reads the selected locale through the browser storage contract', () => {

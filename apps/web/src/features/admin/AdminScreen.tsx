@@ -1,5 +1,5 @@
-import { useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ArrowUpRight, Check, Circle, CircleAlert, House, LayoutDashboard, List, LogOut, PanelsTopLeft, ScrollText } from 'lucide-react';
+import { useId, useMemo, useRef, useState, type FocusEvent, type ReactNode } from 'react';
+import { ArchiveX, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Circle, CircleAlert, House, LayoutDashboard, Link2Off, List, LogOut, PanelsTopLeft, Plus, Power, PowerOff, RefreshCw, ScrollText, ShieldOff, UserRoundCog } from 'lucide-react';
 import type {
   AdminSystemSnapshot,
   AdminWarningCode,
@@ -7,6 +7,7 @@ import type {
   DeviceAssignmentMode,
   DeviceBootstrapResult,
   DevicePresence,
+  InformationImageDTO,
   RequestDTO,
   RequestStatus,
   RoomDTO,
@@ -15,14 +16,16 @@ import type {
   ServiceDTO,
   TokenRotationResult
 } from '@hotel/shared';
-import { api, errorMessage } from '../../api';
+import { api, deleteInformationImage as deleteInformationImageRequest, errorMessage, repairInformationImageVariants as repairInformationImageVariantsRequest, reorderInformationImages as reorderInformationImagesRequest, uploadInformationImage as uploadInformationImageRequest, type InformationImageUploadSet } from '../../api';
 import { buildDeviceAssignmentPayload, formatElapsedWithAgo, makeMutationKey, mutationSucceeded } from '../../app-model';
 import { ConnectionBadge } from '../../components/ConnectionBadge';
 import { Modal } from '../../components/Modal';
 import { ServiceIcon } from '../../components/ServiceIcon';
 import { TouchSelect, type TouchSelectOption } from '../../components/TouchSelect';
-import { createTranslator, useI18n, type Locale, type MessageKey, formatNumber, translateCount } from '../../i18n';
+import { createTranslator, resolveAreaDisplayName, resolveLocalizedValue, resolveServiceDisplayName, useI18n, type Locale, type MessageKey, formatNumber, translateCount } from '../../i18n';
 import { canCommitMutation, type ConnectionStatus } from '../../realtime';
+import { filterAdminItems } from './admin-search';
+import { InformationPanel } from './InformationPanel';
 import { AdminManagement, CatalogPanels, SERVICE_ICON_OPTIONS, SettingsPanel } from './SetupPanels';
 
 interface AdminScreenProps {
@@ -32,13 +35,13 @@ interface AdminScreenProps {
   connectionStatus: ConnectionStatus;
   onRefresh: () => Promise<void>;
   onLogout: () => Promise<void>;
-  onUseDeviceToken: (token: string) => Promise<void>;
+  onUseDeviceToken: (pairing: { deviceId: string; deviceToken: string; assignmentMode: DeviceAssignmentMode }) => Promise<void>;
 }
 
 type AdminTab = 'overview' | 'queue' | 'setup' | 'audit';
 type ClockFormat = '12h' | '24h';
 
-export const SETUP_SECTIONS = ['rooms', 'areas', 'services', 'devices', 'settings', 'admins'] as const;
+export const SETUP_SECTIONS = ['rooms', 'areas', 'services', 'devices', 'information', 'settings', 'admins'] as const;
 type SetupSection = (typeof SETUP_SECTIONS)[number];
 
 const SETUP_SECTION_LABEL_KEYS: Record<SetupSection, MessageKey> = {
@@ -46,6 +49,7 @@ const SETUP_SECTION_LABEL_KEYS: Record<SetupSection, MessageKey> = {
   areas: 'admin.areas',
   services: 'admin.servicesTitle',
   devices: 'admin.stations',
+  information: 'admin.information',
   settings: 'admin.systemSettings',
   admins: 'admin.administrators'
 };
@@ -117,20 +121,7 @@ const ADMIN_WARNING_KEYS: Record<AdminWarningCode, MessageKey> = {
   INVALID_ACTIVE_DEVICE_ASSIGNMENT: 'admin.warning.invalidActiveDeviceAssignment'
 };
 
-const NEXT_STATUS: Record<RequestStatus, RequestStatus | null> = {
-  PENDING: 'ACCEPTED',
-  ACCEPTED: 'IN_PROGRESS',
-  IN_PROGRESS: 'COMPLETED',
-  COMPLETED: null
-};
-
-const TRANSITION_PATH: Record<Exclude<RequestStatus, 'COMPLETED'>, string> = {
-  PENDING: 'accept',
-  ACCEPTED: 'start',
-  IN_PROGRESS: 'complete'
-};
-
-const ADMIN_STATUS_FILTERS = ['ALL', 'PENDING', 'ACCEPTED', 'IN_PROGRESS', 'COMPLETED'] as const;
+const ADMIN_STATUS_FILTERS = ['ALL', 'PENDING', 'IN_PROGRESS', 'COMPLETED'] as const;
 
 interface ConfirmationRequest {
   title: string;
@@ -151,10 +142,16 @@ export interface AdminRequestFilters {
   search: string;
 }
 
-export function filterAdminRequests(requests: RequestDTO[], filters: AdminRequestFilters): RequestDTO[] {
-  const search = filters.search.trim().toLowerCase();
-  return requests.filter((request) => {
-    if (filters.status !== 'ALL' && request.status !== filters.status) return false;
+function requestStatusBucket(status: RequestStatus): Exclude<AdminRequestFilters['status'], 'ALL'> {
+  if (status === 'PENDING') return 'PENDING';
+  if (status === 'COMPLETED') return 'COMPLETED';
+  return 'IN_PROGRESS';
+}
+
+export function filterAdminRequests(requests: RequestDTO[], filters: AdminRequestFilters, locale: Locale = 'es'): RequestDTO[] {
+  const searchTerms = filters.search.trim().toLocaleLowerCase().split(/\s+/).filter((term) => term.length > 0);
+  const filteredRequests = requests.filter((request) => {
+    if (filters.status !== 'ALL' && requestStatusBucket(request.status) !== filters.status) return false;
     if (filters.roomId !== '' && request.roomId !== filters.roomId) return false;
     if (filters.serviceId !== '' && request.serviceId !== filters.serviceId) return false;
     if (filters.areaId !== '' && request.responsibleAreaId !== filters.areaId) return false;
@@ -162,19 +159,23 @@ export function filterAdminRequests(requests: RequestDTO[], filters: AdminReques
     const createdDate = request.createdAt.slice(0, 10);
     if (filters.from !== '' && createdDate < filters.from) return false;
     if (filters.to !== '' && createdDate > filters.to) return false;
-    if (search !== '') {
-      const searchable = [
-        request.room.code,
-        request.room.displayName,
-        request.service.code,
-        request.service.displayName,
-        request.responsibleArea.code,
-        request.responsibleArea.displayName,
-        request.createdByDeviceId ?? ''
-      ].join(' ').toLowerCase();
-      if (!searchable.includes(search)) return false;
-    }
     return true;
+  });
+
+  if (searchTerms.length === 0) return filteredRequests;
+
+  return filteredRequests.filter((request) => {
+    const searchableValues = [
+      request.id,
+      request.room.code,
+      resolveLocalizedValue(request.room.displayName, locale, request.room.displayNameVariants) ?? request.room.displayName,
+      request.service.code,
+      resolveServiceDisplayName(request.service, locale),
+      request.responsibleArea.code,
+      resolveAreaDisplayName(request.responsibleArea, locale),
+      request.createdByDeviceId ?? ''
+    ].map((value) => value.toLocaleLowerCase());
+    return searchTerms.every((term) => searchableValues.some((value) => value.includes(term)));
   });
 }
 
@@ -190,7 +191,7 @@ const EMPTY_ADMIN_REQUEST_FILTERS: AdminRequestFilters = {
 };
 
 function requestStatusLabel(status: RequestStatus, locale: Locale): string {
-  return createTranslator(locale)(REQUEST_STATUS_KEYS[status]);
+  return createTranslator(locale)(REQUEST_STATUS_KEYS[status === 'ACCEPTED' ? 'IN_PROGRESS' : status]);
 }
 
 function readableCode(value: string): string {
@@ -271,7 +272,7 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
   const [tab, setTab] = useState<AdminTab>('overview');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [secretToken, setSecretToken] = useState<string | null>(null);
+  const [secretToken, setSecretToken] = useState<{ deviceId: string; deviceToken: string; assignmentMode: DeviceAssignmentMode } | null>(null);
   const [busy, setBusy] = useState(false);
   const [historyRequest, setHistoryRequest] = useState<RequestDTO | null>(null);
   const [requestHistory, setRequestHistory] = useState<RequestHistoryDTO[] | null>(null);
@@ -316,19 +317,6 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
     }
   }
 
-  async function transitionRequest(request: RequestDTO): Promise<boolean> {
-    const currentStatus = request.status;
-    if (currentStatus === 'COMPLETED') return false;
-    const nextStatus = NEXT_STATUS[currentStatus];
-    if (nextStatus === null) return false;
-    const result = await perform('transition', () => api.post<RequestDTO>(
-      `/requests/${encodeURIComponent(request.id)}/${TRANSITION_PATH[currentStatus]}`,
-      { expectedVersion: request.version },
-      { headers: adminHeaders('transition') }
-    ), t('feedback.requestMoved', { status: requestStatusLabel(nextStatus, locale).toLowerCase() }));
-    return mutationSucceeded(result);
-  }
-
   async function toggleDevice(deviceId: string, active: boolean) {
     if (!await requestConfirmation({
       title: active ? t('confirm.activateDevice.title') : t('confirm.deactivateDevice.title'),
@@ -365,7 +353,7 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
           { deviceId, reason },
           { headers: adminHeaders('device-rebind') }
         ), t('feedback.deviceRebound'));
-        if (result !== null) setSecretToken(result.data.deviceToken);
+        if (result !== null) setSecretToken({ deviceId: result.data.device.id, deviceToken: result.data.deviceToken, assignmentMode: result.data.device.assignmentMode });
         return result !== null;
       }
     })) return false;
@@ -420,7 +408,7 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
     })) return;
   }
 
-  async function patchArea(area: AreaDTO, values: { code: string; displayName: string; description: string; displayOrder: number }): Promise<boolean> {
+  async function patchArea(area: AreaDTO, values: { code: string; displayName: string; displayNameVariants?: AreaDTO['displayNameVariants']; description: string; descriptionVariants?: AreaDTO['descriptionVariants']; displayOrder: number }): Promise<boolean> {
     const result = await perform('area-update', () => api.patch<AreaDTO>(`/areas/${encodeURIComponent(area.id)}`, { ...values, description: values.description.length === 0 ? null : values.description, expectedUpdatedAt: area.updatedAt }, { headers: adminHeaders('area-update') }), t('feedback.areaUpdated'));
     return mutationSucceeded(result);
   }
@@ -433,13 +421,39 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
     })) return;
   }
 
-  async function patchService(service: ServiceDTO, values: { code: string; displayName: string; description: string; iconKey: string; areaId: string; displayOrder: number }): Promise<boolean> {
+  async function patchService(service: ServiceDTO, values: { code: string; displayName: string; displayNameVariants?: ServiceDTO['displayNameVariants']; description: string; descriptionVariants?: ServiceDTO['descriptionVariants']; iconKey: string; areaId: string; displayOrder: number }): Promise<boolean> {
     const result = await perform('service-update', () => api.patch<ServiceDTO>(`/services/${encodeURIComponent(service.id)}`, { ...values, description: values.description.length === 0 ? null : values.description, iconKey: values.iconKey.length === 0 ? null : values.iconKey, expectedUpdatedAt: service.updatedAt }, { headers: adminHeaders('service-update') }), t('feedback.serviceUpdated'));
     return mutationSucceeded(result);
   }
 
-  async function updateSettings(changes: Record<string, unknown>) {
-    await perform('settings-update', () => api.patch('/settings', { changes }, { headers: adminHeaders('settings-update') }), t('feedback.settingsUpdated'));
+  async function updateSettings(changes: Record<string, unknown>): Promise<boolean> {
+    const result = await perform('settings-update', () => api.patch('/settings', { changes }, { headers: adminHeaders('settings-update') }), t('feedback.settingsUpdated'));
+    return mutationSucceeded(result);
+  }
+
+  async function uploadInformationImage(files: InformationImageUploadSet): Promise<boolean> {
+    const result = await perform<InformationImageDTO>('information-image-upload', () => uploadInformationImageRequest(files, { headers: adminHeaders('information-image-upload') }), t('feedback.informationImageUploaded'));
+    return mutationSucceeded(result);
+  }
+
+  async function repairInformationImage(id: string, files: InformationImageUploadSet): Promise<boolean> {
+    const result = await perform<InformationImageDTO>('information-image-repair', () => repairInformationImageVariantsRequest(id, files, { headers: adminHeaders('information-image-repair') }), t('feedback.informationImageVariantsSaved'));
+    return mutationSucceeded(result);
+  }
+
+  async function reorderInformationImages(ids: string[]): Promise<boolean> {
+    const result = await perform<InformationImageDTO[]>('information-image-reorder', () => reorderInformationImagesRequest(ids, { headers: adminHeaders('information-image-reorder') }), t('feedback.informationImagesReordered'));
+    return mutationSucceeded(result);
+  }
+
+  async function deleteInformationImage(id: string): Promise<boolean> {
+    if (!await requestConfirmation({
+      title: t('admin.deleteInformationImage'),
+      copy: t('admin.deleteInformationImageCopy'),
+      danger: true,
+      onConfirm: async () => (await perform('information-image-delete', () => deleteInformationImageRequest(id, { headers: adminHeaders('information-image-delete') }), t('feedback.informationImageDeleted'))) !== null
+    })) return false;
+    return true;
   }
 
   async function createAdmin(username: string, password: string): Promise<boolean> {
@@ -464,20 +478,24 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
     return mutationSucceeded(result);
   }
 
-  async function createArea(values: { code: string; displayName: string; description: string }): Promise<boolean> {
+  async function createArea(values: { code: string; displayName: string; displayNameEnglish: string; description: string; descriptionEnglish: string }): Promise<boolean> {
     const result = await perform<AreaDTO>('create-area', () => api.post<AreaDTO>('/areas', {
       code: values.code,
       displayName: values.displayName,
-      description: values.description.length === 0 ? null : values.description
+      displayNameVariants: { en: values.displayNameEnglish.trim() },
+      description: values.description.length === 0 ? null : values.description,
+      descriptionVariants: values.descriptionEnglish.trim().length === 0 ? {} : { en: values.descriptionEnglish.trim() }
     }, { headers: adminHeaders('create-area') }), t('feedback.areaAdded'));
     return mutationSucceeded(result);
   }
 
-  async function createService(values: { code: string; displayName: string; description: string; iconKey: string; areaId: string }): Promise<boolean> {
+  async function createService(values: { code: string; displayName: string; displayNameEnglish: string; description: string; descriptionEnglish: string; iconKey: string; areaId: string }): Promise<boolean> {
     const result = await perform<ServiceDTO>('create-service', () => api.post<ServiceDTO>('/services', {
       code: values.code,
       displayName: values.displayName,
+      displayNameVariants: { en: values.displayNameEnglish.trim() },
       description: values.description.length === 0 ? null : values.description,
+      descriptionVariants: values.descriptionEnglish.trim().length === 0 ? {} : { en: values.descriptionEnglish.trim() },
       iconKey: values.iconKey.length === 0 ? null : values.iconKey,
       areaId: values.areaId
     }, { headers: adminHeaders('create-service') }), t('feedback.serviceAdded'));
@@ -492,7 +510,7 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
       roomId: values.assignmentMode === 'ROOM' ? values.roomId : null,
       areaId: values.assignmentMode === 'AREA' ? values.areaId : null
     }, { headers: adminHeaders('provision-device') }), t('feedback.deviceProvisioned'));
-    if (result !== null) setSecretToken(result.data.deviceToken);
+    if (result !== null) setSecretToken({ deviceId: result.data.device.id, deviceToken: result.data.deviceToken, assignmentMode: result.data.device.assignmentMode });
     return mutationSucceeded(result);
   }
 
@@ -526,6 +544,15 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
     setConfirmation(null);
   }
 
+  async function useTokenOnThisStation(): Promise<void> {
+    if (secretToken === null) return;
+    try {
+      await onUseDeviceToken(secretToken);
+    } catch (useTokenError) {
+      setError(errorMessage(useTokenError, t('errors.internal'), locale));
+    }
+  }
+
   async function confirmConfirmation(): Promise<void> {
     const pending = confirmation;
     if (pending === null || confirmationBusy) return;
@@ -538,7 +565,7 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
 
   return (
     <main className="app-frame app-frame--admin">
-      <header className="topbar topbar--admin">
+      <header className="topbar topbar--admin admin-command-header">
         <div className="brand-lockup">
           <span className="brand-lockup__mark" aria-hidden="true">+</span>
           <div><span className="brand-lockup__name">{t('brand.hotelLocal')}</span><span className="brand-lockup__context">{t('brand.commandCenter')}</span></div>
@@ -557,17 +584,19 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
          </aside>
 
         <section className="admin-main">
-          {connectionStatus !== 'online' && <div className="inline-alert inline-alert--stale" role="status"><span aria-hidden="true"><CircleAlert size={16} strokeWidth={1.8} /></span><span>{connectionStatus === 'stale' ? t('connection.changesPausedStale') : t('connection.changesPausedOffline')}</span></div>}
-          {error !== null && <div className="inline-alert" role="alert"><span aria-hidden="true"><CircleAlert size={16} strokeWidth={1.8} /></span><span>{error}</span><button className="text-button" type="button" onClick={() => setError(null)}>{t('common.dismiss')}</button></div>}
-          {notice !== null && <div className="inline-alert inline-alert--success" role="status"><span aria-hidden="true"><Check size={16} strokeWidth={1.8} /></span><span>{notice}</span><button className="text-button" type="button" onClick={() => setNotice(null)}>{t('common.dismiss')}</button></div>}
-          {secretToken !== null && <SecretTokenCard token={secretToken} onDismiss={() => setSecretToken(null)} onUseOnThisStation={installationId === null ? undefined : () => void onUseDeviceToken(secretToken)} />}
+          <div className="admin-main__canvas">
+            {connectionStatus !== 'online' && <div className="inline-alert inline-alert--stale" role="status"><span aria-hidden="true"><CircleAlert size={16} strokeWidth={1.8} /></span><span>{connectionStatus === 'stale' ? t('connection.changesPausedStale') : t('connection.changesPausedOffline')}</span></div>}
+            {error !== null && <div className="inline-alert" role="alert"><span aria-hidden="true"><CircleAlert size={16} strokeWidth={1.8} /></span><span>{error}</span><button className="text-button" type="button" onClick={() => setError(null)}>{t('common.dismiss')}</button></div>}
+            {notice !== null && <div className="inline-alert inline-alert--success" role="status"><span aria-hidden="true"><Check size={16} strokeWidth={1.8} /></span><span>{notice}</span><button className="text-button" type="button" onClick={() => setNotice(null)}>{t('common.dismiss')}</button></div>}
+             {secretToken !== null && <SecretTokenCard token={secretToken.deviceToken} onDismiss={() => setSecretToken(null)} onUseOnThisStation={installationId === null ? undefined : () => void useTokenOnThisStation()} />}
 
-          {tab === 'overview' && <OverviewTab snapshot={snapshot} clockFormat={clockFormat} onOpenQueue={() => setTab('queue')} onRefresh={onRefresh} />}
-           {tab === 'queue' && <QueueTab snapshot={snapshot} busy={mutationBusy} onTransition={transitionRequest} onViewHistory={(request) => void openRequestHistory(request)} />}
-          {tab === 'setup' && <SetupTab snapshot={snapshot} busy={mutationBusy} initialInstallationId={installationId} onCreateRoom={createRoom} onCreateArea={createArea} onCreateService={createService} onProvisionDevice={provisionDevice} onToggleDevice={toggleDevice} onRotateToken={rotateToken} onRebindDevice={rebindDevice} onToggleRoom={toggleRoom} onPatchRoom={patchRoom} onToggleArea={toggleArea} onPatchArea={patchArea} onToggleService={toggleService} onPatchService={patchService} onSaveSettings={updateSettings} onCreateAdmin={createAdmin} onToggleAdmin={toggleAdmin} onRevokeToken={revokeToken} onRetireDevice={retireDevice} onAssignDevice={assignDevice} />}
-             {tab === 'audit' && <AuditTab snapshot={snapshot} clockFormat={clockFormat} />}
-             {historyRequest !== null && <RequestHistoryDialog request={historyRequest} history={requestHistory} busy={historyBusy} error={historyError} clockFormat={clockFormat} onClose={closeRequestHistory} />}
-           </section>
+            {tab === 'overview' && <OverviewTab snapshot={snapshot} clockFormat={clockFormat} onOpenQueue={() => setTab('queue')} onRefresh={onRefresh} />}
+            {tab === 'queue' && <QueueTab snapshot={snapshot} onViewHistory={(request) => void openRequestHistory(request)} />}
+            {tab === 'setup' && <SetupTab snapshot={snapshot} busy={mutationBusy} initialInstallationId={installationId} onCreateRoom={createRoom} onCreateArea={createArea} onCreateService={createService} onProvisionDevice={provisionDevice} onToggleDevice={toggleDevice} onRotateToken={rotateToken} onRebindDevice={rebindDevice} onToggleRoom={toggleRoom} onPatchRoom={patchRoom} onToggleArea={toggleArea} onPatchArea={patchArea} onToggleService={toggleService} onPatchService={patchService} onSaveSettings={updateSettings} onUploadInformationImage={uploadInformationImage} onRepairInformationImage={repairInformationImage} onDeleteInformationImage={deleteInformationImage} onReorderInformationImages={reorderInformationImages} onCreateAdmin={createAdmin} onToggleAdmin={toggleAdmin} onRevokeToken={revokeToken} onRetireDevice={retireDevice} onAssignDevice={assignDevice} />}
+            {tab === 'audit' && <AuditTab snapshot={snapshot} clockFormat={clockFormat} />}
+            {historyRequest !== null && <RequestHistoryDialog request={historyRequest} history={requestHistory} busy={historyBusy} error={historyError} clockFormat={clockFormat} onClose={closeRequestHistory} />}
+          </div>
+        </section>
         </div>
         <AdminNavigation variant="mobile" activeTab={tab} openRequestCount={snapshot.requests.filter((request) => request.status !== 'COMPLETED').length} onTabChange={setTab} />
          {confirmation !== null && (
@@ -622,7 +651,7 @@ function AdminNavigation({ variant, activeTab, openRequestCount, onTabChange }: 
 }
 
 function AdminNavButton({ tab, active, onClick, icon, children }: { tab: AdminTab; active: boolean; onClick: () => void; icon: ReactNode; children: ReactNode }) {
-  return <button className={`admin-nav__item${active ? ' admin-nav__item--active' : ''}`} type="button" onClick={onClick} aria-current={active ? 'page' : undefined} data-admin-nav-item={tab}><span aria-hidden="true">{icon}</span><span>{children}</span></button>;
+  return <button className={`admin-nav__item${active ? ' admin-nav__item--active' : ''}`} type="button" onClick={onClick} aria-current={active ? 'page' : undefined} data-admin-nav-item={tab}><span aria-hidden="true">{icon}</span><span className="admin-nav__label">{children}</span></button>;
 }
 
 function OverviewTab({ snapshot, clockFormat, onOpenQueue, onRefresh }: { snapshot: AdminSystemSnapshot; clockFormat: ClockFormat; onOpenQueue: () => void; onRefresh: () => Promise<void> }) {
@@ -633,7 +662,7 @@ function OverviewTab({ snapshot, clockFormat, onOpenQueue, onRefresh }: { snapsh
 
   return (
     <div className="admin-content">
-       <PageHeading eyebrow={t('admin.overview')} title={t('admin.overviewTitle')} copy={t('admin.overviewCopy')} action={<button className="button button--ghost button--small" type="button" onClick={() => void onRefresh()}>{t('common.refreshData')}</button>} />
+      <div className="overview-toolbar"><button className="icon-button overview-refresh" type="button" onClick={() => void onRefresh()} aria-label={t('common.refreshData')} title={t('common.refreshData')} data-admin-refresh="true"><RefreshCw aria-hidden="true" size={18} strokeWidth={1.9} /></button></div>
          {snapshot.warnings.length > 0 && <div className="warning-strip"><span className="warning-strip__icon" aria-hidden="true"><CircleAlert size={16} strokeWidth={1.8} /></span><div><strong>{t('admin.needsLook')}</strong><span>{snapshot.warnings.map((warning) => adminWarningLabel(warning, locale)).join(' · ')}</span></div></div>}
        <div className="metric-grid">
           <MetricCard label={t('admin.openRequests')} value={formatNumber(openRequests.length, locale)} note={pendingRequests > 0 ? translateCount(locale, 'admin.waitingForAcceptance', pendingRequests) : t('admin.nothingWaiting')} accent="coral" />
@@ -656,45 +685,35 @@ function OverviewTab({ snapshot, clockFormat, onOpenQueue, onRefresh }: { snapsh
   );
 }
 
-function QueueTab({ snapshot, busy, onTransition, onViewHistory }: { snapshot: AdminSystemSnapshot; busy: boolean; onTransition: (request: RequestDTO) => Promise<boolean>; onViewHistory: (request: RequestDTO) => void }) {
+function QueueTab({ snapshot, onViewHistory }: { snapshot: AdminSystemSnapshot; onViewHistory: (request: RequestDTO) => void }) {
   const { locale, t } = useI18n();
   const [filters, setFilters] = useState<AdminRequestFilters>(EMPTY_ADMIN_REQUEST_FILTERS);
-  const requests = useMemo(() => filterAdminRequests(snapshot.requests, filters).sort((left, right) => right.createdAt.localeCompare(left.createdAt)), [snapshot.requests, filters]);
-
-  function clearFilters(): void {
-    setFilters({ ...EMPTY_ADMIN_REQUEST_FILTERS });
-  }
+  const requests = useMemo(() => filterAdminRequests(snapshot.requests, filters, locale).sort((left, right) => right.createdAt.localeCompare(left.createdAt)), [snapshot.requests, filters, locale]);
 
   return (
     <div className="admin-content">
-       <PageHeading eyebrow={t('admin.liveQueue')} title={t('admin.everyRequestNextStep')} copy={t('admin.queueCopy')} />
-       <div className="filter-row" role="group" aria-label={t('admin.filterRequests')}>
+      <div className="queue-filter-grid" role="group" aria-label={t('admin.additionalFilters')}>
+        <CalendarDatePicker label={t('admin.fromDate')} value={filters.from} onChange={(value) => setFilters((current) => ({ ...current, from: value }))} />
+        <CalendarDatePicker label={t('admin.toDate')} value={filters.to} onChange={(value) => setFilters((current) => ({ ...current, to: value }))} />
+        <TextInput label={t('admin.search')} value={filters.search} onChange={(value) => setFilters((current) => ({ ...current, search: value }))} placeholder={t('admin.searchPlaceholder')} />
+      </div>
+      <div className="setup-tabs filter-row" role="group" aria-label={t('admin.filterRequests')}>
         {ADMIN_STATUS_FILTERS.map((value) => (
-          <button className={`filter-pill${filters.status === value ? ' filter-pill--active' : ''}`} type="button" key={value} onClick={() => setFilters((current) => ({ ...current, status: value }))}>
-             {value === 'ALL' ? t('admin.all') : requestStatusLabel(value, locale)}
+          <button className={`setup-tab${filters.status === value ? ' setup-tab--active' : ''}`} type="button" key={value} onClick={() => setFilters((current) => ({ ...current, status: value }))}>
+            <span className="setup-tab__label">{value === 'ALL' ? t('admin.all') : requestStatusLabel(value, locale)}</span>
           </button>
         ))}
-      </div>
-       <div className="queue-filter-grid" aria-label={t('admin.additionalFilters')}>
-         <SelectInput label={t('admin.room')} value={filters.roomId} onChange={(value) => setFilters((current) => ({ ...current, roomId: value }))} options={snapshot.rooms.map((room) => ({ value: room.id, label: `${room.code} · ${room.displayName}` }))} />
-         <SelectInput label={t('admin.service')} value={filters.serviceId} onChange={(value) => setFilters((current) => ({ ...current, serviceId: value }))} options={snapshot.services.map((service) => ({ value: service.id, label: service.displayName }))} />
-         <SelectInput label={t('admin.area')} value={filters.areaId} onChange={(value) => setFilters((current) => ({ ...current, areaId: value }))} options={snapshot.areas.map((area) => ({ value: area.id, label: area.displayName }))} />
-         <SelectInput label={t('admin.device')} value={filters.deviceId} onChange={(value) => setFilters((current) => ({ ...current, deviceId: value }))} options={snapshot.devices.map((device) => ({ value: device.id, label: device.displayName }))} />
-         <TextInput label={t('admin.fromDate')} type="date" value={filters.from} onChange={(value) => setFilters((current) => ({ ...current, from: value }))} />
-         <TextInput label={t('admin.toDate')} type="date" value={filters.to} onChange={(value) => setFilters((current) => ({ ...current, to: value }))} />
-         <TextInput label={t('admin.search')} value={filters.search} onChange={(value) => setFilters((current) => ({ ...current, search: value }))} placeholder={t('admin.searchPlaceholder')} />
-         <button className="button button--ghost button--small queue-filter-clear" type="button" onClick={clearFilters} disabled={JSON.stringify(filters) === JSON.stringify(EMPTY_ADMIN_REQUEST_FILTERS)}>{t('common.clearFilters')}</button>
       </div>
       <div className="surface-card request-table">
          <div className="request-table__header"><span>{t('admin.tableService')}</span><span>{t('admin.tableRoom')}</span><span>{t('admin.tableStatus')}</span><span>{t('admin.tableCreated')}</span><span>{t('admin.tableAction')}</span></div>
          {requests.length === 0 ? <EmptyPanel title={t('admin.noRequestsView')} copy={t('admin.tryDifferentFilter')} /> : requests.map((request) => (
           <div className="request-table__row" key={request.id}>
-             <div className="table-service"><span className="request-icon" aria-hidden="true"><ServiceIcon iconKey={request.service.iconKey} size={16} /></span><div><strong>{request.service.displayName}</strong><span>{request.responsibleArea.displayName}</span></div></div>
-             <span>{t('admin.roomPrefix', { name: request.room.displayName })}</span>
+              <div className="table-service"><span className="request-icon" aria-hidden="true"><ServiceIcon iconKey={request.service.iconKey} size={16} /></span><div><strong>{resolveServiceDisplayName(request.service, locale)}</strong><span>{resolveAreaDisplayName(request.responsibleArea, locale)}</span></div></div>
+              <span>{t('admin.roomPrefix', { name: resolveLocalizedValue(request.room.displayName, locale, request.room.displayNameVariants) ?? request.room.displayName })}</span>
              <span className={`status-label status-label--${request.status.toLowerCase().replace('_', '-')}`}>{requestStatusLabel(request.status, locale)}</span>
               <span>{formatElapsedWithAgo(request.createdAt, new Date(), locale, t('common.ago'))}</span>
             <div className="request-table__actions">
-               {NEXT_STATUS[request.status] !== null ? <button className="button button--dark button--small" type="button" onClick={() => void onTransition(request)} disabled={busy}>{t('common.moveForward')}</button> : <span className="table-complete">{t('common.complete')}</span>}
+               <span className="table-complete">{t('admin.areaResponsibleAction')}</span>
                <button className="text-button" type="button" onClick={() => onViewHistory(request)}>{t('common.history')}</button>
             </div>
           </div>
@@ -704,13 +723,131 @@ function QueueTab({ snapshot, busy, onTransition, onViewHistory }: { snapshot: A
   );
 }
 
+interface CalendarDatePickerProps {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}
+
+function CalendarDatePicker({ label, value, onChange }: CalendarDatePickerProps) {
+  const { locale, t } = useI18n();
+  const selectedDate = parseCalendarDate(value);
+  const initialDate = selectedDate ?? new Date();
+  const [open, setOpen] = useState(false);
+  const [visibleMonth, setVisibleMonth] = useState(() => startOfCalendarMonth(initialDate));
+  const [focusDate, setFocusDate] = useState(initialDate);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverId = `date-picker-${useId().replaceAll(':', '')}`;
+  const weeks = useMemo(() => buildCalendarWeeks(visibleMonth), [visibleMonth]);
+  const weekdayLabels = useMemo(() => Array.from({ length: 7 }, (_, index) => new Intl.DateTimeFormat(locale, { weekday: 'short' }).format(new Date(2021, 7, 1 + index))), [locale]);
+  const monthLabel = new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric' }).format(visibleMonth);
+  const selectedLabel = selectedDate === null ? t('admin.selectDate') : formatCalendarLabel(selectedDate, locale);
+
+  function togglePicker(): void {
+    if (!open) {
+      const nextDate = parseCalendarDate(value) ?? new Date();
+      setFocusDate(nextDate);
+      setVisibleMonth(startOfCalendarMonth(nextDate));
+    }
+    setOpen((current) => !current);
+  }
+
+  function closePicker(): void {
+    setOpen(false);
+    triggerRef.current?.focus();
+  }
+
+  function selectDate(date: Date): void {
+    onChange(formatCalendarValue(date));
+    setFocusDate(date);
+    setOpen(false);
+    triggerRef.current?.focus();
+  }
+
+  function moveFocus(days: number): void {
+    const nextDate = addCalendarDays(focusDate, days);
+    setFocusDate(nextDate);
+    setVisibleMonth(startOfCalendarMonth(nextDate));
+  }
+
+  function clearDate(): void {
+    onChange('');
+    closePicker();
+  }
+
+  function handlePopoverBlur(event: FocusEvent<HTMLDivElement>): void {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    setOpen(false);
+  }
+
+  return <div className="date-picker" onBlur={handlePopoverBlur}>
+     <button ref={triggerRef} className="date-picker__trigger" type="button" aria-haspopup="dialog" aria-expanded={open} aria-controls={popoverId} onClick={togglePicker}>
+       <span className="date-picker__trigger-copy"><span className="date-picker__label">{label}</span><span className="date-picker__value">{selectedLabel}</span></span>
+       <CalendarDays aria-hidden="true" className="date-picker__icon" size={17} strokeWidth={1.8} />
+     </button>
+     {open && <div className="date-picker__popover" id={popoverId} role="dialog" aria-label={label} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); closePicker(); } }}>
+       <div className="date-picker__header"><button className="icon-button date-picker__nav" type="button" onClick={() => { const nextMonth = addCalendarMonths(visibleMonth, -1); setVisibleMonth(nextMonth); setFocusDate(nextMonth); }} aria-label={t('admin.previousMonth')} title={t('admin.previousMonth')}><ChevronLeft aria-hidden="true" size={17} strokeWidth={1.9} /></button><strong>{monthLabel}</strong><button className="icon-button date-picker__nav" type="button" onClick={() => { const nextMonth = addCalendarMonths(visibleMonth, 1); setVisibleMonth(nextMonth); setFocusDate(nextMonth); }} aria-label={t('admin.nextMonth')} title={t('admin.nextMonth')}><ChevronRight aria-hidden="true" size={17} strokeWidth={1.9} /></button></div>
+       <button className="date-picker__clear" type="button" onClick={clearDate} aria-label={t('admin.clearDate')} title={t('admin.clearDate')}>{t('admin.clearDate')}</button>
+       <div className="date-picker__grid" role="grid" aria-label={monthLabel}>
+        <div className="date-picker__week date-picker__week--head" role="row">{weekdayLabels.map((weekday) => <span className="date-picker__weekday" role="columnheader" key={weekday}>{weekday}</span>)}</div>
+        {weeks.map((week, weekIndex) => <div className="date-picker__week" role="row" key={`${monthLabel}-${weekIndex}`}>{week.map((date, dayIndex) => date === null ? <span className="date-picker__day-spacer" aria-hidden="true" key={`empty-${dayIndex}`} /> : <span className="date-picker__cell" role="gridcell" aria-selected={selectedDate !== null && formatCalendarValue(selectedDate) === formatCalendarValue(date)} key={formatCalendarValue(date)}><button className="date-picker__day" type="button" tabIndex={formatCalendarValue(focusDate) === formatCalendarValue(date) ? 0 : -1} aria-label={formatCalendarLabel(date, locale)} aria-current={isToday(date) ? 'date' : undefined} onClick={() => selectDate(date)} onKeyDown={(event) => { if (event.key === 'ArrowLeft') { event.preventDefault(); moveFocus(-1); } else if (event.key === 'ArrowRight') { event.preventDefault(); moveFocus(1); } else if (event.key === 'ArrowUp') { event.preventDefault(); moveFocus(-7); } else if (event.key === 'ArrowDown') { event.preventDefault(); moveFocus(7); } else if (event.key === 'Home') { event.preventDefault(); moveFocus(1 - date.getDay()); } else if (event.key === 'End') { event.preventDefault(); moveFocus(7 - date.getDay()); } else if (event.key === 'PageUp') { event.preventDefault(); const nextMonth = addCalendarMonths(date, -1); setVisibleMonth(nextMonth); setFocusDate(nextMonth); } else if (event.key === 'PageDown') { event.preventDefault(); const nextMonth = addCalendarMonths(date, 1); setVisibleMonth(nextMonth); setFocusDate(nextMonth); } }}>{date.getDate()}</button></span>)}</div>)}
+      </div>
+    </div>}
+  </div>;
+}
+
+function parseCalendarDate(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (match === null) return null;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return date.getFullYear() === Number(match[1]) && date.getMonth() === Number(match[2]) - 1 && date.getDate() === Number(match[3]) ? date : null;
+}
+
+function formatCalendarValue(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function formatCalendarLabel(date: Date, locale: Locale): string {
+  return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
+}
+
+function startOfCalendarMonth(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function addCalendarDays(date: Date, days: number): Date {
+  const nextDate = new Date(date);
+  nextDate.setDate(nextDate.getDate() + days);
+  return nextDate;
+}
+
+function addCalendarMonths(date: Date, months: number): Date {
+  return new Date(date.getFullYear(), date.getMonth() + months, 1);
+}
+
+function buildCalendarWeeks(month: Date): Array<Array<Date | null>> {
+  const firstDay = new Date(month.getFullYear(), month.getMonth(), 1).getDay();
+  const daysInMonth = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+  const cells: Array<Date | null> = Array.from({ length: 42 }, (_, index) => {
+    const day = index - firstDay + 1;
+    return day < 1 || day > daysInMonth ? null : new Date(month.getFullYear(), month.getMonth(), day);
+  });
+  return Array.from({ length: 6 }, (_, index) => cells.slice(index * 7, index * 7 + 7));
+}
+
+function isToday(date: Date): boolean {
+  const today = new Date();
+  return formatCalendarValue(date) === formatCalendarValue(today);
+}
+
 interface SetupTabProps {
   snapshot: AdminSystemSnapshot;
   busy: boolean;
   initialInstallationId: string | null;
   onCreateRoom: (values: { code: string; displayName: string; floor: string }) => Promise<boolean>;
-  onCreateArea: (values: { code: string; displayName: string; description: string }) => Promise<boolean>;
-  onCreateService: (values: { code: string; displayName: string; description: string; iconKey: string; areaId: string }) => Promise<boolean>;
+  onCreateArea: (values: { code: string; displayName: string; displayNameEnglish: string; description: string; descriptionEnglish: string }) => Promise<boolean>;
+  onCreateService: (values: { code: string; displayName: string; displayNameEnglish: string; description: string; descriptionEnglish: string; iconKey: string; areaId: string }) => Promise<boolean>;
   onProvisionDevice: (values: { installationId: string; displayName: string; assignmentMode: DeviceAssignmentMode; roomId: string; areaId: string }) => Promise<boolean>;
   onToggleDevice: (deviceId: string, active: boolean) => Promise<void>;
   onRotateToken: (deviceId: string) => Promise<void>;
@@ -718,10 +855,14 @@ interface SetupTabProps {
   onToggleRoom: (room: RoomDTO) => Promise<void>;
   onPatchRoom: (room: RoomDTO, values: { code: string; displayName: string; floor: string; displayOrder: number; doNotDisturb: boolean }) => Promise<boolean>;
   onToggleArea: (area: AreaDTO) => Promise<void>;
-  onPatchArea: (area: AreaDTO, values: { code: string; displayName: string; description: string; displayOrder: number }) => Promise<boolean>;
+  onPatchArea: (area: AreaDTO, values: { code: string; displayName: string; displayNameVariants?: AreaDTO['displayNameVariants']; description: string; descriptionVariants?: AreaDTO['descriptionVariants']; displayOrder: number }) => Promise<boolean>;
   onToggleService: (service: ServiceDTO) => Promise<void>;
-  onPatchService: (service: ServiceDTO, values: { code: string; displayName: string; description: string; iconKey: string; areaId: string; displayOrder: number }) => Promise<boolean>;
-  onSaveSettings: (changes: Record<string, unknown>) => Promise<void>;
+  onPatchService: (service: ServiceDTO, values: { code: string; displayName: string; displayNameVariants?: ServiceDTO['displayNameVariants']; description: string; descriptionVariants?: ServiceDTO['descriptionVariants']; iconKey: string; areaId: string; displayOrder: number }) => Promise<boolean>;
+  onSaveSettings: (changes: Record<string, unknown>) => Promise<boolean | void>;
+  onUploadInformationImage: (files: InformationImageUploadSet) => Promise<boolean>;
+  onRepairInformationImage: (id: string, files: InformationImageUploadSet) => Promise<boolean>;
+  onDeleteInformationImage: (id: string) => Promise<boolean>;
+  onReorderInformationImages: (ids: string[]) => Promise<boolean>;
   onCreateAdmin: (username: string, password: string) => Promise<boolean>;
   onToggleAdmin: (admin: AdminSystemSnapshot['admins'][number]) => Promise<void>;
   onRevokeToken: (deviceId: string) => Promise<void>;
@@ -729,14 +870,32 @@ interface SetupTabProps {
   onAssignDevice: (device: AdminSystemSnapshot['devices'][number], values: { assignmentMode: DeviceAssignmentMode; roomId: string; areaId: string; reason: string }) => Promise<boolean>;
 }
 
-export function SetupTab({ snapshot, busy, initialInstallationId, onCreateRoom, onCreateArea, onCreateService, onProvisionDevice, onToggleDevice, onRotateToken, onRebindDevice, onToggleRoom, onPatchRoom, onToggleArea, onPatchArea, onToggleService, onPatchService, onSaveSettings, onCreateAdmin, onToggleAdmin, onRevokeToken, onRetireDevice, onAssignDevice }: SetupTabProps) {
-  const { t } = useI18n();
+export function SetupTab({ snapshot, busy, initialInstallationId, onCreateRoom, onCreateArea, onCreateService, onProvisionDevice, onToggleDevice, onRotateToken, onRebindDevice, onToggleRoom, onPatchRoom, onToggleArea, onPatchArea, onToggleService, onPatchService, onSaveSettings, onUploadInformationImage, onRepairInformationImage, onDeleteInformationImage, onReorderInformationImages, onCreateAdmin, onToggleAdmin, onRevokeToken, onRetireDevice, onAssignDevice }: SetupTabProps) {
+  const { locale, t } = useI18n();
   const [section, setSection] = useState<SetupSection>('rooms');
-  const panelId = `setup-panel-${section}`;
+  const resourceCounts: Partial<Record<SetupSection, number>> = {
+    rooms: snapshot.rooms.length,
+    areas: snapshot.areas.length,
+    services: snapshot.services.length,
+    devices: snapshot.devices.length
+  };
+
+  const renderCreateRoom = (close: () => void) => <CreateRoomForm busy={busy} onSubmit={async (values) => { const succeeded = await onCreateRoom(values); if (succeeded) close(); return succeeded; }} />;
+  const renderCreateArea = (close: () => void) => <CreateAreaForm busy={busy} onSubmit={async (values) => { const succeeded = await onCreateArea(values); if (succeeded) close(); return succeeded; }} />;
+  const renderCreateService = (close: () => void) => <CreateServiceForm areas={snapshot.areas} busy={busy} onSubmit={async (values) => { const succeeded = await onCreateService(values); if (succeeded) close(); return succeeded; }} />;
+
+  function renderSection(value: SetupSection): ReactNode {
+    if (value === 'rooms') return <CatalogPanels resource="rooms" rooms={snapshot.rooms} areas={snapshot.areas} services={snapshot.services} busy={busy} onToggleRoom={onToggleRoom} onPatchRoom={onPatchRoom} onToggleArea={onToggleArea} onPatchArea={onPatchArea} onToggleService={onToggleService} onPatchService={onPatchService} renderCreateRoom={renderCreateRoom} renderCreateArea={renderCreateArea} renderCreateService={renderCreateService} />;
+    if (value === 'areas') return <CatalogPanels resource="areas" rooms={snapshot.rooms} areas={snapshot.areas} services={snapshot.services} busy={busy} onToggleRoom={onToggleRoom} onPatchRoom={onPatchRoom} onToggleArea={onToggleArea} onPatchArea={onPatchArea} onToggleService={onToggleService} onPatchService={onPatchService} renderCreateRoom={renderCreateRoom} renderCreateArea={renderCreateArea} renderCreateService={renderCreateService} />;
+    if (value === 'services') return <CatalogPanels resource="services" rooms={snapshot.rooms} areas={snapshot.areas} services={snapshot.services} busy={busy} onToggleRoom={onToggleRoom} onPatchRoom={onPatchRoom} onToggleArea={onToggleArea} onPatchArea={onPatchArea} onToggleService={onToggleService} onPatchService={onPatchService} renderCreateRoom={renderCreateRoom} renderCreateArea={renderCreateArea} renderCreateService={renderCreateService} />;
+    if (value === 'devices') return <DeviceManagement initialInstallationId={initialInstallationId} onProvision={async (values) => onProvisionDevice(values)} devices={snapshot.devices} rooms={snapshot.rooms} areas={snapshot.areas} busy={busy} onToggle={onToggleDevice} onRotate={onRotateToken} onRebind={onRebindDevice} onRevoke={onRevokeToken} onRetire={onRetireDevice} onAssign={onAssignDevice} />;
+    if (value === 'information') return <InformationPanel images={snapshot.informationImages ?? []} settings={snapshot.settings} onSaveSettings={onSaveSettings} busy={busy} onUpload={onUploadInformationImage} onRepair={onRepairInformationImage} onDelete={onDeleteInformationImage} onReorder={onReorderInformationImages} />;
+    if (value === 'settings') return <SettingsPanel settings={snapshot.settings} busy={busy} onSave={onSaveSettings} />;
+    return <AdminManagement admins={snapshot.admins} busy={busy} onCreate={onCreateAdmin} onToggle={onToggleAdmin} />;
+  }
 
   return (
     <div className="admin-content">
-      <PageHeading eyebrow={t('admin.setup')} title={t('admin.setupTitle')} copy={t('admin.setupCopy')} />
       <div className="setup-tabs" role="tablist" aria-label={t('admin.setup')}>
         {SETUP_SECTIONS.map((value) => (
           <button
@@ -746,20 +905,17 @@ export function SetupTab({ snapshot, busy, initialInstallationId, onCreateRoom, 
             id={`setup-tab-${value}`}
             aria-selected={section === value}
             aria-controls={`setup-panel-${value}`}
+            data-admin-setup-tab={value}
             key={value}
             onClick={() => setSection(value)}
           >
-            {t(SETUP_SECTION_LABEL_KEYS[value])}
+            <span className="setup-tab__label">{t(SETUP_SECTION_LABEL_KEYS[value])}</span>
+            {resourceCounts[value] !== undefined && <span className="setup-tab__count" data-admin-setup-count={value}>{formatNumber(resourceCounts[value] ?? 0, locale)}</span>}
           </button>
         ))}
       </div>
-      <div className="setup-tabpanel" id={panelId} role="tabpanel" aria-labelledby={`setup-tab-${section}`}>
-        {section === 'rooms' && <div className="setup-grid"><CreateRoomForm busy={busy} onSubmit={onCreateRoom} /><CatalogPanels resource="rooms" rooms={snapshot.rooms} areas={snapshot.areas} services={snapshot.services} busy={busy} onToggleRoom={onToggleRoom} onPatchRoom={onPatchRoom} onToggleArea={onToggleArea} onPatchArea={onPatchArea} onToggleService={onToggleService} onPatchService={onPatchService} /></div>}
-        {section === 'areas' && <div className="setup-grid"><CreateAreaForm busy={busy} onSubmit={onCreateArea} /><CatalogPanels resource="areas" rooms={snapshot.rooms} areas={snapshot.areas} services={snapshot.services} busy={busy} onToggleRoom={onToggleRoom} onPatchRoom={onPatchRoom} onToggleArea={onToggleArea} onPatchArea={onPatchArea} onToggleService={onToggleService} onPatchService={onPatchService} /></div>}
-        {section === 'services' && <div className="setup-grid"><CreateServiceForm areas={snapshot.areas} busy={busy} onSubmit={onCreateService} /><CatalogPanels resource="services" rooms={snapshot.rooms} areas={snapshot.areas} services={snapshot.services} busy={busy} onToggleRoom={onToggleRoom} onPatchRoom={onPatchRoom} onToggleArea={onToggleArea} onPatchArea={onPatchArea} onToggleService={onToggleService} onPatchService={onPatchService} /></div>}
-        {section === 'devices' && <><div className="setup-grid"><ProvisionDeviceForm initialInstallationId={initialInstallationId} rooms={snapshot.rooms} areas={snapshot.areas} busy={busy} onSubmit={onProvisionDevice} /></div><DeviceManagement devices={snapshot.devices} rooms={snapshot.rooms} areas={snapshot.areas} busy={busy} onToggle={onToggleDevice} onRotate={onRotateToken} onRebind={onRebindDevice} onRevoke={onRevokeToken} onRetire={onRetireDevice} onAssign={onAssignDevice} /></>}
-          {section === 'settings' && <SettingsPanel settings={snapshot.settings} busy={busy} onSave={onSaveSettings} />}
-        {section === 'admins' && <AdminManagement admins={snapshot.admins} busy={busy} onCreate={onCreateAdmin} onToggle={onToggleAdmin} />}
+      <div className="setup-tabpanel" id={`setup-panel-${section}`} role="tabpanel" aria-labelledby={`setup-tab-${section}`} data-admin-setup-panel={section}>
+        {renderSection(section)}
       </div>
     </div>
   );
@@ -771,25 +927,27 @@ function CreateRoomForm({ busy, onSubmit }: { busy: boolean; onSubmit: (values: 
   return <form className="surface-card setup-card" onSubmit={async (event) => { event.preventDefault(); if (await onSubmit({ code, displayName, floor })) { setCode(''); setDisplayName(''); setFloor(''); } }}><FormTitle eyebrow={t('admin.catalog')} title={t('admin.addRoom')} /><TextInput label={t('admin.code')} value={code} onChange={setCode} placeholder={t('admin.roomCodePlaceholder')} required /><TextInput label={t('admin.displayName')} value={displayName} onChange={setDisplayName} placeholder={t('admin.roomNamePlaceholder')} required /><TextInput label={t('admin.floor')} value={floor} onChange={setFloor} placeholder={t('admin.floorPlaceholder')} /><button className="button button--dark button--full" type="submit" disabled={busy}>{t('admin.addRoom')}</button></form>;
 }
 
-function CreateAreaForm({ busy, onSubmit }: { busy: boolean; onSubmit: (values: { code: string; displayName: string; description: string }) => Promise<boolean> }) {
+export function CreateAreaForm({ busy, onSubmit }: { busy: boolean; onSubmit: (values: { code: string; displayName: string; displayNameEnglish: string; description: string; descriptionEnglish: string }) => Promise<boolean> }) {
   const { t } = useI18n();
-  const [code, setCode] = useState(''); const [displayName, setDisplayName] = useState(''); const [description, setDescription] = useState('');
-  return <form className="surface-card setup-card" onSubmit={async (event) => { event.preventDefault(); if (await onSubmit({ code, displayName, description })) { setCode(''); setDisplayName(''); setDescription(''); } }}><FormTitle eyebrow={t('admin.catalog')} title={t('admin.addArea')} /><TextInput label={t('admin.code')} value={code} onChange={setCode} placeholder={t('admin.areaCodePlaceholder')} required /><TextInput label={t('admin.displayName')} value={displayName} onChange={setDisplayName} placeholder={t('admin.areaNamePlaceholder')} required /><TextInput label={t('admin.description')} value={description} onChange={setDescription} placeholder={t('admin.areaDescriptionPlaceholder')} /><button className="button button--dark button--full" type="submit" disabled={busy}>{t('admin.addArea')}</button></form>;
+  const [code, setCode] = useState(''); const [displayName, setDisplayName] = useState(''); const [displayNameEnglish, setDisplayNameEnglish] = useState(''); const [description, setDescription] = useState(''); const [descriptionEnglish, setDescriptionEnglish] = useState('');
+  return <form className="surface-card setup-card" onSubmit={async (event) => { event.preventDefault(); if (await onSubmit({ code, displayName, displayNameEnglish, description, descriptionEnglish })) { setCode(''); setDisplayName(''); setDisplayNameEnglish(''); setDescription(''); setDescriptionEnglish(''); } }}><FormTitle eyebrow={t('admin.catalog')} title={t('admin.addArea')} /><TextInput label={t('admin.code')} value={code} onChange={setCode} placeholder={t('admin.areaCodePlaceholder')} required /><TextInput label={t('admin.displayName')} value={displayName} onChange={setDisplayName} placeholder={t('admin.areaNamePlaceholder')} required /><TextInput label={t('admin.displayNameEnglish')} value={displayNameEnglish} onChange={setDisplayNameEnglish} placeholder={t('admin.areaNamePlaceholder')} required /><TextInput label={t('admin.description')} value={description} onChange={setDescription} placeholder={t('admin.areaDescriptionPlaceholder')} /><TextInput label={t('admin.descriptionEnglish')} value={descriptionEnglish} onChange={setDescriptionEnglish} placeholder={t('admin.areaDescriptionPlaceholder')} required={description.trim().length > 0} /><button className="button button--dark button--full" type="submit" disabled={busy}>{t('admin.addArea')}</button></form>;
 }
 
-function CreateServiceForm({ areas, busy, onSubmit }: { areas: AreaDTO[]; busy: boolean; onSubmit: (values: { code: string; displayName: string; description: string; iconKey: string; areaId: string }) => Promise<boolean> }) {
-  const { t } = useI18n();
-  const [code, setCode] = useState(''); const [displayName, setDisplayName] = useState(''); const [description, setDescription] = useState(''); const [iconKey, setIconKey] = useState('bell'); const [areaId, setAreaId] = useState(areas[0]?.id ?? '');
-  return <form className="surface-card setup-card" onSubmit={async (event) => { event.preventDefault(); if (await onSubmit({ code, displayName, description, iconKey, areaId })) { setCode(''); setDisplayName(''); setDescription(''); } }}><FormTitle eyebrow={t('admin.catalog')} title={t('admin.addService')} /><TextInput label={t('admin.code')} value={code} onChange={setCode} placeholder={t('admin.serviceCodePlaceholder')} required /><TextInput label={t('admin.displayName')} value={displayName} onChange={setDisplayName} placeholder={t('admin.serviceNamePlaceholder')} required /><SelectInput label={t('admin.area')} value={areaId} onChange={setAreaId} options={areas.map((area) => ({ value: area.id, label: area.displayName }))} required /><SelectInput label={t('admin.icon')} value={iconKey} onChange={setIconKey} options={SERVICE_ICON_OPTIONS.map((option) => ({ value: option.value, label: t(option.label), icon: option.icon }))} /><button className="button button--dark button--full" type="submit" disabled={busy || areas.length === 0}>{areas.length === 0 ? t('admin.addAreaFirst') : t('admin.addService')}</button></form>;
+export function CreateServiceForm({ areas, busy, onSubmit }: { areas: AreaDTO[]; busy: boolean; onSubmit: (values: { code: string; displayName: string; displayNameEnglish: string; description: string; descriptionEnglish: string; iconKey: string; areaId: string }) => Promise<boolean> }) {
+  const { locale, t } = useI18n();
+  const [code, setCode] = useState(''); const [displayName, setDisplayName] = useState(''); const [displayNameEnglish, setDisplayNameEnglish] = useState(''); const [description, setDescription] = useState(''); const [descriptionEnglish, setDescriptionEnglish] = useState(''); const [iconKey, setIconKey] = useState('bell'); const [areaId, setAreaId] = useState(areas[0]?.id ?? '');
+  return <form className="surface-card setup-card" onSubmit={async (event) => { event.preventDefault(); if (await onSubmit({ code, displayName, displayNameEnglish, description, descriptionEnglish, iconKey, areaId })) { setCode(''); setDisplayName(''); setDisplayNameEnglish(''); setDescription(''); setDescriptionEnglish(''); } }}><FormTitle eyebrow={t('admin.catalog')} title={t('admin.addService')} /><TextInput label={t('admin.code')} value={code} onChange={setCode} placeholder={t('admin.serviceCodePlaceholder')} required /><TextInput label={t('admin.displayName')} value={displayName} onChange={setDisplayName} placeholder={t('admin.serviceNamePlaceholder')} required /><TextInput label={t('admin.displayNameEnglish')} value={displayNameEnglish} onChange={setDisplayNameEnglish} placeholder={t('admin.serviceNamePlaceholder')} required /><TextInput label={t('admin.description')} value={description} onChange={setDescription} /><TextInput label={t('admin.descriptionEnglish')} value={descriptionEnglish} onChange={setDescriptionEnglish} required={description.trim().length > 0} /><SelectInput label={t('admin.area')} value={areaId} onChange={setAreaId} options={areas.map((area) => ({ value: area.id, label: resolveAreaDisplayName(area, locale) }))} required modal /><SelectInput label={t('admin.icon')} value={iconKey} onChange={setIconKey} options={SERVICE_ICON_OPTIONS.map((option) => ({ value: option.value, label: t(option.label), icon: option.icon }))} modal /><button className="button button--dark button--full" type="submit" disabled={busy || areas.length === 0}>{areas.length === 0 ? t('admin.addAreaFirst') : t('admin.addService')}</button></form>;
 }
 
 function ProvisionDeviceForm({ initialInstallationId, rooms, areas, busy, onSubmit }: { initialInstallationId: string | null; rooms: RoomDTO[]; areas: AreaDTO[]; busy: boolean; onSubmit: (values: { installationId: string; displayName: string; assignmentMode: DeviceAssignmentMode; roomId: string; areaId: string }) => Promise<boolean> }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const [installationId, setInstallationId] = useState(initialInstallationId ?? ''); const [displayName, setDisplayName] = useState(''); const [assignmentMode, setAssignmentMode] = useState<DeviceAssignmentMode>('ROOM'); const [roomId, setRoomId] = useState(rooms[0]?.id ?? ''); const [areaId, setAreaId] = useState(areas[0]?.id ?? '');
-  return <form className="surface-card setup-card setup-card--wide" onSubmit={async (event) => { event.preventDefault(); if (await onSubmit({ installationId, displayName, assignmentMode, roomId, areaId })) { setInstallationId(''); setDisplayName(''); } }}><FormTitle eyebrow={t('admin.stations')} title={t('admin.provisionDevice')} /><div className="form-grid"><TextInput label={t('admin.installationId')} value={installationId} onChange={setInstallationId} placeholder={t('admin.installationIdPlaceholder')} required /><TextInput label={t('admin.stationName')} value={displayName} onChange={setDisplayName} placeholder={t('admin.stationNamePlaceholder')} required /><SelectInput label={t('admin.displayMode')} value={assignmentMode} onChange={(value) => setAssignmentMode(value as DeviceAssignmentMode)} options={[{ value: 'ROOM', label: t('admin.modeRoom') }, { value: 'AREA', label: t('admin.modeArea') }]} />{assignmentMode === 'ROOM' ? <SelectInput label={t('admin.room')} value={roomId} onChange={setRoomId} options={rooms.map((room) => ({ value: room.id, label: `${room.code} · ${room.displayName}` }))} required /> : <SelectInput label={t('admin.area')} value={areaId} onChange={setAreaId} options={areas.map((area) => ({ value: area.id, label: `${area.code} · ${area.displayName}` }))} required />}</div><button className="button button--dark" type="submit" disabled={busy || (assignmentMode === 'ROOM' ? rooms.length === 0 : areas.length === 0)}>{t('admin.provisionStation')}</button></form>;
+  return <form className="surface-card setup-card setup-card--wide" onSubmit={async (event) => { event.preventDefault(); if (await onSubmit({ installationId, displayName, assignmentMode, roomId, areaId })) { setInstallationId(''); setDisplayName(''); } }}><FormTitle eyebrow={t('admin.stations')} title={t('admin.provisionDevice')} /><div className="form-grid"><TextInput label={t('admin.installationId')} value={installationId} onChange={setInstallationId} placeholder={t('admin.installationIdPlaceholder')} required /><TextInput label={t('admin.stationName')} value={displayName} onChange={setDisplayName} placeholder={t('admin.stationNamePlaceholder')} required /><SelectInput label={t('admin.displayMode')} value={assignmentMode} onChange={(value) => setAssignmentMode(value as DeviceAssignmentMode)} options={[{ value: 'ROOM', label: t('admin.modeRoom') }, { value: 'AREA', label: t('admin.modeArea') }]} modal />{assignmentMode === 'ROOM' ? <SelectInput label={t('admin.room')} value={roomId} onChange={setRoomId} options={rooms.map((room) => ({ value: room.id, label: `${room.code} · ${resolveLocalizedValue(room.displayName, locale, room.displayNameVariants) ?? room.displayName}` }))} required modal /> : <SelectInput label={t('admin.area')} value={areaId} onChange={setAreaId} options={areas.map((area) => ({ value: area.id, label: `${area.code} · ${resolveAreaDisplayName(area, locale)}` }))} required modal />}</div><button className="button button--dark" type="submit" disabled={busy || (assignmentMode === 'ROOM' ? rooms.length === 0 : areas.length === 0)}>{t('admin.provisionStation')}</button></form>;
 }
 
 interface DeviceManagementProps {
+  initialInstallationId: string | null;
+  onProvision: (values: { installationId: string; displayName: string; assignmentMode: DeviceAssignmentMode; roomId: string; areaId: string }) => Promise<boolean>;
   devices: AdminSystemSnapshot['devices'];
   rooms: RoomDTO[];
   areas: AreaDTO[];
@@ -809,12 +967,28 @@ interface DeviceAssignmentFormValues {
   reason: string;
 }
 
-function DeviceManagement({ devices, rooms, areas, busy, onToggle, onRotate, onRebind, onRevoke, onRetire, onAssign }: DeviceManagementProps) {
+export function DeviceManagement({ initialInstallationId, onProvision, devices, rooms, areas, busy, onToggle, onRotate, onRebind, onRevoke, onRetire, onAssign }: DeviceManagementProps) {
   const { locale, t } = useI18n();
   const [rebindId, setRebindId] = useState<string | null>(null);
   const [assignmentId, setAssignmentId] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [createOpen, setCreateOpen] = useState(false);
   const activeRooms = rooms.filter((room) => room.active);
   const activeAreas = areas.filter((area) => area.active);
+  const visibleDevices = useMemo(() => filterAdminItems(devices, search, (device) => {
+    const room = rooms.find((candidate) => candidate.id === device.roomId || candidate.code === device.roomId);
+    const area = areas.find((candidate) => candidate.id === device.areaId);
+    return [
+      device.installationId,
+      device.displayName,
+      device.assignmentMode,
+      device.roomId,
+      device.areaId,
+      device.presence,
+      room === undefined ? '' : resolveLocalizedValue(room.displayName, locale, room.displayNameVariants),
+      area === undefined ? '' : resolveAreaDisplayName(area, locale)
+    ];
+  }), [areas, devices, locale, rooms, search]);
 
   function openAssignment(device: AdminSystemSnapshot['devices'][number]): void {
     setRebindId(null);
@@ -827,30 +1001,43 @@ function DeviceManagement({ devices, rooms, areas, busy, onToggle, onRotate, onR
   }
 
   return (
+    <>
     <section className="surface-card device-management" aria-labelledby="device-management-title">
-      <div className="panel-card__heading"><div><p className="eyebrow eyebrow--muted">{t('admin.stations')}</p><h2 id="device-management-title">{t('admin.deviceHealthCredentials')}</h2></div><span className="section-count">{formatNumber(devices.length, locale)}</span></div>
-      <div className="device-list">
-        {devices.length === 0 ? <EmptyPanel title={t('admin.noStationsProvisioned')} copy={t('admin.provisionStationAbove')} /> : devices.map((device) => <div className="device-row" key={device.id}>
+       <div className="panel-card__heading"><div><p className="eyebrow eyebrow--muted">{t('admin.stations')}</p><h2 id="device-management-title">{t('admin.deviceHealthCredentials')}</h2></div><label className="catalog-search"><span className="visually-hidden">{t('admin.searchStations')}</span><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t('admin.catalogSearchPlaceholder')} aria-label={t('admin.searchStations')} data-admin-resource-search="devices" /></label><div className="catalog-card__tools"><span className="section-count" data-admin-resource-count={devices.length}>{formatNumber(devices.length, locale)}</span><button className="icon-button catalog-add-button" type="button" onClick={() => setCreateOpen(true)} aria-label={t('admin.provisionDevice')} title={t('admin.provisionDevice')} data-admin-resource-add="devices"><Plus aria-hidden="true" size={18} strokeWidth={2} /></button></div></div>
+       {search.length > 0 && <div className="catalog-list__toolbar"><span className="catalog-results" aria-live="polite">{t('admin.searchResults', { shown: formatNumber(visibleDevices.length, locale), total: formatNumber(devices.length, locale) })}</span></div>}
+       <div className="device-list">
+         {devices.length === 0 ? <EmptyPanel title={t('admin.noStationsProvisioned')} copy={t('admin.provisionStationAbove')} /> : visibleDevices.length === 0 ? <p className="catalog-empty" role="status">{t('admin.noMatchingResources')}</p> : visibleDevices.map((device) => {
+           const room = rooms.find((candidate) => candidate.id === device.roomId || candidate.code === device.roomId);
+           const area = areas.find((candidate) => candidate.id === device.areaId);
+           const assignmentName = device.assignmentMode === 'ROOM'
+             ? room === undefined ? device.roomId ?? t('admin.unassigned') : resolveLocalizedValue(room.displayName, locale, room.displayNameVariants) ?? room.displayName
+             : area === undefined ? device.areaId ?? t('admin.unassigned') : resolveAreaDisplayName(area, locale);
+           return <div className="device-row" key={device.id}>
              <div className={`device-row__mark device-row__mark--${device.presence.toLowerCase()}`} aria-hidden="true">{device.assignmentMode === 'ROOM' ? <House size={18} strokeWidth={1.8} /> : <PanelsTopLeft size={18} strokeWidth={1.8} />}</div>
-            <div className="device-row__main"><strong>{device.displayName}</strong><span>{device.installationId} · {devicePresenceLabel(device.presence, locale)} · {device.lastHeartbeatAt === null ? t('admin.neverSeen') : formatElapsedWithAgo(device.lastHeartbeatAt, new Date(), locale, t('common.ago'))}</span><span>{device.assignmentMode === 'ROOM' ? t('admin.roomPrefix', { name: device.roomId ?? t('admin.unassigned') }) : t('admin.areaPrefix', { name: device.areaId ?? t('admin.unassigned') })}</span></div>
-            <div className="device-row__actions"><button className="text-button" type="button" onClick={() => void onToggle(device.id, !device.active)} disabled={busy}>{device.active ? t('admin.deactivate') : t('admin.activate')}</button><button className="text-button" type="button" onClick={() => void onRotate(device.id)} disabled={busy}>{t('admin.rotateToken')}</button><button className="text-button" type="button" onClick={() => openAssignment(device)} disabled={busy}>{t('admin.reassign')}</button><button className="text-button text-button--danger" type="button" onClick={() => void onRevoke(device.id)} disabled={busy}>{t('admin.revokeToken')}</button><button className="text-button text-button--danger" type="button" onClick={() => { setAssignmentId(null); setRebindId(device.id); }} disabled={busy}>{t('admin.rebind')}</button><button className="text-button text-button--danger" type="button" onClick={() => void onRetire(device.id)} disabled={busy}>{t('admin.retire')}</button></div>
+             <div className="device-row__main"><strong>{device.displayName}</strong><span>{device.installationId} · {devicePresenceLabel(device.presence, locale)} · {device.lastHeartbeatAt === null ? t('admin.neverSeen') : formatElapsedWithAgo(device.lastHeartbeatAt, new Date(), locale, t('common.ago'))}</span><span>{device.assignmentMode === 'ROOM' ? t('admin.roomPrefix', { name: assignmentName }) : t('admin.areaPrefix', { name: assignmentName })}</span></div>
+             <div className="device-row__actions"><button className="icon-button admin-item-action" type="button" onClick={() => void onToggle(device.id, !device.active)} disabled={busy} aria-label={device.active ? t('admin.deactivate') : t('admin.activate')} title={device.active ? t('admin.deactivate') : t('admin.activate')} data-admin-action={device.active ? 'danger' : undefined}>{device.active ? <PowerOff aria-hidden="true" size={17} strokeWidth={1.9} /> : <Power aria-hidden="true" size={17} strokeWidth={1.9} />}</button><button className="icon-button admin-item-action" type="button" onClick={() => void onRotate(device.id)} disabled={busy} aria-label={t('admin.rotateToken')} title={t('admin.rotateToken')}><RefreshCw aria-hidden="true" size={17} strokeWidth={1.9} /></button><button className="icon-button admin-item-action" type="button" onClick={() => openAssignment(device)} disabled={busy} aria-label={t('admin.reassign')} title={t('admin.reassign')}><UserRoundCog aria-hidden="true" size={17} strokeWidth={1.9} /></button><button className="icon-button admin-item-action" type="button" onClick={() => void onRevoke(device.id)} disabled={busy} aria-label={t('admin.revokeToken')} title={t('admin.revokeToken')} data-admin-action="danger"><ShieldOff aria-hidden="true" size={17} strokeWidth={1.9} /></button><button className="icon-button admin-item-action" type="button" onClick={() => { setAssignmentId(null); setRebindId(device.id); }} disabled={busy} aria-label={t('admin.rebind')} title={t('admin.rebind')} data-admin-action="danger"><Link2Off aria-hidden="true" size={17} strokeWidth={1.9} /></button><button className="icon-button admin-item-action" type="button" onClick={() => void onRetire(device.id)} disabled={busy} aria-label={t('admin.retire')} title={t('admin.retire')} data-admin-action="danger"><ArchiveX aria-hidden="true" size={17} strokeWidth={1.9} /></button></div>
            {assignmentId === device.id && <DeviceAssignmentForm rooms={activeRooms} areas={activeAreas} device={device} busy={busy} onCancel={closeForms} onSubmit={async (values) => { const succeeded = await onAssign(device, values); if (succeeded) closeForms(); return succeeded; }} />}
            {rebindId === device.id && <DeviceRebindForm busy={busy} onCancel={closeForms} onSubmit={async (reason) => { const succeeded = await onRebind(device.id, reason); if (succeeded) closeForms(); return succeeded; }} />}
-        </div>)}
+         </div>;
+         })}
       </div>
     </section>
+    <Modal open={createOpen} title={t('admin.provisionDevice')} onClose={() => setCreateOpen(false)} closeLabel={t('common.closeDialog')} className="admin-resource-create-modal">
+      <ProvisionDeviceForm initialInstallationId={initialInstallationId} rooms={rooms} areas={areas} busy={busy} onSubmit={async (values) => { const succeeded = await onProvision(values); if (succeeded) setCreateOpen(false); return succeeded; }} />
+    </Modal>
+    </>
   );
 }
 
 function DeviceAssignmentForm({ device, rooms, areas, busy, onCancel, onSubmit }: { device: AdminSystemSnapshot['devices'][number]; rooms: RoomDTO[]; areas: AreaDTO[]; busy: boolean; onCancel: () => void; onSubmit: (values: DeviceAssignmentFormValues) => Promise<boolean> }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const [assignmentMode, setAssignmentMode] = useState<DeviceAssignmentMode>(device.assignmentMode);
   const [roomId, setRoomId] = useState(device.roomId ?? rooms[0]?.id ?? '');
   const [areaId, setAreaId] = useState(device.areaId ?? areas[0]?.id ?? '');
   const [reason, setReason] = useState('');
   const hasTarget = assignmentMode === 'ROOM' ? rooms.length > 0 : areas.length > 0;
 
-  return <form className="device-action-form" onSubmit={async (event) => { event.preventDefault(); await onSubmit({ assignmentMode, roomId, areaId, reason }); }}><p className="eyebrow eyebrow--muted">{t('admin.remoteAssignment')}</p><div className="form-grid form-grid--compact"><SelectInput label={t('admin.mode')} value={assignmentMode} onChange={(value) => setAssignmentMode(value as DeviceAssignmentMode)} options={[{ value: 'ROOM', label: t('admin.modeRoom') }, { value: 'AREA', label: t('admin.modeArea') }]} /><SelectInput label={t('admin.room')} value={roomId} onChange={setRoomId} options={rooms.map((room) => ({ value: room.id, label: `${room.code} · ${room.displayName}` }))} required={assignmentMode === 'ROOM'} /><SelectInput label={t('admin.area')} value={areaId} onChange={setAreaId} options={areas.map((area) => ({ value: area.id, label: `${area.code} · ${area.displayName}` }))} required={assignmentMode === 'AREA'} /><TextInput label={t('admin.reason')} value={reason} onChange={setReason} placeholder={t('admin.assignmentPlaceholder')} required /></div>{!hasTarget && <p className="form-hint">{t('admin.addTarget', { target: assignmentMode === 'ROOM' ? t('admin.room').toLowerCase() : t('admin.area').toLowerCase() })}</p>}<div className="form-actions"><button className="button button--ghost button--small" type="button" onClick={onCancel}>{t('common.cancel')}</button><button className="button button--dark button--small" type="submit" disabled={busy || !hasTarget}>{t('admin.saveAssignment')}</button></div></form>;
+  return <form className="device-action-form" onSubmit={async (event) => { event.preventDefault(); await onSubmit({ assignmentMode, roomId, areaId, reason }); }}><p className="eyebrow eyebrow--muted">{t('admin.remoteAssignment')}</p><div className="form-grid form-grid--compact"><SelectInput label={t('admin.mode')} value={assignmentMode} onChange={(value) => setAssignmentMode(value as DeviceAssignmentMode)} options={[{ value: 'ROOM', label: t('admin.modeRoom') }, { value: 'AREA', label: t('admin.modeArea') }]} /><SelectInput label={t('admin.room')} value={roomId} onChange={setRoomId} options={rooms.map((room) => ({ value: room.id, label: `${room.code} · ${resolveLocalizedValue(room.displayName, locale, room.displayNameVariants) ?? room.displayName}` }))} required={assignmentMode === 'ROOM'} /><SelectInput label={t('admin.area')} value={areaId} onChange={setAreaId} options={areas.map((area) => ({ value: area.id, label: `${area.code} · ${resolveAreaDisplayName(area, locale)}` }))} required={assignmentMode === 'AREA'} /><TextInput label={t('admin.reason')} value={reason} onChange={setReason} placeholder={t('admin.assignmentPlaceholder')} required /></div>{!hasTarget && <p className="form-hint">{t('admin.addTarget', { target: assignmentMode === 'ROOM' ? t('admin.room').toLowerCase() : t('admin.area').toLowerCase() })}</p>}<div className="form-actions"><button className="button button--ghost button--small" type="button" onClick={onCancel}>{t('common.cancel')}</button><button className="button button--dark button--small" type="submit" disabled={busy || !hasTarget}>{t('admin.saveAssignment')}</button></div></form>;
 }
 
 function DeviceRebindForm({ busy, onCancel, onSubmit }: { busy: boolean; onCancel: () => void; onSubmit: (reason: string) => Promise<boolean> }) {
@@ -862,9 +1049,9 @@ function DeviceRebindForm({ busy, onCancel, onSubmit }: { busy: boolean; onCance
 function RequestHistoryDialog({ request, history, busy, error, clockFormat, onClose }: { request: RequestDTO; history: RequestHistoryDTO[] | null; busy: boolean; error: string | null; clockFormat: ClockFormat; onClose: () => void }) {
   const { locale, t } = useI18n();
   return (
-    <Modal open title={request.service.displayName} onClose={onClose} closeLabel={t('common.closeDialog')}>
+    <Modal open title={resolveServiceDisplayName(request.service, locale)} onClose={onClose} closeLabel={t('common.closeDialog')}>
         <p className="eyebrow eyebrow--muted">{t('admin.requestHistory')}</p>
-        <p className="modal-card__copy">{t('admin.roomPrefix', { name: request.room.displayName })} · {request.responsibleArea.displayName}</p>
+        <p className="modal-card__copy">{t('admin.roomPrefix', { name: resolveLocalizedValue(request.room.displayName, locale, request.room.displayNameVariants) ?? request.room.displayName })} · {resolveAreaDisplayName(request.responsibleArea, locale)}</p>
         {busy && <p className="form-hint">{t('admin.loadingHistory')}</p>}
         {error !== null && <p className="form-error" role="alert">{error}</p>}
         {history !== null && (
@@ -883,7 +1070,7 @@ function RequestHistoryDialog({ request, history, busy, error, clockFormat, onCl
 
 function AuditTab({ snapshot, clockFormat }: { snapshot: AdminSystemSnapshot; clockFormat: ClockFormat }) {
   const { locale, t } = useI18n();
-   return <div className="admin-content"><PageHeading eyebrow={t('admin.auditTrail')} title={t('admin.auditTitle')} copy={t('admin.auditCopy')} /><div className="surface-card audit-table">{snapshot.auditLog.length === 0 ? <EmptyPanel title={t('admin.noActivity')} copy={t('admin.activityWillAppear')} /> : snapshot.auditLog.map((entry) => <div className="audit-row" key={entry.id}><span className="audit-row__id">#{entry.id}</span><div><strong>{auditActionLabel(entry.action, locale)}</strong><span>{actorTypeLabel(entry.actorType, locale)} · {entityTypeLabel(entry.entityType, locale)}{entry.entityId === null ? '' : ` · ${entry.entityId}`}</span></div><time dateTime={entry.createdAt}>{formatDate(entry.createdAt, locale, clockFormat)}</time></div>)}</div></div>;
+    return <div className="admin-content"><div className="surface-card audit-table">{snapshot.auditLog.length === 0 ? <EmptyPanel title={t('admin.noActivity')} copy={t('admin.activityWillAppear')} /> : snapshot.auditLog.map((entry) => <div className="audit-row" key={entry.id}><span className="audit-row__id">#{entry.id}</span><div><strong>{auditActionLabel(entry.action, locale)}</strong><span>{actorTypeLabel(entry.actorType, locale)} · {entityTypeLabel(entry.entityType, locale)}{entry.entityId === null ? '' : ` · ${entry.entityId}`}</span></div><time dateTime={entry.createdAt}>{formatDate(entry.createdAt, locale, clockFormat)}</time></div>)}</div></div>;
 }
 
 function SecretTokenCard({ token, onDismiss, onUseOnThisStation }: { token: string; onDismiss: () => void; onUseOnThisStation?: (() => void) | undefined }) {
@@ -893,17 +1080,13 @@ function SecretTokenCard({ token, onDismiss, onUseOnThisStation }: { token: stri
   return <div className="secret-card" role="alert"><div><p className="eyebrow">{t('admin.oneTimeCredential')}</p><strong>{t('admin.storeToken')}</strong><code>{token}</code><span>{t('admin.tokenNotShownAgain')}</span></div><div className="secret-card__actions"><button className="button button--dark button--small" type="button" onClick={() => void copy()}>{copied ? t('common.copied') : t('admin.copyToken')}</button>{onUseOnThisStation !== undefined && <button className="button button--dark button--small" type="button" onClick={onUseOnThisStation}>{t('admin.useOnThisStation')}</button>}<button className="button button--ghost button--small" type="button" onClick={onDismiss}>{t('common.dismiss')}</button></div></div>;
 }
 
-function PageHeading({ eyebrow, title, copy, action }: { eyebrow: string; title: string; copy: string; action?: ReactNode }) {
-  return <div className="page-heading"><div><p className="eyebrow eyebrow--muted">{eyebrow}</p><h1>{title}</h1><p>{copy}</p></div>{action}</div>;
-}
-
 function MetricCard({ label, value, note, accent }: { label: string; value: string; note: string; accent: string }) {
   return <article className={`metric-card metric-card--${accent}`}><span className="metric-card__label">{label}</span><strong>{value}</strong><span>{note}</span></article>;
 }
 
 function CompactRequest({ request }: { request: RequestDTO }) {
   const { locale, t } = useI18n();
-  return <div className="compact-request"><span className={`status-dot status-dot--${request.status.toLowerCase().replace('_', '-')}`} /><div><strong>{request.service.displayName}</strong><span>{t('admin.roomPrefix', { name: request.room.displayName })} · {formatElapsedWithAgo(request.createdAt, new Date(), locale, t('common.ago'))}</span></div><span className={`status-label status-label--${request.status.toLowerCase().replace('_', '-')}`}>{requestStatusLabel(request.status, locale)}</span></div>;
+  return <div className="compact-request"><span className={`status-dot status-dot--${request.status.toLowerCase().replace('_', '-')}`} /><div><strong>{resolveServiceDisplayName(request.service, locale)}</strong><span>{t('admin.roomPrefix', { name: resolveLocalizedValue(request.room.displayName, locale, request.room.displayNameVariants) ?? request.room.displayName })} · {formatElapsedWithAgo(request.createdAt, new Date(), locale, t('common.ago'))}</span></div><span className={`status-label status-label--${request.status.toLowerCase().replace('_', '-')}`}>{requestStatusLabel(request.status, locale)}</span></div>;
 }
 
 function EmptyPanel({ title, copy }: { title: string; copy: string }) { return <div className="empty-panel"><span aria-hidden="true"><Circle size={19} strokeWidth={1.8} /></span><div><strong>{title}</strong><p>{copy}</p></div></div>; }
@@ -915,9 +1098,9 @@ function TextInput({ label, value, onChange, placeholder, required = false, type
   return <div className="form-field"><label htmlFor={id}>{label}</label><input id={id} type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} required={required} /></div>;
 }
 
-function SelectInput({ label, value, onChange, options, required = false }: { label: string; value: string; onChange: (value: string) => void; options: TouchSelectOption[]; required?: boolean }) {
+function SelectInput({ label, value, onChange, options, required = false, modal = false }: { label: string; value: string; onChange: (value: string) => void; options: TouchSelectOption[]; required?: boolean; modal?: boolean }) {
   const { t } = useI18n();
-  return <TouchSelect label={label} value={value} onChange={onChange} options={options} placeholder={t('common.select', { label: label.toLowerCase() })} required={required} />;
+  return <TouchSelect label={label} value={value} onChange={onChange} options={options} placeholder={t('common.select', { label: label.toLowerCase() })} required={required} modal={modal} />;
 }
 
 function formatDate(value: string, locale: Locale = 'en', clockFormat: ClockFormat = '12h'): string {

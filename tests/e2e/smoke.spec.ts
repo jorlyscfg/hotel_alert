@@ -8,7 +8,7 @@ test('serves the health endpoint and initial station setup screen', async ({ pag
 
   await page.goto('/');
   await expect(page).toHaveTitle('Hotel Local App');
-  await expect(page.getByRole('heading', { name: 'Inicio de sesión del administrador' })).toBeVisible();
+  await expect(page.getByLabel('Usuario')).toBeVisible();
   await page.getByLabel('Usuario').fill('invalid-user');
   await page.getByLabel('Contraseña', { exact: true }).fill('invalid-password');
   await page.getByRole('button', { name: 'Iniciar sesión' }).click();
@@ -22,7 +22,7 @@ test('serves the health endpoint and initial station setup screen', async ({ pag
 
 test('keeps the Admin locale in Spanish without a language selector', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Inicio de sesión del administrador' })).toBeVisible();
+  await expect(page.getByLabel('Usuario')).toBeVisible();
   await page.getByLabel('Usuario').fill('admin');
   await page.getByLabel('Contraseña', { exact: true }).fill('correct-horse-battery-staple');
   const loginResponsePromise = page.waitForResponse((response) => response.url().endsWith('/api/v1/auth/admin/login') && response.request().method() === 'POST');
@@ -36,17 +36,14 @@ test('keeps the Admin locale in Spanish without a language selector', async ({ p
   await page.setViewportSize({ width: 390, height: 844 });
   const mobileNavigation = page.locator('[data-admin-navigation="mobile"]');
   const desktopNavigation = page.locator('[data-admin-navigation="desktop"]');
-  await expect(mobileNavigation).toBeVisible();
-  await expect(mobileNavigation.getByRole('button')).toHaveCount(4);
-  await expect(desktopNavigation).toBeHidden();
-  await expect(page.locator('.admin-sidebar')).toBeHidden();
+  await expect(mobileNavigation).toBeHidden();
+  await expect(desktopNavigation).toBeVisible();
+  await expect(desktopNavigation.getByRole('button')).toHaveCount(4);
+  await expect(page.locator('.admin-sidebar')).toBeVisible();
+  await expect(page.locator('.admin-sidebar').locator('[data-admin-navigation="desktop"]')).toBeVisible();
 
-  const mobileNavigationBox = await mobileNavigation.boundingBox();
-  expect(mobileNavigationBox).not.toBeNull();
-  expect(mobileNavigationBox?.y ?? 0).toBeGreaterThanOrEqual(844 - (mobileNavigationBox?.height ?? 0) - 1);
-
-  await mobileNavigation.getByRole('button', { name: /Cola en vivo/ }).click();
-  await expect(page.getByRole('heading', { name: 'Cada solicitud, un siguiente paso.' })).toBeVisible();
+  await desktopNavigation.getByRole('button', { name: /Cola en vivo/ }).click();
+  await expect(page.locator('.queue-filter-grid')).toBeVisible();
 
   await page.setViewportSize({ width: 1280, height: 800 });
   await expect(desktopNavigation).toBeVisible();
@@ -84,7 +81,7 @@ test('keeps the Admin locale in Spanish without a language selector', async ({ p
   expect(setupResult).toEqual({ roomStatus: 201, bootstrapStatus: 201 });
   await page.getByRole('button', { name: 'Actualizar datos', exact: true }).click();
   await page.getByRole('button', { name: 'Configuración', exact: true }).click();
-  await page.getByRole('tab', { name: 'Estaciones', exact: true }).click();
+  await page.locator('[data-admin-setup-tab="devices"]').click();
   const deviceRow = page.locator('.device-row').filter({ hasText: `Obsolete station ${suffix}` });
   await expect(deviceRow).toBeVisible();
   await deviceRow.getByRole('button', { name: 'Retirar', exact: true }).click();
@@ -95,13 +92,166 @@ test('keeps the Admin locale in Spanish without a language selector', async ({ p
 
   await page.getByRole('button', { name: 'Resumen', exact: true }).click();
   await expect(page.locator('.topbar--admin .language-selector')).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Buenos días, operaciones.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Solicitudes que necesitan avance' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Good morning, operations.' })).toHaveCount(0);
 
   await page.reload();
   await expect(page.locator('.topbar--admin')).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Buenos días, operaciones.' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Inicio de sesión del administrador' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Solicitudes que necesitan avance' })).toBeVisible();
+  await expect(page.getByLabel('Usuario')).toHaveCount(0);
+});
+
+test('preserves an unsaved hotel name when switching System Configuration carousel options', async ({ page }) => {
+  const settingsMutationRequests: string[] = [];
+  page.on('request', (request) => {
+    const mutatingMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+    if (mutatingMethods.has(request.method()) && new URL(request.url()).pathname === '/api/v1/settings') settingsMutationRequests.push(request.url());
+  });
+
+  await page.goto('/');
+  await expect(page.getByLabel('Usuario')).toBeVisible();
+  await page.getByLabel('Usuario').fill('admin');
+  await page.getByLabel('Contraseña', { exact: true }).fill('correct-horse-battery-staple');
+  await page.getByRole('button', { name: 'Iniciar sesión' }).click();
+  await expect(page.locator('.topbar--admin')).toBeVisible();
+  await expect(page.locator('.connection-badge--online')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Configuración', exact: true }).click();
+  await page.getByRole('tab', { name: 'Configuración del sistema', exact: true }).click();
+
+  const hotelNameInput = page.locator('#setting-hotelName');
+  const unsavedHotelName = `Unsaved Hotel ${randomUUID()}`;
+  await expect(hotelNameInput).toBeVisible();
+  await hotelNameInput.fill(unsavedHotelName);
+
+  await page.getByRole('button', { name: 'Formato del reloj', exact: true }).click();
+  await expect(page.locator('[data-admin-settings-option-panel="clock-format"]')).toBeVisible();
+  await page.getByRole('button', { name: 'Política de ejecución', exact: true }).click();
+  await expect(page.locator('[data-admin-settings-option-panel="runtime-policy"]')).toBeVisible();
+  await page.getByRole('button', { name: 'Identidad de la estación', exact: true }).click();
+  await expect(hotelNameInput).toHaveValue(unsavedHotelName);
+  expect(settingsMutationRequests).toHaveLength(0);
+});
+
+test('opens Information settings in a modal and closes after a successful save', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByLabel('Usuario')).toBeVisible();
+  await page.getByLabel('Usuario').fill('admin');
+  await page.getByLabel('Contraseña', { exact: true }).fill('correct-horse-battery-staple');
+  await page.getByRole('button', { name: 'Iniciar sesión' }).click();
+  await expect(page.locator('.topbar--admin')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Configuración', exact: true }).click();
+  await page.getByRole('tab', { name: 'Información', exact: true }).click();
+
+  const panel = page.locator('[data-admin-information-panel="true"]');
+  const actions = panel.locator('[data-admin-information-actions="true"]');
+  const count = panel.locator('[data-admin-information-count="true"]');
+  const upload = panel.locator('[data-admin-information-upload="true"]');
+  const settings = panel.locator('[data-admin-information-settings="true"]');
+  await expect(panel).toBeVisible();
+  await expect(upload).toHaveAttribute('aria-label', 'Cargar imagen');
+  await expect(settings).toHaveAttribute('aria-label', 'Configurar información');
+  const actionOrder = await actions.evaluate((element) => {
+    const children = [...element.children];
+    return {
+      upload: children.indexOf(element.querySelector('[data-admin-information-upload]')),
+      settings: children.indexOf(element.querySelector('[data-admin-information-settings]')),
+      count: children.indexOf(element.querySelector('[data-admin-information-count]'))
+    };
+  });
+  expect(actionOrder.upload).toBeGreaterThanOrEqual(0);
+  expect(actionOrder.settings).toBeGreaterThan(actionOrder.upload);
+  expect(actionOrder.count).toBeGreaterThan(actionOrder.settings);
+  await expect(count).toBeVisible();
+
+  await settings.click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel('Mostrar información después de inactividad (segundos)')).toBeVisible();
+  await expect(dialog.getByLabel('Tiempo por imagen informativa (segundos)')).toBeVisible();
+
+  const saveResponsePromise = page.waitForResponse((response) => response.url().endsWith('/api/v1/settings') && response.request().method() === 'PATCH');
+  await dialog.getByRole('button', { name: 'Guardar cambios', exact: true }).click();
+  expect((await saveResponsePromise).ok()).toBe(true);
+  await expect(dialog).toBeHidden();
+});
+
+test('keeps the InformationPanel variant upload modal responsive at narrow viewports', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto('/');
+  await expect(page.getByLabel('Usuario')).toBeVisible();
+  await page.getByLabel('Usuario').fill('admin');
+  await page.getByLabel('Contraseña', { exact: true }).fill('correct-horse-battery-staple');
+  await page.getByRole('button', { name: 'Iniciar sesión' }).click();
+  await expect(page.locator('.topbar--admin')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Configuración', exact: true }).click();
+  await page.getByRole('tab', { name: 'Información', exact: true }).click();
+
+  const panel = page.locator('[data-admin-information-panel="true"]');
+  await panel.locator('[data-admin-information-upload="true"]').click();
+
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Cancelar', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Cargar imagen', exact: true })).toBeVisible();
+
+  const overflow = await dialog.evaluate((element) => ({
+    dialogScrollWidth: element.scrollWidth,
+    dialogClientWidth: element.clientWidth,
+    documentScrollWidth: document.documentElement.scrollWidth,
+    documentClientWidth: document.documentElement.clientWidth,
+    bodyScrollWidth: document.body.scrollWidth,
+    bodyClientWidth: document.body.clientWidth
+  }));
+  expect(overflow.dialogScrollWidth).toBeLessThanOrEqual(overflow.dialogClientWidth);
+  expect(overflow.documentScrollWidth).toBeLessThanOrEqual(overflow.documentClientWidth);
+  expect(overflow.bodyScrollWidth).toBeLessThanOrEqual(overflow.bodyClientWidth);
+});
+
+test('keeps device registration fields readable in the Stations modal', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByLabel('Usuario')).toBeVisible();
+  await page.getByLabel('Usuario').fill('admin');
+  await page.getByLabel('Contraseña', { exact: true }).fill('correct-horse-battery-staple');
+  await page.getByRole('button', { name: 'Iniciar sesión' }).click();
+  await expect(page.locator('.topbar--admin')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Configuración', exact: true }).click();
+  await page.locator('[data-admin-setup-tab="devices"]').click();
+  await page.locator('[data-admin-resource-add="devices"]').click();
+
+  const dialog = page.getByRole('dialog');
+  const formGrid = dialog.locator('.form-grid');
+  await expect(dialog).toBeVisible();
+  await expect(formGrid).toBeVisible();
+
+  const desktopMetrics = await formGrid.evaluate((element) => {
+    const fields = [...element.querySelectorAll<HTMLElement>('.form-field')];
+    return {
+      columns: getComputedStyle(element).gridTemplateColumns.split(' ').length,
+      fieldWidths: fields.map((field) => field.getBoundingClientRect().width)
+    };
+  });
+  expect(desktopMetrics.columns).toBe(2);
+  expect(desktopMetrics.fieldWidths.every((width) => width >= 200)).toBe(true);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileMetrics = await formGrid.evaluate((element) => {
+    const dialogRect = element.closest('[role="dialog"]')?.getBoundingClientRect();
+    const fields = [...element.querySelectorAll<HTMLElement>('.form-field')];
+    return {
+      columns: getComputedStyle(element).gridTemplateColumns.split(' ').length,
+      fieldWidths: fields.map((field) => field.getBoundingClientRect().width),
+      dialogRect: dialogRect === undefined ? null : { bottom: dialogRect.bottom, right: dialogRect.right }
+    };
+  });
+  expect(mobileMetrics.columns).toBe(1);
+  expect(mobileMetrics.fieldWidths.every((width) => width >= 200)).toBe(true);
+  expect(mobileMetrics.dialogRect).not.toBeNull();
+  expect(mobileMetrics.dialogRect?.bottom ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(844);
+  expect(mobileMetrics.dialogRect?.right ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(390);
 });
 
 test('keeps the ROOM kiosk readable at the PS52 480x480 viewport', async ({ page, request }) => {

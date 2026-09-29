@@ -199,6 +199,23 @@ describe('web application model helpers', () => {
     expect(parseLocalDeviceSnapshot(raw, 'device-2')).toBeNull();
     expect(parseLocalDeviceSnapshot('{"device":{"id":"device-1"}}', 'device-1')).toBeNull();
 
+    const activeDoNotDisturbRooms = [{ id: 'room-2', code: '202', displayName: 'Room 202', doNotDisturb: true }];
+    const legacyDoNotDisturbSnapshot = { ...snapshot, activeDoNotDisturbRooms };
+    expect(parseLocalDeviceSnapshot(JSON.stringify(legacyDoNotDisturbSnapshot), 'device-1')?.activeDoNotDisturbRooms)
+      .toEqual(activeDoNotDisturbRooms);
+    expect(parseLocalDeviceSnapshot(JSON.stringify({
+      ...snapshot,
+      activeDoNotDisturbRooms: [{ ...activeDoNotDisturbRooms[0], doNotDisturbActivatedAt: null }]
+    }), 'device-1')?.activeDoNotDisturbRooms?.[0]?.doNotDisturbActivatedAt).toBeNull();
+    expect(parseLocalDeviceSnapshot(JSON.stringify({
+      ...snapshot,
+      activeDoNotDisturbRooms: [{ ...activeDoNotDisturbRooms[0], doNotDisturbActivatedAt: '2026-08-31T11:00:00.000Z' }]
+    }), 'device-1')?.activeDoNotDisturbRooms?.[0]?.doNotDisturbActivatedAt).toBe('2026-08-31T11:00:00.000Z');
+    expect(parseLocalDeviceSnapshot(JSON.stringify({
+      ...snapshot,
+      activeDoNotDisturbRooms: [{ ...activeDoNotDisturbRooms[0], doNotDisturbActivatedAt: 1_788_184_800_000 }]
+    }), 'device-1')).toBeNull();
+
     const missingRoomBackground = {
       ...snapshot,
       config: Object.fromEntries(Object.entries(snapshot.config).filter(([key]) => key !== 'roomBackground'))

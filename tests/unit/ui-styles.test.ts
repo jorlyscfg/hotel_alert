@@ -58,13 +58,74 @@ describe('accessible UI styles', () => {
     expect(styles).toMatch(/\.text-button \{[^}]*min-height: 48px;/s);
     expect(styles).toMatch(/\.touch-select__trigger \{[^}]*min-height: 48px;/s);
     expect(styles).toMatch(/\.modal-card__close \{[^}]*min-height: 48px;/s);
-    expect(styles).toMatch(/\.queue-filter-clear \{[^}]*min-height: 48px;/s);
+    expect(styles).toMatch(/\.overview-refresh \{[^}]*min-height: 48px;[^}]*min-width: 48px;/s);
+    expect(styles).toMatch(/\.date-picker__trigger \{[^}]*min-height: 48px;/s);
   });
 
-  it('gives AREA drag handles and DND rooms touch-friendly geometry', () => {
-    expect(styles).toMatch(/\.queue-card__drag-handle \{[^}]*min-height: 48px;[^}]*min-width: 48px;/s);
+  it('styles compact AREA request metadata and keeps DND room lists scrollable', () => {
+    const roomRule = styles.match(/\.queue-card__room \{[^}]*\}/s)?.[0] ?? '';
+    const metadataRule = styles.match(/\.queue-card__metadata \{[^}]*\}/s)?.[0] ?? '';
+    const labelRule = styles.match(/\.queue-card__created,\s*\.queue-card__age \{[^}]*\}/s)?.[0] ?? '';
+    const labelFontSize = Number(labelRule.match(/font-size: ([\d.]+)rem/)?.[1] ?? 0);
+
+    expect(roomRule).toContain('font-size: 1.2rem;');
+    expect(roomRule).toContain('font-weight: 900;');
+    expect(metadataRule).toContain('display: flex;');
+    expect(metadataRule).toContain('flex-wrap: wrap;');
+    expect(labelRule).toContain('.queue-card__created, .queue-card__age');
+    expect(labelFontSize).toBeGreaterThanOrEqual(0.8);
+    expect(labelRule).toContain('color: var(--muted);');
+    expect(labelRule).toContain('font-variant-numeric: tabular-nums;');
+    expect(labelRule).toContain('white-space: nowrap;');
     expect(styles).toMatch(/\.area-dnd-strip \{[^}]*overflow-x: auto;/s);
-    expect(styles).toMatch(/\.area-dnd-room \{[^}]*min-height: 48px;/s);
+    expect(styles).not.toMatch(/\.queue-card__drag-handle\b|\.queue-card--dragging\b|\.queue-column--drag-over\b|\.queue-complete-drop-zone\b/);
+  });
+
+  it('adds a small gap between AREA request titles and their action buttons', () => {
+    const titleRule = styles.match(/\.queue-card h3 \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(titleRule).toContain('margin: 14px 0 10px;');
+  });
+
+  it('styles AREA DND room chips as compact red cards with white labels and icons', () => {
+    const roomRule = styles.match(/\.area-dnd-room \{[^}]*\}/s)?.[0] ?? '';
+    const iconRule = styles.match(/\.area-dnd-room svg \{[^}]*\}/s)?.[0] ?? '';
+    const nameRule = styles.match(/\.area-dnd-room span \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(roomRule).toContain('background: #a94d3a;');
+    expect(roomRule).toContain('border: 1px solid #a94d3a;');
+    expect(roomRule).toContain('color: #fff;');
+    expect(roomRule).toContain('min-height: 36px;');
+    expect(roomRule).toContain('padding: 4px 8px;');
+    expect(iconRule).toContain('color: inherit;');
+    expect(nameRule).toContain('color: inherit;');
+  });
+
+  it('colors DND room and tab badges by activation age and keeps unknown times neutral', () => {
+    const severityColors = {
+      green: '#2f6b45',
+      yellow: '#785700',
+      red: '#a94d3a',
+      unknown: '#70777a'
+    };
+
+    for (const [severity, color] of Object.entries(severityColors)) {
+      const roomRule = styles.match(new RegExp(`\\.area-dnd-room--${severity} \\{[^}]*\\}`))?.[0] ?? '';
+      const countRule = styles.match(new RegExp(`\\.area-dnd-tab-count--${severity} \\{[^}]*\\}`))?.[0] ?? '';
+      expect(roomRule).toContain(`background: ${color};`);
+      expect(roomRule).toContain('color: #fff;');
+      expect(countRule).toContain(`background: ${color};`);
+      expect(countRule).toContain('color: #fff;');
+    }
+  });
+
+  it('styles the AREA No molestar count badge with a red background and white number', () => {
+    const badgeRule = styles.match(/\.area-dnd-tab-count \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(badgeRule).toContain('background: #a94d3a;');
+    expect(badgeRule).toContain('color: #fff;');
+    expect(badgeRule).toContain('display: inline-flex;');
+    expect(badgeRule).toContain('border-radius: 999px;');
   });
 
   it('uses two AREA queue columns on desktop and tablets, and one on phones', () => {
@@ -81,15 +142,6 @@ describe('accessible UI styles', () => {
     const requestSectionRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \.device-layout--area > section\[aria-label\] \{[^}]*\}/s)?.[0] ?? '';
     const queueBoardRule = styles.match(/\.queue-board \{[^}]*\}/s)?.[0] ?? '';
     const queueColumnRule = styles.match(/\.queue-column \{[^}]*\}/s)?.[0] ?? '';
-  it('styles the AREA No molestar count badge with a red background and white number', () => {
-    const badgeRule = styles.match(/\.area-dnd-tab-count \{[^}]*\}/s)?.[0] ?? '';
-
-    expect(badgeRule).toContain('background: #a94d3a;');
-    expect(badgeRule).toContain('color: #fff;');
-    expect(badgeRule).toContain('display: inline-flex;');
-    expect(badgeRule).toContain('border-radius: 999px;');
-  });
-
     const queueBodyRule = styles.match(/\.queue-column__body \{[^}]*\}/s)?.[0] ?? '';
 
     expect(areaFrameRule).toContain('display: flex;');
@@ -99,8 +151,8 @@ describe('accessible UI styles', () => {
     expect(areaContentRule).toContain('flex: 1;');
     expect(areaContentRule).toContain('min-height: 0;');
     expect(areaContentRule).toContain('min-width: 0;');
-    expect(areaContentRule).toContain('width: 100%;');
     expect(areaContentRule).toContain('overflow: hidden;');
+    expect(areaContentRule).toContain('width: 100%;');
     expect(areaLayoutRule).toContain('flex: 1;');
     expect(areaLayoutRule).toContain('min-height: 0;');
     expect(requestSectionRule).toContain('display: flex;');
@@ -118,7 +170,7 @@ describe('accessible UI styles', () => {
     expect(styles).not.toMatch(/\.app-frame--admin \.queue-column__body \{[^}]*overflow-y: auto;/s);
   });
 
-  it('keeps the AREA topbar sticky and compact and gives its filters a light active state', () => {
+  it('keeps the AREA topbar sticky and compact and gives selected tabs a darker fill and accent underline', () => {
     const topbarRule = styles.match(/\.topbar--area \{[^}]*\}/s)?.[0] ?? '';
     const areaFilterRowRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \.filter-row \{[^}]*\}/s)?.[0] ?? '';
     const areaFilterPillRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \.filter-pill \{[^}]*\}/s)?.[0] ?? '';
@@ -138,10 +190,41 @@ describe('accessible UI styles', () => {
     expect(areaFilterPillRule).toContain('min-width: 0;');
     expect(areaFilterPillRule).toContain('border: 0;');
     expect(areaFilterPillRule).toContain('border-radius: 0;');
-    expect(activeFilterRule).toContain('background: rgba(215, 109, 84, 0.12);');
+    expect(activeFilterRule).toContain('background: #ded6c7;');
+    expect(activeFilterRule).toContain('border-bottom-color: var(--coral);');
     expect(activeFilterRule).toContain('color: var(--ink);');
     expect(activeFilterRule).not.toContain('background: var(--ink);');
+    expect(areaFilterPillRule).toContain('border-bottom: 3px solid transparent;');
+    expect(styles).toMatch(/@media \(hover: hover\) and \(pointer: fine\) \{\s*\.app-frame--device:not\(\.app-frame--room\) \.filter-pill:not\(\.filter-pill--active\):hover \{/s);
+    expect(styles).not.toMatch(/\.app-frame--device:not\(\.app-frame--room\) \.filter-pill:hover/);
     expect(completedQueueRule).toContain('grid-template-columns: minmax(0, 1fr);');
+  });
+
+  it('keeps the AREA DND panel surface consistent with the queue panels', () => {
+    const dndPanelRule = styles.match(/\.area-dnd-strip \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(dndPanelRule).toContain('background: rgba(247, 244, 235, 0.68);');
+    expect(dndPanelRule).toContain('border-top: 3px solid var(--muted);');
+    expect(dndPanelRule).toContain('padding: 13px;');
+    expect(dndPanelRule).toContain('overflow-x: auto;');
+  });
+
+  it('keeps completed request search and ordering controls responsive and keyboard-visible', () => {
+    const toolbarRule = styles.match(/\.completed-requests-toolbar \{[^}]*\}/s)?.[0] ?? '';
+    const searchRule = styles.match(/\.completed-requests-toolbar__search \{[^}]*\}/s)?.[0] ?? '';
+    const sortSummaryRule = styles.match(/\.completed-requests-toolbar__sort summary \{[^}]*\}/s)?.[0] ?? '';
+    const focusRule = styles.match(/\.completed-requests-toolbar :focus-visible \{[^}]*\}/s)?.[0] ?? '';
+    const mobileStyles = styles.slice(styles.indexOf('@media (max-width: 720px)'), styles.indexOf('@media (min-width: 721px)'));
+    const mobileToolbarRule = mobileStyles.match(/\.completed-requests-toolbar \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(toolbarRule).toContain('display: flex;');
+    expect(toolbarRule).toContain('min-width: 0;');
+    expect(searchRule).toContain('flex: 1 1 auto;');
+    expect(searchRule).toContain('min-width: 0;');
+    expect(sortSummaryRule).toContain('cursor: pointer;');
+    expect(focusRule).toContain('outline: 2px solid var(--coral);');
+    expect(mobileToolbarRule).toContain('align-items: stretch;');
+    expect(mobileToolbarRule).toContain('flex-direction: column;');
   });
 
   it('compacts AREA spacing on desktop and mobile while suppressing tap highlight', () => {
@@ -165,11 +248,72 @@ describe('accessible UI styles', () => {
     expect(mobileContentRule).toContain('padding-top: 4px;');
   });
 
+  it('keeps AREA notices in a floating status stack and lets empty queues collapse', () => {
+    const areaStatusRule = styles.match(/\.area-status-stack \{[^}]*\}/s)?.[0] ?? '';
+    const areaLayoutRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \.device-content \{[^}]*\}/s)?.[0] ?? '';
+    const areaDeviceRule = styles.match(/\.app-frame--device:not\(\.app-frame--room\) \.device-layout \{[^}]*\}/s)?.[0] ?? '';
+    const queueColumnRule = styles.match(/\.queue-column \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(areaStatusRule).toContain('position: fixed;');
+    expect(areaStatusRule).toContain('pointer-events: none;');
+    expect(areaLayoutRule).toContain('padding:');
+    expect(areaDeviceRule).toContain('gap:');
+    expect(queueColumnRule).not.toContain('min-height: 240px;');
+  });
+
   it('provides bounded overlay and listbox surfaces', () => {
     expect(styles).toMatch(/\.modal-scrim \{[^}]*overflow-y: auto;/s);
     expect(styles).toMatch(/\.modal-card \{[^}]*max-height:/s);
     expect(styles).toMatch(/\.touch-select__menu \{[^}]*max-height:/s);
     expect(styles).toContain('@media (prefers-reduced-motion: reduce)');
+  });
+
+  it('lets shared modal cards size to content without clipping open selectors', () => {
+    const modalRule = styles.match(/\.modal-card \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(modalRule).toContain('height: auto;');
+    expect(modalRule).toContain('max-height: 100%;');
+    expect(modalRule).toContain('overflow: visible;');
+    expect(modalRule).not.toContain('overflow-y: auto;');
+    expect(modalRule).not.toMatch(/\d+d?vh/);
+  });
+
+  it('keeps modal overlays above the Admin navigation stacking layer', () => {
+    const adminShellRule = styles.match(/\.admin-shell \{[^}]*\}/s)?.[0] ?? '';
+    const modalScrimRule = styles.match(/\.modal-scrim \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(adminShellRule).not.toContain('z-index:');
+    expect(modalScrimRule).toContain('position: fixed;');
+    expect(modalScrimRule).toContain('z-index: 40;');
+  });
+
+  it('fades the Information carousel without moving the room layout and disables motion when requested', () => {
+    expect(styles).toMatch(/\.information-carousel \{[^}]*animation: information-carousel-fade-in 180ms ease both;[^}]*position: absolute;/s);
+    expect(styles).toContain('@keyframes information-carousel-fade-in');
+    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\.information-carousel \{\s*animation: none;\s*\}/s);
+  });
+
+  it('insets Information carousel content from the bottom while preserving its full-surface overlay', () => {
+    const carouselRule = styles.match(/\.information-carousel \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(carouselRule).toContain('inset: 0;');
+    expect(carouselRule).toContain('padding-bottom: clamp(16px, 3vh, 32px);');
+  });
+
+  it('keeps Information heading actions touch-friendly and the timing modal bounded', () => {
+    const actionsRule = styles.match(/\.information-panel__heading-actions \{[^}]*\}/s)?.[0] ?? '';
+    const actionRule = styles.match(/\.information-panel__heading-action \{[^}]*\}/s)?.[0] ?? '';
+    const timingRule = styles.match(/\.information-panel__timing \{[^}]*\}/s)?.[0] ?? '';
+    const modalRule = styles.match(/\.information-settings-modal \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(actionsRule).toContain('align-items: center;');
+    expect(actionsRule).toContain('display: flex;');
+    expect(actionsRule).toContain('flex: 0 0 auto;');
+    expect(actionRule).toContain('min-height: 48px;');
+    expect(actionRule).toContain('min-width: 48px;');
+    expect(timingRule).toContain('display: grid;');
+    expect(timingRule).toContain('gap: 16px;');
+    expect(modalRule).toContain('max-width: 520px;');
   });
 
   it('defines a distinct destructive action state', () => {
@@ -183,21 +327,105 @@ describe('accessible UI styles', () => {
     expect(styles).toMatch(/\.device-content \{[^}]*max-width: none;/s);
   });
 
-  it('keeps only one Admin navigation variant exposed at each viewport size', () => {
+  it('keeps the Admin sidebar visible and horizontally operable at compact widths', () => {
     expect(styles).toMatch(/\.admin-mobile-nav \{[^}]*display: none;/s);
     const compactStyles = styles.slice(styles.indexOf('@media (max-width: 720px)'));
 
-    expect(compactStyles).toMatch(/\.admin-sidebar \{[^}]*display: none;/s);
-    expect(compactStyles).toMatch(/\.admin-mobile-nav \{[^}]*display: grid;/s);
+    expect(compactStyles).toMatch(/\.app-frame--admin \.admin-sidebar \{[^}]*display: block;[^}]*overflow-x: auto;/s);
+    expect(compactStyles).toMatch(/\.app-frame--admin \.admin-nav \{[^}]*display: flex;[^}]*min-width: max-content;/s);
+    expect(compactStyles).toMatch(/\.admin-mobile-nav \{[^}]*display: none;/s);
   });
 
-  it('keeps the mobile Admin frame clear of its sticky topbar and fixed bottom navigation', () => {
+  it('keeps the mobile Admin frame clear of its sticky topbar and horizontal sidebar', () => {
     const compactStyles = styles.slice(styles.indexOf('@media (max-width: 720px)'));
 
     expect(compactStyles).toMatch(/\.app-frame--admin \.topbar--admin \{[^}]*position: sticky;[^}]*top: 0;/s);
-    expect(compactStyles).toMatch(/\.admin-mobile-nav \{[^}]*bottom: 0;[^}]*position: fixed;/s);
-    expect(compactStyles).toMatch(/\.admin-mobile-nav \{[^}]*padding-bottom: calc\([^;]*env\(safe-area-inset-bottom\)/s);
-    expect(compactStyles).toMatch(/\.admin-main \{[^}]*padding-bottom: calc\([^;]*env\(safe-area-inset-bottom\)/s);
+    expect(compactStyles).toMatch(/\.app-frame--admin \.admin-sidebar \{[^}]*padding:/s);
+    expect(compactStyles).toMatch(/\.app-frame--admin \.admin-main \{[^}]*padding-bottom: 0;/s);
+  });
+
+  it('gives desktop Admin a sticky command header and framed operations canvas', () => {
+    const desktopStyles = styles.slice(styles.indexOf('@media (min-width: 981px)'));
+
+    expect(desktopStyles).toMatch(/\.app-frame--admin \.topbar--admin \{[^}]*position: sticky;[^}]*top: 12px;[^}]*z-index: 30;/s);
+    expect(desktopStyles).toMatch(/\.admin-sidebar \{[^}]*position: sticky;[^}]*top: 96px;[^}]*background: var\(--paper\);/s);
+    expect(desktopStyles).toMatch(/\.admin-main__canvas \{[^}]*background: var\(--paper\);[^}]*border: 1px solid var\(--line\);[^}]*border-radius: 16px;/s);
+    expect(desktopStyles).toMatch(/\.app-frame--admin \.metric-card \{[^}]*border: 1px solid var\(--line\);[^}]*box-shadow:/s);
+  });
+
+  it('keeps compact Admin navigation labels on one scrollable row', () => {
+    const compactStyles = styles.slice(styles.indexOf('@media (max-width: 720px)'));
+
+    expect(compactStyles).toMatch(/\.app-frame--admin \.admin-nav__item \{[^}]*flex: 0 0 auto;[^}]*white-space: nowrap;/s);
+    expect(compactStyles).toMatch(/\.app-frame--admin \.admin-nav__item--active \{[^}]*border-left: 0;[^}]*border-bottom: 3px solid var\(--coral\);/s);
+  });
+
+  it('styles setup accordions and counters as compact badges', () => {
+    const setupAccordionRule = styles.match(/\.setup-accordion__trigger \{[^}]*\}/s)?.[0] ?? '';
+    const setupCountRule = styles.match(/\.setup-accordion__count \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(setupAccordionRule).toContain('align-items: center;');
+    expect(setupAccordionRule).toContain('display: flex;');
+    expect(setupCountRule).toContain('background: var(--amber);');
+    expect(setupCountRule).toContain('display: inline-flex;');
+  });
+
+  it('keeps date-picker grids and branding upload controls accessible and bounded', () => {
+    const popoverRule = styles.match(/\.date-picker__popover \{[^}]*\}/s)?.[0] ?? '';
+    const dayRule = styles.match(/\.date-picker__day \{[^}]*\}/s)?.[0] ?? '';
+    const fileRule = styles.match(/\.branding-file-input \{[^}]*\}/s)?.[0] ?? '';
+    const uploadRule = styles.match(/\.branding-upload-button \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(popoverRule).toContain('position: absolute;');
+    expect(popoverRule).toContain('z-index:');
+    expect(dayRule).toContain('min-height: 40px;');
+    expect(dayRule).toContain('min-width: 40px;');
+    expect(fileRule).toContain('position: absolute;');
+    expect(uploadRule).toContain('min-height: 40px;');
+    expect(uploadRule).toContain('min-width: 40px;');
+  });
+
+  it('uses the available desktop queue filter space and setup tab treatment for statuses', () => {
+    const queueFilterRule = styles.match(/\.queue-filter-grid \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(queueFilterRule).toContain('grid-template-columns: repeat(3, minmax(120px, 1fr));');
+    expect(styles).toContain('.setup-tabs');
+    expect(styles).toContain('.setup-tab');
+    expect(styles).toContain('.setup-tab--active');
+    expect(styles).toContain('.setup-tab__label');
+
+    const tabletStyles = styles.slice(styles.indexOf('@media (max-width: 980px)'));
+    const phoneStyles = styles.slice(styles.indexOf('@media (max-width: 720px)'));
+    expect(tabletStyles).toMatch(/\.queue-filter-grid \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/s);
+    expect(phoneStyles).toMatch(/\.queue-filter-grid \{[^}]*grid-template-columns: 1fr;/s);
+  });
+
+  it('keeps Admin searches flexible between headings and counts', () => {
+    const headingRule = styles.match(/\.catalog-card \.panel-card__heading, \.device-management \.panel-card__heading \{[^}]*\}/s)?.[0] ?? '';
+    const searchRule = styles.match(/\.catalog-search \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(headingRule).toContain('align-items: center;');
+    expect(headingRule).toContain('display: flex;');
+    expect(searchRule).toContain('flex: 1 1 auto;');
+    expect(searchRule).toContain('min-width: 0;');
+  });
+
+  it('keeps Admin configuration actions icon-sized and inline with their items', () => {
+    const catalogRowRule = styles.match(/\.catalog-row \{[^}]*\}/s)?.[0] ?? '';
+    const catalogActionsRule = styles.match(/\.catalog-row__actions \{[^}]*\}/s)?.[0] ?? '';
+    const deviceRowRule = styles.match(/\.device-row \{[^}]*\}/s)?.[0] ?? '';
+    const deviceActionsRule = styles.match(/\.device-row__actions \{[^}]*\}/s)?.[0] ?? '';
+    const itemActionRule = styles.match(/\.admin-item-action \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(catalogRowRule).toContain('align-items: center;');
+    expect(catalogRowRule).toContain('display: flex;');
+    expect(catalogActionsRule).toContain('display: flex;');
+    expect(catalogActionsRule).toContain('flex-wrap: nowrap;');
+    expect(deviceRowRule).toContain('flex-wrap: wrap;');
+    expect(deviceActionsRule).toContain('flex-wrap: nowrap;');
+    expect(deviceActionsRule).toContain('overflow-x: auto;');
+    expect(itemActionRule).toContain('min-height: 40px;');
+    expect(itemActionRule).toContain('min-width: 40px;');
   });
 
   it('keeps the language selector compact and its icon content aligned', () => {
@@ -218,7 +446,7 @@ describe('accessible UI styles', () => {
   });
 
   it('keeps the room navbar sticky without changing the admin navbar', () => {
-    expect(styles).toMatch(/\.app-frame--room \{[^}]*height: 100dvh;[^}]*min-height: 100dvh;[^}]*overflow: hidden;/s);
+    expect(styles).toMatch(/\.app-frame--room \{[^}]*height: var\(--app-viewport-height\);[^}]*min-height: var\(--app-viewport-height\);[^}]*overflow: hidden;/s);
     expect(styles).toMatch(/\.topbar--room \{[^}]*position: sticky;[^}]*top: 0;[^}]*z-index:/s);
     expect(styles).toMatch(/\.room-request-button__icon--unread \{[^}]*color:/s);
   });
@@ -516,6 +744,16 @@ describe('accessible UI styles', () => {
     expect(modalSelectRule).toContain('z-index: 1000;');
   });
 
+  it('raises only the open TouchSelect above later modal siblings', () => {
+    const openSelectRule = styles.match(/\.touch-select--open \{[^}]*\}/s)?.[0] ?? '';
+    const modalMenuRule = styles.match(/\.touch-select--modal \.touch-select__menu \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(openSelectRule).toContain('position: relative;');
+    expect(openSelectRule).toContain('z-index: 1001;');
+    expect(modalMenuRule).toContain('max-height: 240px;');
+    expect(styles).toContain('.touch-select:has(.touch-select__trigger[aria-expanded="true"])');
+  });
+
   it('lets the room service grid shrink to the viewport width', () => {
     expect(styles).toMatch(/\.app-frame--room \.device-content \{[^}]*min-height: 0;[^}]*min-width: 0;[^}]*width: 100%;/s);
     expect(styles).toMatch(/\.app-frame--room \.device-layout--room \{[^}]*min-width: 0;/s);
@@ -592,6 +830,14 @@ describe('accessible UI styles', () => {
     expect(emptyStateRule).not.toContain('rgba(247, 244, 235');
     expect(inputRule).toContain('background: var(--room-modal-input-bg);');
     expect(inputRule).toContain('color: var(--room-modal-ink);');
+  });
+
+  it('keeps ROOM DND explanation copy as prominent as a modal heading', () => {
+    const copyRule = styles.match(/\.room-dnd-explanation-modal \.modal-card__copy \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(copyRule).toContain('color: var(--room-modal-ink);');
+    expect(copyRule).toContain('font-size: clamp(1.35rem, 2vw, 1.8rem);');
+    expect(copyRule).toContain('line-height: 1.2;');
   });
 
   it('centers ROOM service tile content around only the icon and title', () => {

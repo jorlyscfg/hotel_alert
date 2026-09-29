@@ -4,9 +4,12 @@ import { describe, expect, it, vi } from 'vitest';
 import * as deviceScreenModule from '../../apps/web/src/features/device/DeviceScreen';
 import {
   DeviceScreen,
+  CompletedRequestsEmptyState,
+  CompletedRequestsToolbar,
   RoomAreaServices,
   chunkServices,
   filterAreaRequests,
+  filterAndSortCompletedAreaRequests,
   formatAreaRequestAge,
   formatRoomRequestAge,
   formatClock,
@@ -15,10 +18,11 @@ import {
   resolveRoomServicePageSize,
   resolveRoomRequestSubmissionMode,
   resolveDeviceConnectionMessage,
+  resolveInformationCarouselTiming,
   resolvePendingAlertIntervalMs,
   resolveRoomBackgroundStyle
 } from '../../apps/web/src/features/device/DeviceScreen';
-import { ApiError, isDeviceAuthFailure } from '../../apps/web/src/api';
+import { ApiError, isDeviceAuthFailure, isDeviceInvalidationError } from '../../apps/web/src/api';
 import { I18nProvider, SpanishI18nProvider } from '../../apps/web/src/i18n';
 import type { DeviceSyncSnapshot, RequestDTO, ServiceDTO } from '@hotel/shared';
 
@@ -54,6 +58,48 @@ type ServiceRequestDialogProps = {
 };
 
 describe('device pending alert helpers', () => {
+  it('renders a deliberate read-only capability error for native AREA consoles', () => {
+    const markup = renderToStaticMarkup(createElement(DeviceScreen, {
+      snapshot: createAreaSnapshot(),
+      deviceToken: '',
+      deviceCommandsSupported: false,
+      connectionStatus: 'online',
+      onRefresh: async () => undefined,
+      onOpenAdmin: () => undefined,
+      onAuthFailure: () => undefined
+    }));
+
+    expect(markup).toContain('Device actions are unavailable in the Android console. Use the web console to manage requests.');
+    expect(markup).not.toContain('draggable="true"');
+    expect(markup).toContain('disabled=""');
+  });
+
+  it('continues the AREA request age from createdAt when reopening an offline stale snapshot', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-31T15:05:00.000Z'));
+    const snapshot = createAreaSnapshot();
+    snapshot.serverTime = '2026-08-31T12:05:00.000Z';
+    const request = snapshot.activeRequests[0];
+    if (request === undefined) throw new Error('Expected the AREA snapshot to include a request.');
+    request.createdAt = '2026-08-31T12:05:00.000Z';
+
+    try {
+      const render = (connectionStatus: 'online' | 'offline') => renderToStaticMarkup(createElement(DeviceScreen, {
+        snapshot,
+        deviceToken: 'device-token',
+        connectionStatus,
+        onRefresh: async () => undefined,
+        onOpenAdmin: () => undefined,
+        onAuthFailure: () => undefined
+      }));
+
+      expect(render('offline')).toContain('3h 0m');
+      expect(render('online')).toContain('just now');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('creates a readable room background style only for a configured image', () => {
     const roomBackground = 'data:image/png;base64,AAAA';
     const responsiveRoomBackground = {
@@ -113,6 +159,11 @@ describe('device pending alert helpers', () => {
     expect(resolvePendingAlertIntervalMs(undefined)).toBe(5000);
   });
 
+  it('uses carousel timing from the device config and defaults legacy snapshots', () => {
+    expect(resolveInformationCarouselTiming({})).toEqual({ inactivityMs: 5_000, slideIntervalMs: 5_000 });
+    expect(resolveInformationCarouselTiming({ informationIdleTimeoutSeconds: 12, informationSlideIntervalSeconds: 18 })).toEqual({ inactivityMs: 12_000, slideIntervalMs: 18_000 });
+  });
+
   it('describes every connection state with the last synchronized time', () => {
     expect(resolveDeviceConnectionMessage('online', '12:05 PM')).toBe('Last synchronized at 12:05 PM.');
     expect(resolveDeviceConnectionMessage('connecting', '12:05 PM')).toBe('Synchronizing latest data. Last synchronized at 12:05 PM.');
@@ -125,7 +176,7 @@ describe('device pending alert helpers', () => {
     expect(formatClock(new Date('2026-08-31T09:05:00.000Z'), 'en-US', 'UTC', '24h')).toBe('09:05');
   });
 
-  it('uses the configured clock format for synchronized and request timestamps', () => {
+  it('uses the configured clock format for synchronization but keeps AREA card creation times in AM/PM', () => {
     const baseSnapshot = createAreaSnapshot();
     const snapshot: DeviceSyncSnapshot = {
       ...baseSnapshot,
@@ -148,8 +199,7 @@ describe('device pending alert helpers', () => {
 
     expect(markup).toMatch(/<time class="station-clock"[^>]*>\d{2}:\d{2}<\/time>/);
     expect(markup).toMatch(/Last synchronized at \d{2}:\d{2}\./);
-    expect(markup).toMatch(/Created \d{2}:\d{2}/);
-    expect(markup).not.toMatch(/Created \d{1,2}:\d{2} [AP]M/);
+    expect(markup).toMatch(/Created: \d{1,2}:\d{2} [AP]M/);
   });
 
   it('formats area request age from the supplied server time', () => {
@@ -167,28 +217,137 @@ describe('device pending alert helpers', () => {
     )).toBe('2 min');
   });
 
-  it('keeps only operational requests in active AREA filters and exposes completed requests separately', () => {
+  it('groups accepted and in-process requests while keeping completed requests out of the active view', () => {
     const requests = [
       { id: 'pending', status: 'PENDING' },
       { id: 'accepted', status: 'ACCEPTED' },
-      { id: 'in-progress', status: 'IN_PROGRESS' },
       { id: 'completed', status: 'COMPLETED' }
     ] as RequestDTO[];
 
-    expect(filterAreaRequests(requests, 'ALL').map((request) => request.id)).toEqual(['pending', 'accepted', 'in-progress']);
-    expect(filterAreaRequests(requests, 'PENDING').map((request) => request.id)).toEqual(['pending']);
-    expect(filterAreaRequests(requests, 'IN_PROGRESS').map((request) => request.id)).toEqual(['accepted', 'in-progress']);
+    expect(filterAreaRequests(requests, 'ALL').map((request) => request.id)).toEqual(['pending', 'accepted']);
+    expect(filterAreaRequests(requests, 'IN_PROGRESS').map((request) => request.id)).toEqual(['accepted']);
     expect(filterAreaRequests(requests, 'COMPLETED').map((request) => request.id)).toEqual(['completed']);
+  });
+
+  it('searches completed requests using conjunctive, case-insensitive substrings across fields', () => {
+    const first = {
+      ...createRoomRequest(),
+      id: 'request-alpha-21',
+      status: 'COMPLETED' as const,
+      room: { id: 'room-1', code: '205', displayName: 'Garden Suite', doNotDisturb: false },
+      service: { ...createRoomRequest().service, code: 'late-checkout', displayName: 'Late Checkout' },
+      responsibleArea: { id: 'area-1', code: 'front-desk', displayName: 'Front Desk' },
+      completedAt: '2026-08-31T12:30:00.000Z'
+    };
+    const second = {
+      ...first,
+      id: 'request-beta-22',
+      room: { ...first.room, code: '206', displayName: 'Garden Room' },
+      service: { ...first.service, code: 'extra-pillows', displayName: 'Extra Pillows' },
+      responsibleArea: { ...first.responsibleArea, code: 'housekeeping', displayName: 'Housekeeping' }
+    };
+
+    expect(filterAndSortCompletedAreaRequests([first, second], 'GARDEN checkout', 'completed-newest', 'en').map(({ id }) => id)).toEqual([first.id]);
+    expect(filterAndSortCompletedAreaRequests([first, second], 'garden housekeeping', 'completed-newest', 'en').map(({ id }) => id)).toEqual([second.id]);
+    expect(filterAndSortCompletedAreaRequests([first, second], '205 front', 'completed-newest', 'en').map(({ id }) => id)).toEqual([first.id]);
+    expect(filterAndSortCompletedAreaRequests([first, second], 'not-found', 'completed-newest', 'en')).toEqual([]);
+    expect(filterAndSortCompletedAreaRequests([first, second], '', 'completed-newest', 'en')).toHaveLength(2);
+  });
+
+  it('renders accessible completed-only controls and localized no-results feedback', () => {
+    const onSearchQueryChange = vi.fn();
+    const onOrderChange = vi.fn();
+    const controls = createElement(CompletedRequestsToolbar, {
+      searchQuery: 'garden',
+      order: 'completed-newest',
+      onSearchQueryChange,
+      onOrderChange
+    });
+    const english = renderToStaticMarkup(controls);
+    const spanish = renderToStaticMarkup(createElement(SpanishI18nProvider, { children: controls }));
+    const spanishNoResults = renderToStaticMarkup(createElement(SpanishI18nProvider, {
+      children: createElement(CompletedRequestsEmptyState, { searchActive: true })
+    }));
+
+    expect(english).toContain('type="search"');
+    expect(english).toContain('aria-label="Search completed requests"');
+    expect(english).toContain('Room, service, area, or request ID');
+    expect(english).toContain('<summary>Order by</summary>');
+    expect(english.match(/type="radio"/g)).toHaveLength(4);
+    expect(english).toContain('Completion — newest first');
+    expect(spanish).toContain('aria-label="Buscar solicitudes completadas"');
+    expect(spanish).toContain('placeholder="Habitación, servicio, área o ID de solicitud"');
+    expect(spanish).toContain('<summary>Ordenar por</summary>');
+    expect(spanish).toContain('Servicio — de A a Z');
+    expect(renderToStaticMarkup(createElement(CompletedRequestsEmptyState, { searchActive: true }))).toContain('No completed requests match your search.');
+    expect(spanishNoResults).toContain('Ninguna solicitud completada coincide con la búsqueda.');
+    expect(renderToStaticMarkup(createElement(CompletedRequestsEmptyState, { searchActive: false }))).toContain('Clear');
+  });
+
+  it('orders completed requests by completion, numeric-aware room, and service with a creation-time fallback', () => {
+    const request = createRoomRequest();
+    const late = {
+      ...request,
+      id: 'late',
+      status: 'COMPLETED' as const,
+      room: { ...request.room, code: '12' },
+      service: { ...request.service, id: 'service-zulu', displayName: 'Zulu' },
+      createdAt: '2026-08-31T12:01:00.000Z',
+      completedAt: '2026-08-31T12:40:00.000Z'
+    };
+    const early = {
+      ...request,
+      id: 'early',
+      status: 'COMPLETED' as const,
+      room: { ...request.room, code: '2' },
+      service: { ...request.service, id: 'service-alpha', displayName: 'Alpha' },
+      createdAt: '2026-08-31T12:02:00.000Z',
+      completedAt: '2026-08-31T12:10:00.000Z'
+    };
+    const legacy = {
+      ...request,
+      id: 'legacy',
+      status: 'COMPLETED' as const,
+      room: { ...request.room, code: '101' },
+      service: { ...request.service, id: 'service-beta', displayName: 'Beta' },
+      createdAt: '2026-08-31T12:20:00.000Z',
+      completedAt: null
+    };
+    const completed = [early, legacy, late];
+
+    expect(filterAndSortCompletedAreaRequests(completed, '', undefined, 'en').map(({ id }) => id)).toEqual(['late', 'legacy', 'early']);
+    expect(filterAndSortCompletedAreaRequests(completed, '', 'completed-newest', 'en').map(({ id }) => id)).toEqual(['late', 'legacy', 'early']);
+    expect(filterAndSortCompletedAreaRequests(completed, '', 'completed-oldest', 'en').map(({ id }) => id)).toEqual(['early', 'legacy', 'late']);
+    expect(filterAndSortCompletedAreaRequests(completed, '', 'room-asc', 'en').map(({ id }) => id)).toEqual(['early', 'late', 'legacy']);
+    expect(filterAndSortCompletedAreaRequests(completed, '', 'service-asc', 'en').map(({ id }) => id)).toEqual(['early', 'legacy', 'late']);
   });
 
   it('only invalidates device auth for 401 or HTTP 403 DEVICE_INACTIVE', () => {
     expect(isDeviceAuthFailure(new ApiError(401, { error: { code: 'DEVICE_TOKEN_REVOKED' } }))).toBe(true);
+    expect(isDeviceInvalidationError(new ApiError(401, { error: { code: 'DEVICE_TOKEN_REVOKED' } }))).toBe(true);
     expect(isDeviceAuthFailure(new ApiError(403, { error: { code: 'DEVICE_INACTIVE' } }))).toBe(true);
     expect(isDeviceAuthFailure(new ApiError(403, { error: { code: 'FORBIDDEN_ASSIGNMENT' } }))).toBe(false);
   });
 
   it('removes the second ROOM request success state', () => {
     expect(Reflect.get(deviceScreenModule, 'RequestSuccess')).toBeUndefined();
+  });
+
+  it('floats AREA status notices without rendering drag-and-drop UI', () => {
+    const markup = renderToStaticMarkup(createElement(DeviceScreen, {
+      snapshot: createAreaSnapshot(),
+      deviceToken: 'device-token',
+      connectionStatus: 'offline',
+      onRefresh: async () => undefined,
+      onOpenAdmin: () => undefined,
+      onAuthFailure: () => undefined
+    }));
+
+    expect(markup).toContain('class="area-status-stack"');
+    expect(markup).toContain('Connection unavailable');
+    expect(markup).not.toContain('class="queue-complete-drop-zone');
+    expect(markup).not.toContain('queue-card__drag-handle');
+    expect(markup).not.toContain('data-area-drop-status');
   });
 
   it('keeps ROOM service tiles centered on an icon and title without redundant tile content', () => {
@@ -335,10 +494,12 @@ describe('device pending alert helpers', () => {
       selectedLocale = 'es';
       const spanishMarkup = render();
 
-      expect(englishMarkup).toContain('Requests are paused');
-      expect(englishMarkup).toContain('Turn off Do not disturb for this room before requesting a service.');
-      expect(spanishMarkup).toContain('Solicitudes pausadas');
-      expect(spanishMarkup).toContain('Desactiva «No molestar» en esta habitación para poder solicitar un servicio.');
+      const accessibleTitle = englishMarkup.match(/<h2 id="([^"]+)" class="visually-hidden">Requests are paused<\/h2>/);
+      expect(accessibleTitle).not.toBeNull();
+      expect(englishMarkup).toContain(`aria-labelledby="${accessibleTitle?.[1]}"`);
+      expect(englishMarkup).toContain('Turn off &quot;Do not disturb&quot; to request services.');
+      expect(englishMarkup).toContain('class="button button--primary"');
+      expect(spanishMarkup).toContain('Desactive &quot;No molestar&quot; para poder solicitar servicios.');
     } finally {
       if (previousWindow === undefined) Reflect.deleteProperty(globalThis, 'window');
       else Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow });
@@ -500,6 +661,35 @@ describe('device pending alert helpers', () => {
     expect(markup.slice(headerEnd)).not.toContain('language-selector');
   });
 
+  it('covers the complete ROOM surface, including the header language selector, with activity cancellation', () => {
+    const roomMarkup = renderToStaticMarkup(createElement(DeviceScreen, {
+      snapshot: createRoomSnapshot(),
+      deviceToken: 'device-token',
+      connectionStatus: 'online',
+      onRefresh: async () => undefined,
+      onOpenAdmin: () => undefined,
+      onAuthFailure: () => undefined
+    }));
+    const areaMarkup = renderToStaticMarkup(createElement(DeviceScreen, {
+      snapshot: createAreaSnapshot(),
+      deviceToken: 'device-token',
+      connectionStatus: 'online',
+      onRefresh: async () => undefined,
+      onOpenAdmin: () => undefined,
+      onAuthFailure: () => undefined
+    }));
+    const experienceIndex = roomMarkup.indexOf('class="information-experience"');
+    const headerIndex = roomMarkup.indexOf('<header');
+    const languageIndex = roomMarkup.indexOf('language-selector');
+    const contentIndex = roomMarkup.indexOf('class="device-content"');
+
+    expect(experienceIndex).toBeGreaterThanOrEqual(0);
+    expect(experienceIndex).toBeLessThan(headerIndex);
+    expect(experienceIndex).toBeLessThan(languageIndex);
+    expect(experienceIndex).toBeLessThan(contentIndex);
+    expect(areaMarkup).not.toContain('information-experience');
+  });
+
   it('renders the localized online connection label in the ROOM header', () => {
     const previousWindow = globalThis.window;
     Object.defineProperty(globalThis, 'window', {
@@ -521,6 +711,40 @@ describe('device pending alert helpers', () => {
       const headerMarkup = markup.slice(0, markup.indexOf('</header>'));
 
       expect(headerMarkup).toContain('<span class="connection-badge__label">En línea</span>');
+    } finally {
+      if (previousWindow === undefined) Reflect.deleteProperty(globalThis, 'window');
+      else Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow });
+    }
+  });
+
+  it('renders the selected hotel-name language in ROOM and safely falls back for legacy snapshots', () => {
+    const previousWindow = globalThis.window;
+    let selectedLocale = 'en';
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { localStorage: { getItem: () => selectedLocale, setItem: () => undefined } }
+    });
+
+    try {
+      const snapshot = createRoomSnapshot();
+      snapshot.config.hotelNameVariants = { en: 'Aurora Guest Hotel', es: 'Hotel Aurora' };
+      const render = () => renderToStaticMarkup(createElement(I18nProvider, {
+        children: createElement(DeviceScreen, {
+          snapshot,
+          deviceToken: 'device-token',
+          connectionStatus: 'online',
+          onRefresh: async () => undefined,
+          onOpenAdmin: () => undefined,
+          onAuthFailure: () => undefined
+        })
+      }));
+
+      expect(render()).toContain('Aurora Guest Hotel');
+      selectedLocale = 'es';
+      expect(render()).toContain('Hotel Aurora');
+      selectedLocale = 'en';
+      delete snapshot.config.hotelNameVariants;
+      expect(render()).toContain('Hotel Local');
     } finally {
       if (previousWindow === undefined) Reflect.deleteProperty(globalThis, 'window');
       else Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow });
@@ -624,7 +848,39 @@ describe('device pending alert helpers', () => {
     expect(markup).toContain('lucide-moon');
   });
 
-  it('removes the redundant AREA queue heading and shows only operational columns by default', () => {
+  it('shows only the room code, 12-hour creation time, and elapsed time beside the service icon', () => {
+    const areaSnapshot = createAreaSnapshot();
+    const createdAt = '2026-08-31T09:04:00.000Z';
+    areaSnapshot.serverTime = '2026-08-31T09:06:00.000Z';
+    areaSnapshot.config.clockFormat = '24h';
+    areaSnapshot.activeRequests = [{
+      ...createRoomRequest(true),
+      createdAt,
+      service: { id: 'svc_custom_towels', code: 'custom-towels', displayName: 'Fresh towels', iconKey: 'towels' }
+    }];
+    const markup = renderToStaticMarkup(createElement(SpanishI18nProvider, {
+      children: createElement(DeviceScreen, {
+        snapshot: areaSnapshot,
+        deviceToken: 'device-token',
+        connectionStatus: 'online',
+        onRefresh: async () => undefined,
+        onOpenAdmin: () => undefined,
+        onAuthFailure: () => undefined
+      })
+    }));
+    const cardMarkup = markup.match(/<article class="queue-card[^"]*"[^>]*>([\s\S]*?)<\/article>/)?.[1] ?? '';
+
+    expect(cardMarkup).toContain('queue-card__room');
+    expect(cardMarkup).toContain('>101</span>');
+    expect(cardMarkup).toContain(`Creada: ${formatClock(new Date(createdAt), 'en-US', undefined, '12h')}`);
+    expect(cardMarkup).toContain('Lleva: 2 min');
+    expect(cardMarkup).toContain('room-dnd-indicator');
+    expect(cardMarkup).not.toContain('Room 101');
+    expect(cardMarkup.indexOf('Fresh towels')).toBeGreaterThan(cardMarkup.indexOf('queue-card__topline'));
+    expect(cardMarkup).toContain('queue-card__action');
+  });
+
+  it('removes the redundant live-queue section heading and keeps filters beside operational requests', () => {
     const markup = renderToStaticMarkup(createElement(DeviceScreen, {
       snapshot: createAreaSnapshot(),
       deviceToken: 'device-token',
@@ -638,15 +894,16 @@ describe('device pending alert helpers', () => {
     expect(markup).not.toContain('Keep the floor moving');
     expect(markup).not.toContain('Every request has an owner');
     expect(markup).not.toContain('Live queue');
+    expect(markup).toContain('topbar--area');
     expect(markup).not.toContain('class="section-heading"');
-    expect(markup.match(/class="queue-column /g)).toHaveLength(2);
-    expect(markup).toContain('data-area-drop-status="PENDING"');
-    expect(markup).toContain('data-area-drop-status="IN_PROGRESS"');
-    expect(markup).toContain('aria-pressed="true"');
+    expect(markup).not.toContain('id="queue-title"');
+    expect(markup).not.toContain('section-count');
+    expect(markup).not.toContain('completed-requests-toolbar');
+    expect(markup).toMatch(/class="filter-row"[^>]*>[\s\S]*?<\/div><div class="queue-board/);
     expect(markup).toContain('queue-card__action');
   });
 
-  it('shows only the Pendientes and Completadas AREA tabs', () => {
+  it('shows Pendientes, Completadas, and hides the empty No molestar badge', () => {
     const markup = renderToStaticMarkup(createElement(SpanishI18nProvider, {
       children: createElement(DeviceScreen, {
         snapshot: createAreaSnapshot(),
@@ -657,20 +914,48 @@ describe('device pending alert helpers', () => {
         onAuthFailure: () => undefined
       })
     }));
-    const filterRowMarkup = markup.match(/<div class="filter-row"[^>]*>([\s\S]*?)<\/div><div class="queue-board/ )?.[1] ?? '';
-    const tabLabels = [...filterRowMarkup.matchAll(/<button\b[^>]*>([^<]*)<\/button>/g)].map(([, label]) => label);
+    const filterRowMarkup = markup.match(/<div class="filter-row"[^>]*>([\s\S]*?)<\/div>/)?.[1] ?? '';
+    const buttonMarkup = [...filterRowMarkup.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/g)].map(([button]) => button);
 
-    expect(tabLabels).toEqual(['Pendientes', 'Completadas']);
-    expect(filterRowMarkup).toMatch(/class="filter-pill filter-pill--active"[^>]*aria-pressed="true"[^>]*>Pendientes<\/button>/);
+    expect(buttonMarkup).toHaveLength(3);
+    expect(buttonMarkup[0]).toContain('Pendientes');
+    expect(buttonMarkup[1]).toContain('Completadas');
+    expect(buttonMarkup[2]).toContain('No molestar');
+    expect(buttonMarkup[2]).not.toContain('area-dnd-tab-count');
+    expect(buttonMarkup[0]).toMatch(/filter-pill--active/);
   });
 
-  it('renders active do-not-disturb rooms even when the AREA has no requests', () => {
+  it('shows only operational AREA columns by default and keeps completed items for their filter', () => {
+    const request = createRoomRequest();
+    const pending = { ...request, id: 'pending', service: { ...request.service, displayName: 'Pending towels' } };
+    const accepted = { ...request, id: 'accepted', status: 'ACCEPTED' as const, service: { ...request.service, displayName: 'Accepted towels' } };
+    const inProgress = { ...request, id: 'in-progress', status: 'IN_PROGRESS' as const, service: { ...request.service, displayName: 'In-progress towels' } };
+    const completed = { ...request, id: 'completed', status: 'COMPLETED' as const, service: { ...request.service, displayName: 'Completed towels' } };
+    const requests = [pending, accepted, inProgress, completed];
+    const markup = renderToStaticMarkup(createElement(DeviceScreen, {
+      snapshot: { ...createAreaSnapshot(), activeRequests: requests },
+      deviceToken: 'device-token',
+      connectionStatus: 'online',
+      onRefresh: async () => undefined,
+      onOpenAdmin: () => undefined,
+      onAuthFailure: () => undefined
+    }));
+
+    expect(markup.match(/class="queue-column /g)).toHaveLength(2);
+    expect(markup).not.toContain('data-area-drop-status');
+    expect(markup).not.toContain('queue-column--completed');
+    expect(markup).not.toContain('Completed towels');
+    expect(filterAreaRequests(requests, 'COMPLETED').map(({ id }) => id)).toEqual(['completed']);
+  });
+
+  it('derives the No molestar badge count from the current snapshot without showing its grid by default', () => {
     const snapshot = {
       ...createAreaSnapshot(),
       activeRequests: [],
       activeDoNotDisturbRooms: [
         { id: 'room-305', code: '305', displayName: 'Room 305', doNotDisturb: true },
-        { id: 'room-101', code: '101', displayName: 'Room 101', doNotDisturb: true }
+        { id: 'room-101', code: '101', displayName: 'Executive Suite', doNotDisturb: true },
+        { id: 'room-1305', code: '305', displayName: 'Room 1305', doNotDisturb: true }
       ]
     };
     const markup = renderToStaticMarkup(createElement(DeviceScreen, {
@@ -682,14 +967,13 @@ describe('device pending alert helpers', () => {
       onAuthFailure: () => undefined
     }));
 
-    expect(markup).toContain('area-dnd-strip');
-    expect(markup).toContain('Room 305');
-    expect(markup).toContain('Room 101');
+    expect(markup).toMatch(/area-dnd-tab-count[^>]*>3<\/span>/);
+    expect(markup).not.toContain('area-dnd-strip');
+    expect(markup).not.toContain('Room 305');
     expect(markup).not.toContain('queue-card');
-    expect(markup.indexOf('Room 305')).toBeLessThan(markup.indexOf('Room 101'));
   });
 
-  it('renders a dedicated drag handle and legal drop targets for AREA requests', () => {
+  it('removes drag handles and drop targets while preserving explicit status actions', () => {
     const markup = renderToStaticMarkup(createElement(DeviceScreen, {
       snapshot: createAreaSnapshot(),
       deviceToken: 'device-token',
@@ -698,22 +982,12 @@ describe('device pending alert helpers', () => {
       onOpenAdmin: () => undefined,
       onAuthFailure: () => undefined
     }));
-    const candidate = Reflect.get(deviceScreenModule, 'resolveAreaDropTransition');
-
-    expect(markup).toContain('queue-card__drag-handle');
-    expect(markup).toContain('draggable="true"');
-    expect(markup).toContain('data-area-drop-status="PENDING"');
-    expect(markup).toContain('data-area-drop-status="ACCEPTED"');
-    expect(markup).toContain('data-area-drop-status="IN_PROGRESS"');
-    expect(typeof candidate).toBe('function');
-    if (typeof candidate !== 'function') return;
-
-    expect(candidate('PENDING', 'ACCEPTED')).toBe('ACCEPTED');
-    expect(candidate('ACCEPTED', 'IN_PROGRESS')).toBe('IN_PROGRESS');
-    expect(candidate('IN_PROGRESS', 'COMPLETED')).toBe('COMPLETED');
-    expect(candidate('PENDING', 'IN_PROGRESS')).toBeNull();
-    expect(candidate('IN_PROGRESS', 'PENDING')).toBeNull();
-    expect(candidate('COMPLETED', 'PENDING')).toBeNull();
+    expect(markup).not.toContain('queue-card__drag-handle');
+    expect(markup).not.toContain('draggable=');
+    expect(markup).not.toContain('data-area-drop-status');
+    expect(markup).not.toContain('queue-complete-drop-zone');
+    expect(markup).toContain('queue-card__action');
+    expect(markup).toContain('Start request');
   });
 
   it('queues only newly observed pending request ids and removes advanced requests', () => {

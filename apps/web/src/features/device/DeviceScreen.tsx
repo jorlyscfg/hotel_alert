@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent, type TouchEvent as ReactTouchEvent } from 'react';
-import { ArrowLeft, ArrowRight, Bell, Circle, CircleAlert, GripVertical, Moon, Plus } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type TouchEvent as ReactTouchEvent } from 'react';
+import { ArrowLeft, ArrowRight, Bell, Circle, CircleAlert, Moon, Plus } from 'lucide-react';
 import * as Shared from '@hotel/shared';
-import type { CompactArea, DeviceSyncSnapshot, LocalizedTextVariants, RequestDTO, RequestStatus, RoomBackgroundValue, ServiceDTO } from '@hotel/shared';
+import type { CompactArea, CompactRoom, DeviceConfig, DeviceSyncSnapshot, LocalizedTextVariants, RequestDTO, RequestStatus, RoomBackgroundValue, ServiceDTO } from '@hotel/shared';
 import { api, errorMessage, isApiError, isDeviceAuthFailure } from '../../api';
 import { formatElapsed, formatElapsedWithAgo, getDeviceMode, makeMutationKey } from '../../app-model';
 import { ConnectionBadge } from '../../components/ConnectionBadge';
 import { LanguageSelector } from '../../components/LanguageSelector';
 import { Modal } from '../../components/Modal';
 import { ServiceIcon } from '../../components/ServiceIcon';
-import { useI18n, createTranslator, resolveLocalizedValue, resolveServiceDisplayName, type Locale, type MessageKey, formatNumber, translateCount } from '../../i18n';
+import { useI18n, createTranslator, resolveAreaDisplayName, resolveLocalizedValue, resolveServiceDisplayName, type Locale, type MessageKey, formatNumber, translateCount } from '../../i18n';
 import { canCommitMutation, type ConnectionStatus } from '../../realtime';
 import {
   discardExpiredRoomRequests,
@@ -17,8 +17,10 @@ import {
   getRoomRequestQueue,
   type QueuedRoomRequest
 } from '../../offline-queue';
-import { closeNotificationAudioContext, createNotificationAudioContext, playNotificationTone, replaceNotificationAudioContext } from '../../notification-audio';
+import { closeNotificationAudioContext, createNotificationAudioContext, playDoNotDisturbTransitionTones, playNotificationTone, replaceNotificationAudioContext } from '../../notification-audio';
+import { DEFAULT_INFORMATION_CAROUSEL_TIMING, InformationCarousel, type InformationCarouselTiming } from './InformationCarousel';
 import { PendingRequestWarningController, resolveBrowserPendingWarningRequests } from './pending-request-warning';
+import { transitionNativeRequest, type NativeWebViewBridge } from '../../native-bridge';
 
 const { isRoomBackgroundValue } = Shared;
 
@@ -27,10 +29,13 @@ export { MAX_PENDING_ALERT_REPEATS, resolvePendingAlertIntervalMs, shouldPlayPen
 interface DeviceScreenProps {
   snapshot: DeviceSyncSnapshot;
   deviceToken: string;
+  deviceCommandsSupported?: boolean;
+  nativeBridge?: NativeWebViewBridge | null;
   connectionStatus: ConnectionStatus;
   onRefresh: () => Promise<void>;
   onOpenAdmin: () => void;
-  onAuthFailure: () => void;
+  onAuthFailure: (error?: unknown) => void;
+  onInformationCycleComplete?: () => void;
   roomRequestNotificationsUnread?: boolean;
   onClearRoomRequestNotifications?: (() => void) | undefined;
 }
@@ -50,14 +55,14 @@ const STATUS_CLASS: Record<RequestStatus, string> = {
 };
 
 const NEXT_STATUS: Record<RequestStatus, RequestStatus | null> = {
-  PENDING: 'ACCEPTED',
+  PENDING: 'IN_PROGRESS',
   ACCEPTED: 'IN_PROGRESS',
   IN_PROGRESS: 'COMPLETED',
   COMPLETED: null
 };
 
 const TRANSITION_PATH: Record<Exclude<RequestStatus, 'COMPLETED'>, string> = {
-  PENDING: 'accept',
+  PENDING: 'start',
   ACCEPTED: 'start',
   IN_PROGRESS: 'complete'
 };
@@ -68,6 +73,15 @@ const AREA_FILTER_TABS = [
   'DO_NOT_DISTURB'
 ] as const;
 type AreaFilterTab = typeof AREA_FILTER_TABS[number];
+type DoNotDisturbAgeSeverity = 'green' | 'yellow' | 'red' | 'unknown';
+const DND_AGE_SEVERITY_RANK: Record<DoNotDisturbAgeSeverity, number> = {
+  unknown: 0,
+  green: 1,
+  yellow: 2,
+  red: 3
+};
+const DND_WARNING_THRESHOLD_MS = 60 * 60 * 1000;
+const DND_CRITICAL_THRESHOLD_MS = 3 * 60 * 60 * 1000;
 const ROOM_SERVICE_PAGE_SIZE = 9;
 const ROOM_AREA_PAGE_SIZE = 4;
 const ROOM_SQUARE_BREAKPOINT = 520;
@@ -93,6 +107,17 @@ export function resolveRoomBackgroundStyle(roomBackground: RoomBackgroundValue |
   } as CSSProperties;
 }
 
+export function resolveInformationCarouselTiming(config: Pick<DeviceConfig, 'informationIdleTimeoutSeconds' | 'informationSlideIntervalSeconds'>): InformationCarouselTiming {
+  return {
+    inactivityMs: resolveCarouselSeconds(config.informationIdleTimeoutSeconds, DEFAULT_INFORMATION_CAROUSEL_TIMING.inactivityMs / 1000) * 1000,
+    slideIntervalMs: resolveCarouselSeconds(config.informationSlideIntervalSeconds, DEFAULT_INFORMATION_CAROUSEL_TIMING.slideIntervalMs / 1000) * 1000
+  };
+}
+
+function resolveCarouselSeconds(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
 function resolveRoomAreaTint(areaIndex: number): RoomAreaTint {
   return ROOM_AREA_TINTS[areaIndex % ROOM_AREA_TINTS.length] ?? ROOM_AREA_TINTS[0];
 }
@@ -102,10 +127,6 @@ const ACTION_KEYS: Record<Exclude<RequestStatus, 'COMPLETED'>, MessageKey> = {
   ACCEPTED: 'request.action.start',
   IN_PROGRESS: 'request.action.complete'
 };
-
-export function resolveAreaDropTransition(sourceStatus: RequestStatus, targetStatus: RequestStatus): RequestStatus | null {
-  return NEXT_STATUS[sourceStatus] === targetStatus ? targetStatus : null;
-}
 
 export function reconcileAreaPendingRequestQueue(
   queue: readonly string[],
@@ -125,17 +146,6 @@ export function reconcileAreaPendingRequestQueue(
 
 export function seedAreaPendingModalQueue(pendingIds: readonly string[]): string[] {
   return [...pendingIds];
-}
-
-function isAreaDropStatus(value: string | undefined): value is RequestStatus {
-  return value === 'PENDING' || value === 'ACCEPTED' || value === 'IN_PROGRESS' || value === 'COMPLETED';
-}
-
-function resolveAreaDropStatusAtPoint(clientX: number, clientY: number): RequestStatus | null {
-  if (typeof document === 'undefined') return null;
-  const target = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>('[data-area-drop-status]');
-  const status = target?.dataset['areaDropStatus'];
-  return isAreaDropStatus(status) ? status : null;
 }
 
 function resolveLocalizedDisplayName(value: { displayName: string; displayNameVariants?: LocalizedTextVariants }, locale: Locale): string {
@@ -293,6 +303,43 @@ export function formatRoomRequestAge(createdAt: string, currentTime: Date, local
   return formatElapsed(createdAt, currentTime, locale);
 }
 
+function resolveDoNotDisturbRoomAge(activatedAt: string | null | undefined, currentTime: Date, locale: Locale): { severity: DoNotDisturbAgeSeverity; elapsed: string | null } {
+  if (activatedAt === undefined || activatedAt === null) return { severity: 'unknown', elapsed: null };
+
+  const activatedAtTime = Date.parse(activatedAt);
+  const rawElapsedMilliseconds = currentTime.getTime() - activatedAtTime;
+  if (!Number.isFinite(activatedAtTime) || !Number.isFinite(rawElapsedMilliseconds)) {
+    return { severity: 'unknown', elapsed: null };
+  }
+
+  const elapsedMilliseconds = Math.max(0, rawElapsedMilliseconds);
+  let severity: DoNotDisturbAgeSeverity = 'green';
+  if (elapsedMilliseconds >= DND_CRITICAL_THRESHOLD_MS) severity = 'red';
+  else if (elapsedMilliseconds >= DND_WARNING_THRESHOLD_MS) severity = 'yellow';
+
+  const totalMinutes = Math.floor(elapsedMilliseconds / 60_000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  let elapsed: string;
+  if (locale === 'es') {
+    if (hours > 0) elapsed = minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`;
+    else elapsed = totalMinutes > 0 ? `${totalMinutes} min` : 'menos de 1 min';
+  } else if (hours > 0) {
+    elapsed = minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  } else {
+    elapsed = totalMinutes > 0 ? `${totalMinutes}m` : 'under 1m';
+  }
+
+  return { severity, elapsed };
+}
+
+function resolveDoNotDisturbTabSeverity(rooms: readonly CompactRoom[], currentTime: Date, locale: Locale): DoNotDisturbAgeSeverity {
+  return rooms.reduce<DoNotDisturbAgeSeverity>((highest, room) => {
+    const next = resolveDoNotDisturbRoomAge(room.doNotDisturbActivatedAt, currentTime, locale).severity;
+    return DND_AGE_SEVERITY_RANK[next] > DND_AGE_SEVERITY_RANK[highest] ? next : highest;
+  }, 'unknown');
+}
+
 export function resolveAreaRequestBucket(status: RequestStatus): Exclude<AreaQueueFilter, 'ALL'> {
   if (status === 'PENDING') return 'PENDING';
   if (status === 'COMPLETED') return 'COMPLETED';
@@ -305,8 +352,105 @@ export function filterAreaRequests(requests: RequestDTO[], filter: AreaQueueFilt
     : resolveAreaRequestBucket(request.status) === filter);
 }
 
+export type CompletedRequestOrder = 'completed-newest' | 'completed-oldest' | 'room-asc' | 'service-asc';
+
+export function filterAndSortCompletedAreaRequests(
+  requests: readonly RequestDTO[],
+  query: string,
+  order: CompletedRequestOrder | undefined = 'completed-newest',
+  locale: Locale = 'en'
+): RequestDTO[] {
+  const searchTerms = query.trim().toLocaleLowerCase(locale).split(/\s+/).filter(Boolean);
+  const filtered = requests.filter((request) => {
+    if (request.status !== 'COMPLETED') return false;
+    if (searchTerms.length === 0) return true;
+
+    const searchableValues = [
+      request.id,
+      request.room.code,
+      resolveLocalizedDisplayName(request.room, locale),
+      request.room.displayName,
+      ...Object.values(request.room.displayNameVariants ?? {}),
+      request.service.code,
+      resolveServiceDisplayName(request.service, locale),
+      request.service.displayName,
+      ...Object.values(request.service.displayNameVariants ?? {}),
+      request.responsibleArea.code,
+      resolveAreaDisplayName(request.responsibleArea, locale),
+      request.responsibleArea.displayName,
+      ...Object.values(request.responsibleArea.displayNameVariants ?? {})
+    ].filter((value): value is string => typeof value === 'string')
+      .map((value) => value.toLocaleLowerCase(locale));
+
+    return searchTerms.every((term) => searchableValues.some((value) => value.includes(term)));
+  });
+
+  const completionTime = (request: RequestDTO): number => {
+    const completed = request.completedAt === null ? Number.NaN : Date.parse(request.completedAt);
+    if (Number.isFinite(completed)) return completed;
+    const created = Date.parse(request.createdAt);
+    return Number.isFinite(created) ? created : 0;
+  };
+
+  return filtered.sort((left, right) => {
+    if (order === 'room-asc') {
+      return left.room.code.localeCompare(right.room.code, locale, { numeric: true, sensitivity: 'base' })
+        || left.id.localeCompare(right.id, locale);
+    }
+    if (order === 'service-asc') {
+      return resolveServiceDisplayName(left.service, locale).localeCompare(resolveServiceDisplayName(right.service, locale), locale, { sensitivity: 'base' })
+        || left.id.localeCompare(right.id, locale);
+    }
+
+    const newestFirst = order !== 'completed-oldest';
+    const completionDifference = completionTime(left) - completionTime(right);
+    return (newestFirst ? -completionDifference : completionDifference) || left.id.localeCompare(right.id, locale);
+  });
+}
+
+interface CompletedRequestsToolbarProps {
+  searchQuery: string;
+  order: CompletedRequestOrder;
+  onSearchQueryChange: (query: string) => void;
+  onOrderChange: (order: CompletedRequestOrder) => void;
+}
+
+export function CompletedRequestsToolbar({ searchQuery, order, onSearchQueryChange, onOrderChange }: CompletedRequestsToolbarProps) {
+  const { t } = useI18n();
+
+  return <div className="completed-requests-toolbar">
+    <label className="completed-requests-toolbar__search">
+      <span className="visually-hidden">{t('device.searchCompletedRequests')}</span>
+      <input
+        type="search"
+        value={searchQuery}
+        onChange={(event) => onSearchQueryChange(event.target.value)}
+        placeholder={t('device.searchCompletedRequestsPlaceholder')}
+        aria-label={t('device.searchCompletedRequests')}
+      />
+    </label>
+    <details className="completed-requests-toolbar__sort">
+      <summary>{t('device.orderBy')}</summary>
+      <fieldset>
+        <legend className="visually-hidden">{t('device.orderBy')}</legend>
+        <label><input type="radio" name="completed-request-order" value="completed-newest" checked={order === 'completed-newest'} onChange={() => onOrderChange('completed-newest')} />{t('device.orderCompletedNewest')}</label>
+        <label><input type="radio" name="completed-request-order" value="completed-oldest" checked={order === 'completed-oldest'} onChange={() => onOrderChange('completed-oldest')} />{t('device.orderCompletedOldest')}</label>
+        <label><input type="radio" name="completed-request-order" value="room-asc" checked={order === 'room-asc'} onChange={() => onOrderChange('room-asc')} />{t('device.orderRoomAscending')}</label>
+        <label><input type="radio" name="completed-request-order" value="service-asc" checked={order === 'service-asc'} onChange={() => onOrderChange('service-asc')} />{t('device.orderServiceAscending')}</label>
+      </fieldset>
+    </details>
+  </div>;
+}
+
+export function CompletedRequestsEmptyState({ searchActive }: { searchActive: boolean }) {
+  const { t } = useI18n();
+  return <span className="queue-column__empty" role="status" aria-live="polite">
+    {searchActive ? t('device.noCompletedSearchResults') : t('device.clear')}
+  </span>;
+}
+
 function requestStatusLabel(status: RequestStatus, locale: Locale): string {
-  return createTranslator(locale)(STATUS_KEYS[status]);
+  return createTranslator(locale)(STATUS_KEYS[status === 'ACCEPTED' ? 'IN_PROGRESS' : status]);
 }
 
 function requestActionLabel(status: RequestStatus, locale: Locale): string {
@@ -327,89 +471,117 @@ function BrandLockup({ hotelName, hotelLogo, showContext = true }: { hotelName: 
   );
 }
 
-export function DeviceScreen({ snapshot, deviceToken, connectionStatus, onRefresh, onOpenAdmin, onAuthFailure, roomRequestNotificationsUnread = false, onClearRoomRequestNotifications }: DeviceScreenProps) {
+export function DeviceScreen({ snapshot, deviceToken, deviceCommandsSupported = true, nativeBridge = null, connectionStatus, onRefresh, onOpenAdmin, onAuthFailure, onInformationCycleComplete, roomRequestNotificationsUnread = false, onClearRoomRequestNotifications }: DeviceScreenProps) {
   const { locale, t } = useI18n();
   const mode = getDeviceMode(snapshot.device);
+  const hotelName = resolveLocalizedDisplayName({
+    displayName: snapshot.config.hotelName,
+    ...(snapshot.config.hotelNameVariants === undefined ? {} : { displayNameVariants: snapshot.config.hotelNameVariants })
+  }, locale);
   const location = snapshot.config.room === null
-    ? snapshot.config.area === null ? t('device.unassignedStation') : resolveLocalizedDisplayName(snapshot.config.area, locale)
+    ? snapshot.config.area === null ? t('device.unassignedStation') : resolveAreaDisplayName(snapshot.config.area, locale)
     : resolveLocalizedDisplayName(snapshot.config.room, locale);
   const deviceDisplayName = resolveLocalizedDisplayName(snapshot.device, locale);
   const roomCode = snapshot.config.room?.code.trim() || t('device.unassignedStation');
-  const currentTime = useServerClock(snapshot.serverTime);
+  const currentTime = useServerClock(snapshot.serverTime, connectionStatus);
   const lastSynchronizedAt = formatSynchronizedAt(snapshot.serverTime, locale, snapshot.config.clockFormat);
   const roomBackgroundStyle = mode === 'ROOM' ? resolveRoomBackgroundStyle(snapshot.config.roomBackground) : undefined;
+  const informationCarouselTiming = resolveInformationCarouselTiming(snapshot.config);
+
+  const header = (
+    <header className={`topbar${mode === 'ROOM' ? ' topbar--room' : ' topbar--area'}`}>
+      {mode === 'ROOM' ? (
+        <>
+          <div className="topbar__identity">
+            <BrandLockup hotelName={hotelName} hotelLogo={snapshot.config.hotelLogo} showContext={false} />
+          </div>
+          <div className="room-identity">
+            <span className="room-identity__code">{roomCode}</span>
+          </div>
+          <div className="topbar__actions">
+            <ConnectionBadge status={connectionStatus} />
+            <LanguageSelector />
+          </div>
+        </>
+      ) : (
+        <>
+          <BrandLockup hotelName={hotelName} hotelLogo={snapshot.config.hotelLogo} />
+          <div className="topbar__right">
+            <div className="station-context">
+             <span className="station-context__name">{deviceDisplayName}</span>
+              <span className="station-context__location">{location} · {t('device.areaConsole')}</span>
+            </div>
+             <ConnectionBadge status={connectionStatus} />
+             <time className="station-clock" dateTime={currentTime.toISOString()}>{formatClock(currentTime, locale, undefined, snapshot.config.clockFormat)}</time>
+             <button className="button button--ghost button--small" type="button" onClick={onOpenAdmin}>{t('common.admin')}</button>
+          </div>
+        </>
+      )}
+    </header>
+  );
+
+  const deviceContent = (
+    <div className="device-content">
+      {mode === 'ROOM' ? (
+        <RoomDisplay
+          snapshot={snapshot}
+          deviceToken={deviceToken}
+           connectionStatus={connectionStatus}
+           currentTime={currentTime}
+           onRefresh={onRefresh}
+           onOpenAdmin={onOpenAdmin}
+           onAuthFailure={onAuthFailure}
+           roomRequestNotificationsUnread={roomRequestNotificationsUnread}
+           onClearRoomRequestNotifications={onClearRoomRequestNotifications}
+          />
+      ) : (
+        <AreaDisplay
+          snapshot={snapshot}
+          deviceToken={deviceToken}
+          deviceCommandsSupported={deviceCommandsSupported}
+          nativeBridge={nativeBridge}
+           connectionStatus={connectionStatus}
+           currentTime={currentTime}
+           onRefresh={onRefresh}
+           onOpenAdmin={onOpenAdmin}
+           onAuthFailure={onAuthFailure}
+         />
+      )}
+    </div>
+  );
 
   return (
     <main className={`app-frame app-frame--device${mode === 'ROOM' ? ' app-frame--room' : ''}`} style={roomBackgroundStyle}>
-      <header className={`topbar${mode === 'ROOM' ? ' topbar--room' : ' topbar--area'}`}>
-        {mode === 'ROOM' ? (
-          <>
-            <div className="topbar__identity">
-              <BrandLockup hotelName={snapshot.config.hotelName} hotelLogo={snapshot.config.hotelLogo} showContext={false} />
-            </div>
-            <div className="room-identity">
-              <span className="room-identity__code">{roomCode}</span>
-            </div>
-            <div className="topbar__actions">
-              <ConnectionBadge status={connectionStatus} />
-              <LanguageSelector />
-            </div>
-          </>
-        ) : (
-          <>
-            <BrandLockup hotelName={snapshot.config.hotelName} hotelLogo={snapshot.config.hotelLogo} />
-            <div className="topbar__right">
-              <div className="station-context">
-               <span className="station-context__name">{deviceDisplayName}</span>
-                <span className="station-context__location">{location} · {t('device.areaConsole')}</span>
-              </div>
-               <ConnectionBadge status={connectionStatus} />
-               <time className="station-clock" dateTime={currentTime.toISOString()}>{formatClock(currentTime, locale, undefined, snapshot.config.clockFormat)}</time>
-               <button className="button button--ghost button--small" type="button" onClick={onOpenAdmin}>{t('common.admin')}</button>
-            </div>
-          </>
-        )}
-      </header>
-
-      <div className="device-content">
-        {mode === 'ROOM' ? (
-          <RoomDisplay
-            snapshot={snapshot}
-            deviceToken={deviceToken}
-             connectionStatus={connectionStatus}
-             currentTime={currentTime}
-             onRefresh={onRefresh}
-             onOpenAdmin={onOpenAdmin}
-             onAuthFailure={onAuthFailure}
-             roomRequestNotificationsUnread={roomRequestNotificationsUnread}
-             onClearRoomRequestNotifications={onClearRoomRequestNotifications}
-            />
-        ) : (
-          <AreaDisplay
-            snapshot={snapshot}
-            deviceToken={deviceToken}
-             connectionStatus={connectionStatus}
-             currentTime={currentTime}
-             onRefresh={onRefresh}
-             onOpenAdmin={onOpenAdmin}
-             onAuthFailure={onAuthFailure}
-           />
-        )}
-      </div>
-
-       {mode !== 'ROOM' && (
-         <footer className="device-footer">
-           <span>{t('device.stationConfig', { version: snapshot.deviceConfigVersion })}</span>
-           <span>{t('device.syncSequence', { sequence: formatNumber(snapshot.currentEventSequence, locale) })}</span>
-           <span>{resolveDeviceFooterMessage(connectionStatus, lastSynchronizedAt, locale)}</span>
-           {snapshot.pendingTokenRotation !== null && <span className="footer-warning">{t('device.tokenRotationReady')}</span>}
-         </footer>
-       )}
+      {mode === 'ROOM' ? (
+        <InformationCarousel
+          images={snapshot.config.informationImages ?? []}
+          locale={locale}
+          deviceToken={deviceToken}
+          onAuthFailure={onAuthFailure}
+          onCycleComplete={onInformationCycleComplete}
+          inactivityMs={informationCarouselTiming.inactivityMs}
+          slideIntervalMs={informationCarouselTiming.slideIntervalMs}
+        >
+          {header}
+          {deviceContent}
+        </InformationCarousel>
+      ) : (
+        <>
+          {header}
+          {deviceContent}
+          <footer className="device-footer">
+            <span>{t('device.stationConfig', { version: snapshot.deviceConfigVersion })}</span>
+            <span>{t('device.syncSequence', { sequence: formatNumber(snapshot.currentEventSequence, locale) })}</span>
+            <span>{resolveDeviceFooterMessage(connectionStatus, lastSynchronizedAt, locale)}</span>
+            {snapshot.pendingTokenRotation !== null && <span className="footer-warning">{t('device.tokenRotationReady')}</span>}
+          </footer>
+        </>
+      )}
     </main>
   );
 }
 
-function RoomDoNotDisturbControl({ enabled, deviceToken, connectionStatus, onRefresh, onAuthFailure }: { enabled: boolean; deviceToken: string; connectionStatus: ConnectionStatus; onRefresh: () => Promise<void>; onAuthFailure: () => void }) {
+function RoomDoNotDisturbControl({ enabled, deviceToken, connectionStatus, onRefresh, onAuthFailure }: { enabled: boolean; deviceToken: string; connectionStatus: ConnectionStatus; onRefresh: () => Promise<void>; onAuthFailure: (error?: unknown) => void }) {
   const { locale, t } = useI18n();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -425,7 +597,7 @@ function RoomDoNotDisturbControl({ enabled, deviceToken, connectionStatus, onRef
       await api.patch('/room/me/do-not-disturb', { doNotDisturb: !enabled }, { token: deviceToken, headers: { 'Idempotency-Key': makeMutationKey('room-dnd') } });
       await onRefresh();
     } catch (toggleError) {
-      if (isDeviceAuthFailure(toggleError)) onAuthFailure();
+      if (isDeviceAuthFailure(toggleError)) onAuthFailure(toggleError);
       setError(errorMessage(toggleError, t('errors.roomDoNotDisturbFailed'), locale));
     } finally {
       setBusy(false);
@@ -478,11 +650,13 @@ function RoomRequestStatusControl({ requests, currentTime, unread, onClearUnread
 interface DeviceDisplayProps {
   snapshot: DeviceSyncSnapshot;
   deviceToken: string;
+  deviceCommandsSupported?: boolean;
+  nativeBridge?: NativeWebViewBridge | null;
   connectionStatus: ConnectionStatus;
   currentTime: Date;
   onRefresh: () => Promise<void>;
   onOpenAdmin: () => void;
-  onAuthFailure: () => void;
+  onAuthFailure: (error?: unknown) => void;
   roomRequestNotificationsUnread?: boolean;
   onClearRoomRequestNotifications?: (() => void) | undefined;
 }
@@ -660,7 +834,7 @@ function RoomDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
                         >
                           <span className="service-tile__icon"><ServiceIcon iconKey={area.code} size={27} /></span>
                           <span className="service-tile__body">
-                            <strong>{resolveLocalizedDisplayName(area, locale)}</strong>
+                            <strong>{resolveAreaDisplayName(area, locale)}</strong>
                           </span>
                         </button>
                       );
@@ -744,9 +918,9 @@ function RoomDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
         onQueueChange={refreshQueue}
          onQueueError={setQueueError}
        />
-        <Modal
+       <Modal
           open={selectedArea !== null && !doNotDisturbEnabled}
-          title={selectedArea === null ? t('device.guestServices') : resolveLocalizedDisplayName(selectedArea.area, locale)}
+          title={selectedArea === null ? t('device.guestServices') : resolveAreaDisplayName(selectedArea.area, locale)}
           onClose={() => setSelectedAreaId(null)}
           closeLabel={t('common.closeDialog')}
           className="room-modal room-area-services-modal"
@@ -776,10 +950,17 @@ export function RoomDoNotDisturbExplanation({ open, onClose }: { open: boolean; 
   const { t } = useI18n();
 
   return (
-    <Modal open={open} title={t('device.doNotDisturbRequestTitle')} onClose={onClose} closeLabel={t('common.closeDialog')} className="room-modal room-dnd-explanation-modal">
+    <Modal
+      open={open}
+      title={t('device.doNotDisturbRequestTitle')}
+      onClose={onClose}
+      closeLabel={t('common.closeDialog')}
+      className="room-modal room-dnd-explanation-modal"
+      visuallyHideTitle
+    >
       <p className="modal-card__copy">{t('device.doNotDisturbRequestCopy')}</p>
       <div className="form-actions">
-        <button className="button button--dark" type="button" onClick={onClose} data-autofocus>{t('common.close')}</button>
+        <button className="button button--primary" type="button" onClick={onClose} data-autofocus>{t('common.close')}</button>
       </div>
     </Modal>
   );
@@ -832,7 +1013,7 @@ export function RoomAreaServices({ services, onSelect, doNotDisturbEnabled = fal
                 service={service}
                 onSelect={onSelect}
                 doNotDisturbEnabled={doNotDisturbEnabled}
-                onDoNotDisturbTap={onDoNotDisturbTap}
+                {...(onDoNotDisturbTap === undefined ? {} : { onDoNotDisturbTap })}
                 autoFocus={pageIndex === 0 && serviceIndex === 0}
               />
             ))}
@@ -870,24 +1051,29 @@ function ServiceTile({ service, onSelect, doNotDisturbEnabled = false, onDoNotDi
   </button>;
 }
 
-function AreaDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onRefresh, onAuthFailure }: DeviceDisplayProps) {
+function AreaDisplay({ snapshot, deviceToken, deviceCommandsSupported = true, nativeBridge = null, connectionStatus, currentTime, onRefresh, onAuthFailure }: DeviceDisplayProps) {
   const { locale, t } = useI18n();
   const [busyRequestId, setBusyRequestId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<AreaFilterTab>('ALL');
-  const activeDoNotDisturbRoomCount = snapshot.activeDoNotDisturbRooms?.length ?? 0;
+  const [completedSearchQuery, setCompletedSearchQuery] = useState('');
+  const [completedOrder, setCompletedOrder] = useState<CompletedRequestOrder>('completed-newest');
+  const activeDoNotDisturbRooms = snapshot.activeDoNotDisturbRooms ?? [];
+  const activeDoNotDisturbRoomCount = activeDoNotDisturbRooms.length;
+  const activeDoNotDisturbTabSeverity = resolveDoNotDisturbTabSeverity(activeDoNotDisturbRooms, currentTime, locale);
+  const activeDoNotDisturbRoomIdsKey = snapshot.activeDoNotDisturbRooms === undefined
+    ? null
+    : JSON.stringify([...new Set(snapshot.activeDoNotDisturbRooms.map((room) => room.id))].sort());
+  const previousActiveDoNotDisturbRoomsRef = useRef<CompactRoom[] | null>(snapshot.activeDoNotDisturbRooms ?? null);
   const initialPendingModalQueue = seedAreaPendingModalQueue(snapshot.activeRequests.filter((request) => request.status === 'PENDING').map((request) => request.id));
   const [pendingModalQueue, setPendingModalQueue] = useState<string[]>(() => initialPendingModalQueue);
-  const [draggingRequestId, setDraggingRequestId] = useState<string | null>(null);
-  const [dragOverStatus, setDragOverStatus] = useState<RequestStatus | null>(null);
   const [pendingTonePlayed, setPendingTonePlayed] = useState(false);
   const [pendingToneUnavailable, setPendingToneUnavailable] = useState(false);
   const knownPendingIdsRef = useRef<string[]>(initialPendingModalQueue);
   const audioContextRef = useRef<AudioContext | null>(null);
   const pendingToneAttemptRef = useRef<{ requestId: string; played: boolean } | null>(null);
   const pendingRequestWarningControllerRef = useRef<PendingRequestWarningController | null>(null);
-  const pointerDragRef = useRef<{ requestId: string; pointerId: number } | null>(null);
-  const columns: RequestStatus[] = filter === 'COMPLETED'
+  const columns: Exclude<RequestStatus, 'ACCEPTED'>[] = filter === 'COMPLETED'
     ? ['COMPLETED']
     : filter === 'DO_NOT_DISTURB'
       ? []
@@ -941,6 +1127,42 @@ function AreaDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
   }, [currentTime, pendingRequestWarningKey, snapshot.activeRequests]);
 
   useEffect(() => {
+    const currentRooms = snapshot.activeDoNotDisturbRooms;
+    if (currentRooms === undefined) {
+      previousActiveDoNotDisturbRoomsRef.current = null;
+      return;
+    }
+
+    // Legacy AREA snapshots may omit the list; the first known set is only a baseline.
+    const previousRooms = previousActiveDoNotDisturbRoomsRef.current;
+    previousActiveDoNotDisturbRoomsRef.current = currentRooms;
+    if (previousRooms === null) return;
+
+    const previousRoomsById = new Map(previousRooms.map((room) => [room.id, room]));
+    const currentRoomsById = new Map(currentRooms.map((room) => [room.id, room]));
+    const activatedRooms = [...currentRoomsById]
+      .filter(([roomId]) => !previousRoomsById.has(roomId))
+      .sort(([leftId], [rightId]) => leftId.localeCompare(rightId));
+    const deactivatedRooms = [...previousRoomsById]
+      .filter(([roomId]) => !currentRoomsById.has(roomId))
+      .sort(([leftId], [rightId]) => leftId.localeCompare(rightId));
+    if (activatedRooms.length === 0 && deactivatedRooms.length === 0) return;
+
+    const transitions = [
+      ...activatedRooms.map(() => 'activated' as const),
+      ...deactivatedRooms.map(() => 'deactivated' as const)
+    ];
+
+    const existingContext = audioContextRef.current;
+    const context = existingContext?.state === 'closed'
+      ? createNotificationAudioContext()
+      : existingContext ?? createNotificationAudioContext();
+    if (context === null) return;
+    audioContextRef.current = context;
+    void playDoNotDisturbTransitionTones(context, transitions);
+  }, [activeDoNotDisturbRoomIdsKey, snapshot.activeDoNotDisturbRooms]);
+
+  useEffect(() => {
     if (pendingModalRequest === null) return;
     if (pendingToneAttemptRef.current?.requestId === pendingModalRequest.id) return;
     pendingToneAttemptRef.current = { requestId: pendingModalRequest.id, played: false };
@@ -974,9 +1196,13 @@ function AreaDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
     setPendingToneUnavailable(!played);
   }
 
-  async function advanceRequest(request: RequestDTO, requestedStatus?: RequestStatus): Promise<boolean> {
-    const nextStatus = requestedStatus ?? NEXT_STATUS[request.status];
-    if (request.status === 'COMPLETED' || nextStatus === null || resolveAreaDropTransition(request.status, nextStatus) === null) return false;
+  async function advanceRequest(request: RequestDTO): Promise<boolean> {
+    const nextStatus = NEXT_STATUS[request.status];
+    if (request.status === 'COMPLETED' || nextStatus === null) return false;
+    if (!deviceCommandsSupported) {
+      setError(t('device.nativeDeviceCommandsUnavailable'));
+      return false;
+    }
     if (!canCommitMutation(connectionStatus)) {
       setError(t('connection.actionsPaused'));
       return false;
@@ -985,14 +1211,27 @@ function AreaDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
     setError(null);
     let mutationCompleted = false;
     try {
-      await api.post<RequestDTO>(
-        `/requests/${encodeURIComponent(request.id)}/${TRANSITION_PATH[request.status]}`,
-        { expectedVersion: request.version },
-        { token: deviceToken, headers: { 'Idempotency-Key': makeMutationKey('transition') } }
-      );
+      const transition = {
+        requestId: request.id,
+        targetStatus: nextStatus as Exclude<RequestStatus, 'PENDING'>,
+        expectedVersion: request.version,
+        idempotencyKey: makeMutationKey('transition')
+      } as const;
+      if (nativeBridge !== null && deviceCommandsSupported) {
+        await transitionNativeRequest(nativeBridge, transition);
+      } else {
+        await api.post<RequestDTO>(
+          `/requests/${encodeURIComponent(request.id)}/${TRANSITION_PATH[request.status]}`,
+          { expectedVersion: request.version },
+          { token: deviceToken, headers: { 'Idempotency-Key': transition.idempotencyKey } }
+        );
+      }
       mutationCompleted = true;
     } catch (transitionError) {
-       if (isDeviceAuthFailure(transitionError)) onAuthFailure();
+       const nativeErrorCode = transitionError instanceof Error ? transitionError.message : null;
+       if (isDeviceAuthFailure(transitionError) || nativeErrorCode === 'DEVICE_INACTIVE' || nativeErrorCode === 'DEVICE_TOKEN_REVOKED') {
+         onAuthFailure(isDeviceAuthFailure(transitionError) ? transitionError : nativeErrorCode);
+       }
        setError(errorMessage(transitionError, t('errors.requestUpdateFailed'), locale));
     } finally {
       setBusyRequestId(null);
@@ -1021,155 +1260,100 @@ function AreaDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
     if (pendingModalRequest !== null) void attemptPendingTone(pendingModalRequest.id, true);
   }
 
-  function clearDragState(): void {
-    pointerDragRef.current = null;
-    setDraggingRequestId(null);
-    setDragOverStatus(null);
-  }
-
-  function dropRequest(requestId: string, targetStatus: RequestStatus): void {
-    const request = snapshot.activeRequests.find((candidate) => candidate.id === requestId);
-    if (request === undefined || resolveAreaDropTransition(request.status, targetStatus) === null) return;
-    void advanceRequest(request, targetStatus);
-  }
-
-  function handleNativeDragStart(event: ReactDragEvent<HTMLButtonElement>, request: RequestDTO): void {
-    event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('text/plain', request.id);
-    setDraggingRequestId(request.id);
-  }
-
-  function handleNativeDragOver(event: ReactDragEvent<HTMLDivElement>, targetStatus: RequestStatus): void {
-    const requestId = draggingRequestId ?? event.dataTransfer.getData('text/plain');
-    const request = snapshot.activeRequests.find((candidate) => candidate.id === requestId);
-    if (request === undefined || resolveAreaDropTransition(request.status, targetStatus) === null) {
-      setDragOverStatus(null);
-      return;
-    }
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    setDragOverStatus(targetStatus);
-  }
-
-  function handleNativeDrop(event: ReactDragEvent<HTMLDivElement>, targetStatus: RequestStatus): void {
-    event.preventDefault();
-    const requestId = draggingRequestId ?? event.dataTransfer.getData('text/plain');
-    clearDragState();
-    if (requestId !== '') dropRequest(requestId, targetStatus);
-  }
-
-  function handleNativeDragLeave(event: ReactDragEvent<HTMLDivElement>): void {
-    const relatedTarget = event.relatedTarget;
-    if (relatedTarget instanceof Node && event.currentTarget.contains(relatedTarget)) return;
-    setDragOverStatus(null);
-  }
-
-  function handleTouchDragStart(event: ReactPointerEvent<HTMLButtonElement>, request: RequestDTO): void {
-    if (event.pointerType === 'mouse' || event.button !== 0) return;
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    pointerDragRef.current = { requestId: request.id, pointerId: event.pointerId };
-    setDraggingRequestId(request.id);
-  }
-
-  function handleTouchDragMove(event: ReactPointerEvent<HTMLButtonElement>): void {
-    if (pointerDragRef.current === null) return;
-    event.preventDefault();
-    setDragOverStatus(resolveAreaDropStatusAtPoint(event.clientX, event.clientY));
-  }
-
-  function handleTouchDragEnd(event: ReactPointerEvent<HTMLButtonElement>, cancelled = false): void {
-    const drag = pointerDragRef.current;
-    if (drag === null || drag.pointerId !== event.pointerId) return;
-    const targetStatus = cancelled ? null : resolveAreaDropStatusAtPoint(event.clientX, event.clientY);
-    clearDragState();
-    if (targetStatus !== null) dropRequest(drag.requestId, targetStatus);
-  }
-
   return (
     <div className="device-layout device-layout--area">
-      {connectionStatus !== 'online' && (
-        <div className="inline-alert inline-alert--stale" role="status">
-           <span aria-hidden="true"><CircleAlert size={16} strokeWidth={1.8} /></span>
-          <span>{resolveDeviceConnectionMessage(connectionStatus, formatSynchronizedAt(snapshot.serverTime, locale, snapshot.config.clockFormat), locale)} {t('connection.actionsPaused')}</span>
+      {(connectionStatus !== 'online' || !deviceCommandsSupported || error !== null) && (
+        <div className="area-status-stack" aria-live="polite">
+          {connectionStatus !== 'online' && (
+            <div className="inline-alert inline-alert--stale" role="status">
+              <span aria-hidden="true"><CircleAlert size={16} strokeWidth={1.8} /></span>
+              <span>{resolveDeviceConnectionMessage(connectionStatus, formatSynchronizedAt(snapshot.serverTime, locale, snapshot.config.clockFormat), locale)} {t('connection.actionsPaused')}</span>
+            </div>
+          )}
+          {!deviceCommandsSupported && <div className="inline-alert" role="status">{t('device.nativeDeviceCommandsUnavailable')}</div>}
+          {error !== null && <div className="inline-alert" role="alert"><span aria-hidden="true"><CircleAlert size={16} strokeWidth={1.8} /></span><span>{error}</span></div>}
         </div>
       )}
-
-       {error !== null && <div className="inline-alert" role="alert"><span aria-hidden="true"><CircleAlert size={16} strokeWidth={1.8} /></span><span>{error}</span></div>}
 
        <section aria-label={t('device.serviceRequests')}>
         <div className="filter-row" role="group" aria-label={t('device.filterAreaRequests')}>
           {AREA_FILTER_TABS.map((value) => (
             <button className={`filter-pill${filter === value ? ' filter-pill--active' : ''}`} type="button" key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}>
               {value === 'DO_NOT_DISTURB' ? t('device.doNotDisturb') : requestStatusLabel(value === 'ALL' ? 'PENDING' : value, locale)}
-              {value === 'DO_NOT_DISTURB' && <span className="area-dnd-tab-count" aria-live="polite">{formatNumber(activeDoNotDisturbRoomCount, locale)}</span>}
+              {value === 'DO_NOT_DISTURB' && activeDoNotDisturbRoomCount > 0 && (
+                <span className={`area-dnd-tab-count area-dnd-tab-count--${activeDoNotDisturbTabSeverity}`} aria-live="polite">
+                  {formatNumber(activeDoNotDisturbRoomCount, locale)}
+                </span>
+              )}
             </button>
           ))}
         </div>
-        {filter === 'DO_NOT_DISTURB' ? (
-          snapshot.activeDoNotDisturbRooms !== undefined && snapshot.activeDoNotDisturbRooms.length > 0 && (
-            <section className="area-dnd-strip" aria-label={t('device.activeDoNotDisturbRooms')}>
-              <div className="area-dnd-strip__rooms" role="list">
-                {snapshot.activeDoNotDisturbRooms.map((room) => {
-                  const displayName = resolveLocalizedDisplayName(room, locale);
-                  const nameIncludesRoomCode = localizedNameContainsRoomCode(displayName, room.code, locale);
+         {filter === 'COMPLETED' && (
+           <CompletedRequestsToolbar
+             searchQuery={completedSearchQuery}
+             order={completedOrder}
+             onSearchQueryChange={setCompletedSearchQuery}
+             onOrderChange={setCompletedOrder}
+           />
+         )}
+         {filter === 'DO_NOT_DISTURB' ? (
+           activeDoNotDisturbRooms.length > 0 && (
+             <section className="area-dnd-strip" aria-label={t('device.activeDoNotDisturbRooms')}>
+               <div className="area-dnd-strip__rooms" role="list">
+                 {activeDoNotDisturbRooms.map((room) => {
+                   const displayName = resolveLocalizedDisplayName(room, locale);
+                   const nameIncludesRoomCode = localizedNameContainsRoomCode(displayName, room.code, locale);
+                   const age = resolveDoNotDisturbRoomAge(room.doNotDisturbActivatedAt, currentTime, locale);
+                   const elapsedLabel = age.elapsed === null
+                     ? t('device.doNotDisturbTimeUnavailable')
+                     : t('device.doNotDisturbActiveFor', { time: age.elapsed });
 
-                  return <div className="area-dnd-room" role="listitem" key={room.id}>
-                    <Moon size={16} aria-hidden="true" />
-                    {nameIncludesRoomCode
-                      ? <strong>{displayName}</strong>
-                      : <><strong>{room.code}</strong><span>{displayName}</span></>}
-                  </div>;
-                })}
-              </div>
-            </section>
-          )
-        ) : (
-          <>
+                   return <div className={`area-dnd-room area-dnd-room--${age.severity}`} role="listitem" key={room.id}>
+                     <Moon size={16} aria-hidden="true" />
+                     {nameIncludesRoomCode
+                       ? <strong>{displayName}</strong>
+                       : <><strong>{room.code}</strong><span>{displayName}</span></>}
+                     <span className="area-dnd-room__age">{elapsedLabel}</span>
+                   </div>;
+                 })}
+               </div>
+             </section>
+         )
+         ) : (
+         <>
          <div className={`queue-board${filter === 'COMPLETED' ? ' queue-board--completed' : ''}`}>
            {columns.map((status) => {
-            const requests = visibleRequests
-              .filter((request) => resolveAreaRequestBucket(request.status) === status)
-              .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+            const requests = status === 'COMPLETED'
+              ? filterAndSortCompletedAreaRequests(visibleRequests, completedSearchQuery, completedOrder, locale)
+              : visibleRequests
+                .filter((request) => resolveAreaRequestBucket(request.status) === status)
+                .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
              return (
              <div
-               className={`queue-column queue-column--${STATUS_CLASS[status]}${status === 'PENDING' && requests.length > 0 ? ' queue-column--has-pending' : ''}${dragOverStatus === status ? ' queue-column--drag-over' : ''}`}
-               data-area-drop-status={status}
+               className={`queue-column queue-column--${STATUS_CLASS[status]}${status === 'PENDING' && requests.length > 0 ? ' queue-column--has-pending' : ''}`}
                key={status}
-               onDragOver={(event) => handleNativeDragOver(event, status)}
-               onDragLeave={handleNativeDragLeave}
-               onDrop={(event) => handleNativeDrop(event, status)}
              >
                 <div className="queue-column__heading">
                   <span>{requestStatusLabel(status, locale)}</span>
                   <span>{formatNumber(requests.length, locale)}</span>
                 </div>
                 <div className="queue-column__body">
-                  {requests.length === 0 ? <span className="queue-column__empty">{t('device.clear')}</span> : requests.map((request) => (
-                    <article className={`queue-card${request.status === 'PENDING' ? ' queue-card--pending' : ''}${draggingRequestId === request.id ? ' queue-card--dragging' : ''}`} key={request.id}>
+                  {requests.length === 0 ? (
+                    status === 'COMPLETED' ? <CompletedRequestsEmptyState searchActive={completedSearchQuery.trim().length > 0} /> : <span className="queue-column__empty">{t('device.clear')}</span>
+                  ) : requests.map((request) => (
+                    <article className={`queue-card${request.status === 'PENDING' ? ' queue-card--pending' : ''}`} key={request.id}>
                        <div className="queue-card__topline">
                           <span className="request-icon"><ServiceIcon iconKey={request.service.iconKey} size={17} /></span>
+                          <span className="queue-card__room">{request.room.code}</span>
+                          <div className="queue-card__metadata">
+                            <span className="queue-card__created">{t('device.requestCreatedAt', { time: formatClock(new Date(request.createdAt), 'en-US', undefined, '12h') })}</span>
+                            <span className="queue-card__age">{t('device.requestElapsed', { time: formatAreaRequestAge(request.createdAt, currentTime, locale) })}</span>
+                          </div>
                           {request.room.doNotDisturb && <span className="room-dnd-indicator" role="status"><span aria-hidden="true"><Moon size={13} strokeWidth={1.8} /></span>{t('device.doNotDisturb')}</span>}
-                         <span className="queue-card__age">{formatAreaRequestAge(request.createdAt, currentTime, locale)}</span>
-                         <button
-                           className="queue-card__drag-handle"
-                           type="button"
-                           draggable
-                           aria-label={t('device.dragRequest', { service: resolveServiceDisplayName(request.service, locale) })}
-                           onDragStart={(event) => handleNativeDragStart(event, request)}
-                           onDragEnd={clearDragState}
-                           onPointerDown={(event) => handleTouchDragStart(event, request)}
-                           onPointerMove={handleTouchDragMove}
-                           onPointerUp={handleTouchDragEnd}
-                           onPointerCancel={(event) => handleTouchDragEnd(event, true)}
-                         >
-                           <GripVertical size={18} aria-hidden="true" />
-                         </button>
                        </div>
                       <h3>{resolveServiceDisplayName(request.service, locale)}</h3>
-                       <p>{t('admin.roomPrefix', { name: resolveLocalizedDisplayName(request.room, locale) })} · {t('admin.createdAt', { time: formatClock(new Date(request.createdAt), locale, undefined, snapshot.config.clockFormat) })}</p>
                       {NEXT_STATUS[request.status] !== null && (
-                         <button className="button button--dark button--small queue-card__action" type="button" onClick={() => void advanceRequest(request)} disabled={busyRequestId === request.id || !canCommitMutation(connectionStatus)}>
+                         <button className="button button--dark button--small queue-card__action" type="button" onClick={() => void advanceRequest(request)} disabled={busyRequestId === request.id || !deviceCommandsSupported || !canCommitMutation(connectionStatus)}>
                           {busyRequestId === request.id ? t('request.updating') : requestActionLabel(request.status, locale)}
                         </button>
                       )}
@@ -1180,17 +1364,8 @@ function AreaDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
             );
            })}
          </div>
-         <div
-           className={`queue-complete-drop-zone${dragOverStatus === 'COMPLETED' ? ' queue-complete-drop-zone--drag-over' : ''}`}
-           data-area-drop-status="COMPLETED"
-           onDragOver={(event) => handleNativeDragOver(event, 'COMPLETED')}
-           onDragLeave={handleNativeDragLeave}
-           onDrop={(event) => handleNativeDrop(event, 'COMPLETED')}
-         >
-           <span>{t('device.dropToComplete')}</span>
-         </div>
-          </>
-        )}
+         </>
+         )}
        </section>
 
        {pendingModalRequest !== null && (
@@ -1222,28 +1397,38 @@ function AreaDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
              {error !== null && <p className="form-error" role="alert">{error}</p>}
              <div className="form-actions">
                <button className="button button--ghost" type="button" onClick={() => dismissPendingRequest(pendingModalRequest.id)} disabled={busyRequestId === pendingModalRequest.id}>{t('device.pendingRequestLater')}</button>
-               <button className="button button--primary" type="button" onClick={() => void confirmPendingRequest()} disabled={busyRequestId === pendingModalRequest.id || !canCommitMutation(connectionStatus)} data-autofocus>
+               <button className="button button--primary" type="button" onClick={() => void confirmPendingRequest()} disabled={busyRequestId === pendingModalRequest.id || !deviceCommandsSupported || !canCommitMutation(connectionStatus)} data-autofocus>
                  {busyRequestId === pendingModalRequest.id ? t('request.updating') : requestActionLabel(pendingModalRequest.status, locale)}
                </button>
              </div>
            </div>
-         </Modal>
-       )}
-     </div>
-  );
+        </Modal>
+        )}
+
+      </div>
+   );
 }
 
-function useServerClock(serverTime: string): Date {
-  const [currentTime, setCurrentTime] = useState(() => new Date(serverTime));
+function useServerClock(serverTime: string, connectionStatus: ConnectionStatus): Date {
+  const [currentTime, setCurrentTime] = useState(() => (
+    connectionStatus === 'online' && Number.isFinite(Date.parse(serverTime))
+      ? new Date(serverTime)
+      : new Date()
+  ));
 
   useEffect(() => {
     const synchronizedAt = Date.parse(serverTime);
     const clientTimeAtSynchronization = Date.now();
-    const updateClock = () => setCurrentTime(new Date(synchronizedAt + (Date.now() - clientTimeAtSynchronization)));
+    const updateClock = () => {
+      const hasAuthoritativeServerTime = connectionStatus === 'online' && Number.isFinite(synchronizedAt);
+      setCurrentTime(hasAuthoritativeServerTime
+        ? new Date(synchronizedAt + (Date.now() - clientTimeAtSynchronization))
+        : new Date());
+    };
     updateClock();
     const timer = window.setInterval(updateClock, 30_000);
     return () => window.clearInterval(timer);
-  }, [serverTime]);
+  }, [connectionStatus, serverTime]);
 
   return currentTime;
 }
@@ -1260,7 +1445,7 @@ interface ServiceRequestDialogProps {
   offlineQueueTtlHours: number;
   onClose: () => void;
   onRefresh: () => Promise<void>;
-  onAuthFailure: () => void;
+  onAuthFailure: (error?: unknown) => void;
   onQueueChange: () => void;
   onQueueError: (message: string) => void;
 }
@@ -1295,7 +1480,7 @@ export function ServiceRequestDialog({ service, deviceToken, deviceId, connectio
              shouldRetry: (flushError) => !isApiError(flushError) || flushError.status >= 500 || isDeviceAuthFailure(flushError),
              stopOnError: (flushError) => {
                if (isDeviceAuthFailure(flushError)) {
-                 onAuthFailure();
+                 onAuthFailure(flushError);
                  return true;
               }
               if (isApiError(flushError) && flushError.status < 500) {
@@ -1359,7 +1544,7 @@ export function ServiceRequestDialog({ service, deviceToken, deviceId, connectio
       if (mutationCompleted) {
         return;
       }
-      if (isDeviceAuthFailure(submissionError)) onAuthFailure();
+      if (isDeviceAuthFailure(submissionError)) onAuthFailure(submissionError);
       if (isApiError(submissionError) && submissionError.status < 500) {
         setError(errorMessage(submissionError, t('errors.requestSendFailed'), locale));
       } else {

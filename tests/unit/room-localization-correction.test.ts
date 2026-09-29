@@ -6,9 +6,10 @@ import { DeviceScreen } from '../../apps/web/src/features/device/DeviceScreen';
 import {
   createTranslator,
   getDocumentMetadata,
-  getLocaleOptions,
-  getSupportedLocales,
-  resolveLocalizedValue,
+    getLocaleOptions,
+    getSupportedLocales,
+    resolveAreaDisplayName,
+    resolveLocalizedValue,
   resolveRouteLocale,
   resolveServiceDescription,
   resolveServiceDisplayName,
@@ -91,6 +92,26 @@ describe('ROOM localization correction', () => {
     expect(markup).toContain('Nombre de servicio');
     expect(markup).toContain('Habitación 101');
     expect(markup).not.toContain('language-selector');
+  });
+
+  it('localizes a built-in AREA label from its stable identity', () => {
+    const request = createAreaRequest();
+    const snapshot = createAreaSnapshot(request);
+    snapshot.config.area = { id: 'area_default_front-desk', code: 'front-desk', displayName: 'Front Desk' };
+    const markup = renderToStaticMarkup(createElement(SpanishI18nProvider, {
+      children: createElement(DeviceScreen, {
+        snapshot,
+        deviceToken: 'device-token',
+        connectionStatus: 'online',
+        onRefresh: async () => undefined,
+        onOpenAdmin: () => undefined,
+        onAuthFailure: () => undefined
+      })
+    }));
+
+    expect(resolveAreaDisplayName(snapshot.config.area, 'es')).toBe('Recepción');
+    expect(markup).toContain('Recepción');
+    expect(markup).not.toContain('Front Desk');
   });
 });
 

@@ -186,8 +186,7 @@ function getAreaDisplayElement(snapshot: DeviceSyncSnapshot): TestElement {
     onOpenAdmin: () => undefined,
     onAuthFailure: () => undefined
   }) as unknown as TestElement;
-  const mainChildren = toElements(rendered.props['children']);
-  const content = mainChildren.find((child) => child.props['className'] === 'device-content');
+  const content = findElementByClassName(rendered, 'device-content');
   if (content === undefined) throw new Error('The device content was not rendered.');
   const area = toElements(content.props['children'])[0];
   if (area === undefined) throw new Error('The AREA display was not rendered.');
@@ -205,6 +204,15 @@ function findSoundRetryButton(root: TestElement): TestElement | undefined {
   for (const child of toElements(root.props['children'])) {
     const button = findSoundRetryButton(child);
     if (button !== undefined) return button;
+  }
+  return undefined;
+}
+
+function findElementByClassName(root: TestElement, className: string): TestElement | undefined {
+  if (root.props['className'] === className) return root;
+  for (const child of toElements(root.props['children'])) {
+    const match = findElementByClassName(child, className);
+    if (match !== undefined) return match;
   }
   return undefined;
 }

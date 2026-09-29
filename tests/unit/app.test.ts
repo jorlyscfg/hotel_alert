@@ -11,6 +11,9 @@ interface RealtimeOptionsForTest {
 }
 
 interface DeviceScreenPropsForTest {
+  deviceCommandsSupported?: boolean;
+  deviceToken?: string;
+  nativeBridge?: unknown;
   roomRequestNotificationsUnread?: boolean;
   onClearRoomRequestNotifications?: () => void;
 }
@@ -232,6 +235,10 @@ vi.mock('../../apps/web/src/native-station-bridge', () => ({
   readNativeStationSnapshot: nativeBridgeMocks.readNativeSnapshot,
   resolveNativeStationReceiverStatus: nativeBridgeMocks.resolveNativeReceiverStatus
 }));
+vi.mock('../../apps/web/src/native-bridge', () => ({
+  getNativeWebViewBridge: nativeBridgeMocks.getNativeWebViewBridge,
+  supportsNativeDeviceCommands: nativeBridgeMocks.supportsNativeDeviceCommands
+}));
 vi.mock('../../apps/web/src/native-room-bridge', () => ({
   getNativeRoomPresenceBridge: () => nativeRoomBridgeGetter.get(),
   clearNativeRoomSession: nativeBridgeMocks.clearNativeRoomSession,
@@ -362,6 +369,110 @@ describe('App room request notification lifecycle', () => {
     const admin = getAdminScreenProps(renderApp());
     expect(admin).toMatchObject({ csrfToken: 'csrf-token', installationId: 'installation-1' });
     expect(apiMocks.get.mock.calls.map(([path]) => path)).toEqual(['/auth/admin/me', '/system/snapshot']);
+  });
+
+  it('keeps admin realtime browser-owned while native device realtime stays disabled', async () => {
+    const nativeBridge = { getReceiverState: vi.fn(() => 'SYNCHRONIZED') };
+    nativeBridgeMocks.getNativeWebViewBridge.mockReturnValue(nativeBridge);
+    nativeBridgeMocks.readNativeSnapshot.mockReturnValue(createAreaSnapshot());
+    nativeBridgeMocks.resolveNativeReceiverStatus.mockReturnValue('online');
+    sessionValues.set('hotel-local-admin-session', JSON.stringify({
+      result: {
+        admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+        csrfToken: 'csrf-token'
+      },
+      installationId: 'installation-1'
+    }));
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/auth/admin/me') return { data: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' }, requestId: 'request-admin-me' };
+      return { data: {}, requestId: 'request-admin-snapshot' };
+    });
+
+    renderApp();
+    await flushPromises();
+    renderApp();
+
+    const adminRealtime = getRealtimeOptions();
+    expect(adminRealtime).toMatchObject({ enabled: true, hasSnapshot: true });
+    adminRealtime.onStatus('online');
+    expect(getAdminScreenProps(renderApp()).connectionStatus).toBe('online');
+
+    const admin = getAdminScreenProps(renderApp());
+    await admin.onUseDeviceToken?.({ deviceId: 'device-1', deviceToken: 'native-secret', assignmentMode: 'AREA' });
+    renderApp();
+
+    expect(getDeviceScreenProps(renderApp())).toMatchObject({
+      deviceCommandsSupported: false,
+      deviceToken: '',
+      nativeBridge
+    });
+    expect(nativeBridgeMocks.supportsNativeDeviceCommands).toHaveBeenCalledWith(nativeBridge);
+    expect(getRealtimeOptions()).toMatchObject({ enabled: false, hasSnapshot: true });
+  });
+
+  it('hydrates a paired native snapshot without starting the browser device realtime client', async () => {
+    clearBrowserDeviceCredentials();
+    const nativeBridge = { getReceiverState: vi.fn(() => 'SYNCHRONIZED') };
+    nativeBridgeMocks.getNativeWebViewBridge.mockReturnValue(nativeBridge);
+    nativeBridgeMocks.readNativeSnapshot.mockReturnValue(createAreaSnapshot());
+    nativeBridgeMocks.resolveNativeReceiverStatus.mockReturnValue('online');
+    nativeBridgeMocks.supportsNativeDeviceCommands.mockReturnValue(true);
+
+    renderApp();
+    await flushPromises();
+    renderApp();
+
+    expect(getDeviceScreenProps(renderApp())).toMatchObject({
+      deviceCommandsSupported: true,
+      deviceToken: '',
+      nativeBridge
+    });
+    expect(nativeBridgeMocks.supportsNativeDeviceCommands).toHaveBeenCalledWith(nativeBridge);
+    expect(getRealtimeOptions()).toMatchObject({ enabled: false, hasSnapshot: true });
+    expect(localStorage.getItem('hotel-local-device-token')).toBeNull();
+  });
+
+  it('keeps browser API request commands available for browser-only AREA stations', async () => {
+    apiMocks.get.mockResolvedValue({ data: createAreaSnapshot(), requestId: 'request-area' });
+
+    renderApp();
+    await flushPromises();
+
+    expect(getDeviceScreenProps(renderApp())).toMatchObject({
+      deviceCommandsSupported: true,
+      deviceToken: 'device-token',
+      nativeBridge: null
+    });
+    expect(nativeBridgeMocks.supportsNativeDeviceCommands).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back to browser device credentials when native snapshot is unavailable', async () => {
+    clearBrowserDeviceCredentials();
+    const nativeBridge = { getReceiverState: vi.fn(() => 'FETCHING_SNAPSHOT') };
+    nativeBridgeMocks.getNativeWebViewBridge.mockReturnValue(nativeBridge);
+    nativeBridgeMocks.readNativeSnapshot.mockReturnValue(null);
+
+    renderApp();
+    await flushPromises();
+    await flushPromises();
+    const rendered = renderApp() as TestElement;
+    const bootstrap = rendered.props.children as TestElement;
+
+    expect(bootstrap.type).toBe('bootstrap-screen');
+    expect(getBootstrapScreenProps(rendered).error).toBeNull();
+    expect(apiMocks.get).not.toHaveBeenCalledWith('/device/session', expect.anything());
+    expect(getRealtimeOptions()).toMatchObject({ enabled: false, hasSnapshot: false });
+  });
+
+  it('keeps the generic startup error for real bootstrap API failures without a native bridge', async () => {
+    clearBrowserDeviceCredentials();
+    apiMocks.get.mockRejectedValue(new Error('bootstrap API unavailable'));
+
+    renderApp();
+    await flushPromises();
+    await flushPromises();
+
+    expect(getBootstrapScreenProps(renderApp()).error).toBe('Local service unavailable.');
   });
 
   it('routes the selected login role to station assignment before provisioning', async () => {
@@ -760,6 +871,108 @@ describe('App room request notification lifecycle', () => {
     expect(apiMocks.post.mock.calls.filter(([path]) => path === '/devices/bootstrap')).toHaveLength(1);
     const finalAssignment = (renderApp() as TestElement).props.children as TestElement;
     expect((finalAssignment.props as AssignmentScreenPropsForTest).error).toBe('No se pudo registrar la estación. Revisa el destino seleccionado e inténtalo de nuevo.');
+  });
+
+  it('recovers the native device view when a snapshot becomes available after an empty read', async () => {
+    clearBrowserDeviceCredentials();
+    const nativeBridge = { getReceiverState: vi.fn(() => 'SYNCHRONIZED') };
+    nativeBridgeMocks.getNativeWebViewBridge.mockReturnValue(nativeBridge);
+    nativeBridgeMocks.readNativeSnapshot
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce(createAreaSnapshot());
+
+    renderApp();
+    await flushPromises();
+    await flushPromises();
+    const initial = renderApp() as TestElement;
+    expect((initial.props.children as TestElement).type).toBe('bootstrap-screen');
+
+    const refreshNativeSnapshot = intervalCallbacks[0];
+    if (refreshNativeSnapshot === undefined) throw new Error('Native refresh interval was not registered.');
+    refreshNativeSnapshot();
+    const recovered = renderApp();
+
+    expect(getDeviceScreenProps(recovered)).toBeDefined();
+    expect(getRealtimeOptions()).toMatchObject({ enabled: false, hasSnapshot: true });
+    expect(apiMocks.get).not.toHaveBeenCalledWith('/device/session', expect.anything());
+  });
+
+  it('re-enters native initialization from bootstrap retry when the bridge is present', async () => {
+    clearBrowserDeviceCredentials();
+    const nativeBridge = { getReceiverState: vi.fn(() => 'SYNCHRONIZED') };
+    nativeBridgeMocks.getNativeWebViewBridge.mockReturnValue(nativeBridge);
+    nativeBridgeMocks.readNativeSnapshot
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce(createAreaSnapshot());
+
+    renderApp();
+    await flushPromises();
+    await flushPromises();
+    const bootstrap = getBootstrapScreenProps(renderApp());
+
+    bootstrap.onRetry?.();
+    await flushPromises();
+    await flushPromises();
+
+    expect(getDeviceScreenProps(renderApp())).toBeDefined();
+    expect(apiMocks.get).not.toHaveBeenCalledWith('/devices/bootstrap-state?installationId=installation-1');
+    expect(apiMocks.get).not.toHaveBeenCalledWith('/device/session', expect.anything());
+  });
+
+  it('clears the stale native device view when refresh finds no snapshot', async () => {
+    clearBrowserDeviceCredentials();
+    const nativeBridge = { getReceiverState: vi.fn(() => 'SYNCHRONIZED') };
+    nativeBridgeMocks.getNativeWebViewBridge.mockReturnValue(nativeBridge);
+    nativeBridgeMocks.readNativeSnapshot.mockReturnValue(createAreaSnapshot());
+
+    renderApp();
+    await flushPromises();
+    renderApp();
+    expect(getDeviceScreenProps(renderApp())).toBeDefined();
+
+    nativeBridgeMocks.readNativeSnapshot.mockReturnValue(null);
+    const refreshNativeSnapshot = intervalCallbacks[0];
+    if (refreshNativeSnapshot === undefined) throw new Error('Native refresh interval was not registered.');
+    refreshNativeSnapshot();
+    const rendered = renderApp() as TestElement;
+    const bootstrap = rendered.props.children as TestElement;
+
+    expect(bootstrap.type).toBe('bootstrap-screen');
+    expect(getBootstrapScreenProps(rendered).error).toBeNull();
+    expect(getRealtimeOptions()).toMatchObject({ enabled: false, hasSnapshot: false });
+    expect(apiMocks.get).not.toHaveBeenCalled();
+  });
+
+  it('clears browser assignment state and rotates installation after native station invalidation', async () => {
+    clearBrowserDeviceCredentials();
+    localStorage.setItem('hotel-local-device-snapshot', JSON.stringify(createAreaSnapshot()));
+    localStorage.setItem('hotel-local-device-sync-state', JSON.stringify({ deviceId: 'device-1', lastSeenEventSequence: 3 }));
+    localStorage.setItem('hotel-local-pending-token-rotation', JSON.stringify({ rotationId: 'rotation-1', deviceToken: 'next-token' }));
+    const nativeBridge = { getReceiverState: vi.fn(() => 'AUTH_FAILED') };
+    nativeBridgeMocks.getNativeWebViewBridge.mockReturnValue(nativeBridge);
+    nativeBridgeMocks.readNativeSnapshot.mockReturnValue(createAreaSnapshot());
+
+    renderApp();
+    await flushPromises();
+    renderApp();
+    expect(getDeviceScreenProps(renderApp())).toBeDefined();
+    sessionValues.set('hotel-local-admin-session', JSON.stringify({ result: {}, installationId: 'installation-1' }));
+
+    nativeBridgeMocks.readNativeSnapshot.mockReturnValue(null);
+    const refreshNativeSnapshot = intervalCallbacks[0];
+    if (refreshNativeSnapshot === undefined) throw new Error('Native refresh interval was not registered.');
+    refreshNativeSnapshot();
+    const rendered = renderApp() as TestElement;
+    const bootstrap = rendered.props.children as TestElement;
+
+    expect(bootstrap.type).toBe('bootstrap-screen');
+    expect((bootstrap.props as { installationId?: string }).installationId).toBe('installation-2');
+    expect(localStorage.getItem('hotel-local-device-token')).toBeNull();
+    expect(localStorage.getItem('hotel-local-device-id')).toBeNull();
+    expect(localStorage.getItem('hotel-local-device-snapshot')).toBeNull();
+    expect(localStorage.getItem('hotel-local-device-sync-state')).toBeNull();
+    expect(localStorage.getItem('hotel-local-pending-token-rotation')).toBeNull();
+    expect(sessionValues.get('hotel-local-admin-session')).toBeUndefined();
   });
 
   it('clears a ROOM assignment after the native runtime confirms revocation', async () => {

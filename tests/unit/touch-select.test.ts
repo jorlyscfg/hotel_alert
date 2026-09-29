@@ -2,7 +2,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { LanguageSelector } from '../../apps/web/src/components/LanguageSelector';
-import { TouchSelect, getNextOptionIndex, hasSelectableValue } from '../../apps/web/src/components/TouchSelect';
+import { TouchSelect, getNextOptionIndex, getTouchSelectClassName, hasSelectableValue } from '../../apps/web/src/components/TouchSelect';
 
 describe('touch select', () => {
   it('moves through options with bounded keyboard navigation', () => {
@@ -97,8 +97,15 @@ describe('touch select', () => {
     }));
 
     expect(modalMarkup).toContain('touch-select--modal');
+    expect(modalMarkup).not.toContain('touch-select--open');
     expect(modalMarkup).toContain('data-modal-interaction-blocker="true"');
     expect(regularMarkup).not.toContain('data-modal-interaction-blocker');
+  });
+
+  it('marks only open selectors for the top stacking layer', () => {
+    expect(getTouchSelectClassName(true, false)).toBe('form-field touch-select touch-select--modal');
+    expect(getTouchSelectClassName(true, true)).toBe('form-field touch-select touch-select--modal touch-select--open');
+    expect(getTouchSelectClassName(false, true, 'language-selector')).toBe('form-field touch-select touch-select--open language-selector');
   });
 
   it('uses a localized label-based placeholder when no placeholder is supplied', () => {

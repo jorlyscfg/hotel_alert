@@ -212,7 +212,14 @@ describe('web realtime connection lifecycle', () => {
   it('treats an inactive-device heartbeat response as an authentication failure', async () => {
     const onAuthFailure = vi.fn<() => void>();
     vi.spyOn(api, 'post').mockRejectedValue(new ApiError(403, { error: { code: 'DEVICE_INACTIVE' } }));
-    Object.defineProperty(globalThis, 'document', { configurable: true, value: { visibilityState: 'visible' } });
+    Object.defineProperty(globalThis, 'document', {
+      configurable: true,
+      value: {
+        visibilityState: 'visible',
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined
+      }
+    });
 
     mountRealtime({
       onEvent: async () => ({ synchronized: true }),
@@ -225,6 +232,67 @@ describe('web realtime connection lifecycle', () => {
     await vi.advanceTimersByTimeAsync(10);
 
     expect(onAuthFailure).toHaveBeenCalledOnce();
+  });
+
+  it('asks a disconnected socket to reconnect on visible lifecycle resume without refreshing while hidden', () => {
+    const documentTarget = new FakeLifecycleTarget('hidden');
+    const windowTarget = new FakeLifecycleTarget();
+    installLifecycleTargets(documentTarget, windowTarget);
+    const onEvent = vi.fn<() => Promise<RealtimeRefreshResult>>().mockResolvedValue({ synchronized: true });
+    const socket = mountRealtime({
+      onEvent,
+      onAuthFailure: () => undefined,
+      onStatus: () => undefined
+    });
+
+    expect(documentTarget.listenerCount('visibilitychange')).toBe(1);
+    expect(windowTarget.listenerCount('pageshow')).toBe(1);
+    expect(windowTarget.listenerCount('online')).toBe(1);
+
+    documentTarget.trigger('visibilitychange');
+    windowTarget.trigger('pageshow');
+    windowTarget.trigger('online');
+
+    expect(socket.connectCalls).toBe(0);
+    expect(onEvent).not.toHaveBeenCalled();
+
+    documentTarget.visibilityState = 'visible';
+    documentTarget.trigger('visibilitychange');
+
+    expect(socket.connectCalls).toBe(1);
+    expect(onEvent).not.toHaveBeenCalled();
+
+    hookState.cleanup?.();
+
+    expect(documentTarget.listenerCount('visibilitychange')).toBe(0);
+    expect(windowTarget.listenerCount('pageshow')).toBe(0);
+    expect(windowTarget.listenerCount('online')).toBe(0);
+  });
+
+  it('defers a ready-connection refresh until the document becomes visible', async () => {
+    const documentTarget = new FakeLifecycleTarget('hidden');
+    const windowTarget = new FakeLifecycleTarget();
+    installLifecycleTargets(documentTarget, windowTarget);
+    const onEvent = vi.fn<() => Promise<RealtimeRefreshResult>>().mockResolvedValue({ synchronized: true });
+    const socket = mountRealtime({
+      onEvent,
+      onAuthFailure: () => undefined,
+      onStatus: () => undefined
+    });
+    socket.onEmit = acknowledgeSync;
+    socket.connected = true;
+
+    socket.trigger('connect');
+    socket.trigger('connection.ready', { sync: 'UP_TO_DATE' });
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(onEvent).not.toHaveBeenCalled();
+
+    documentTarget.visibilityState = 'visible';
+    windowTarget.trigger('pageshow');
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(onEvent).toHaveBeenCalledOnce();
   });
 });
 
@@ -260,6 +328,7 @@ type FakeHandler = (...args: unknown[]) => void;
 
 class FakeSocket {
   public connected = false;
+  public connectCalls = 0;
   public auth: unknown;
   public onEmit: ((eventName: string, args: unknown[]) => void) | undefined;
   private anyHandler: ((eventName: string, payload: unknown) => void) | undefined;
@@ -287,6 +356,11 @@ class FakeSocket {
     this.connected = false;
   }
 
+  public connect(): this {
+    this.connectCalls += 1;
+    return this;
+  }
+
   public trigger(eventName: string, ...args: unknown[]): void {
     this.handlers.get(eventName)?.(...args);
   }
@@ -294,4 +368,36 @@ class FakeSocket {
   public triggerAny(eventName: string, payload: unknown): void {
     this.anyHandler?.(eventName, payload);
   }
+}
+
+class FakeLifecycleTarget {
+  public visibilityState: 'visible' | 'hidden';
+  private readonly listeners = new Map<string, Set<() => void>>();
+
+  public constructor(visibilityState: 'visible' | 'hidden' = 'visible') {
+    this.visibilityState = visibilityState;
+  }
+
+  public addEventListener(eventName: string, handler: () => void): void {
+    const handlers = this.listeners.get(eventName) ?? new Set<() => void>();
+    handlers.add(handler);
+    this.listeners.set(eventName, handlers);
+  }
+
+  public removeEventListener(eventName: string, handler: () => void): void {
+    this.listeners.get(eventName)?.delete(handler);
+  }
+
+  public trigger(eventName: string): void {
+    this.listeners.get(eventName)?.forEach((handler) => handler());
+  }
+
+  public listenerCount(eventName: string): number {
+    return this.listeners.get(eventName)?.size ?? 0;
+  }
+}
+
+function installLifecycleTargets(documentTarget: FakeLifecycleTarget, windowTarget: FakeLifecycleTarget): void {
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: documentTarget });
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: windowTarget });
 }

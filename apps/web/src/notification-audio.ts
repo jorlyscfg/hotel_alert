@@ -1,5 +1,9 @@
 const NOTIFICATION_FREQUENCY_HZ = 880;
 const NOTIFICATION_DURATION_SECONDS = 0.2;
+const DND_ACTIVE_FREQUENCIES_HZ = [698, 523] as const;
+const DND_INACTIVE_FREQUENCIES_HZ = [523, 698] as const;
+const DND_NOTE_DURATION_SECONDS = 0.12;
+const DND_NOTE_GAP_SECONDS = 0.06;
 
 type AudioContextConstructor = new () => AudioContext;
 type NotificationAudioWindow = Window & {
@@ -44,6 +48,41 @@ export async function playNotificationTone(context: AudioContext): Promise<boole
     gain.connect(context.destination);
     oscillator.start(startAt);
     oscillator.stop(startAt + NOTIFICATION_DURATION_SECONDS);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export type DoNotDisturbTransition = 'activated' | 'deactivated';
+
+export async function playDoNotDisturbTransitionTones(
+  context: AudioContext,
+  transitions: readonly DoNotDisturbTransition[]
+): Promise<boolean> {
+  try {
+    if (transitions.length === 0 || context.state === 'closed') return false;
+    if (context.state === 'suspended') await context.resume();
+    if (context.state !== 'running') return false;
+
+    const frequencies = transitions.flatMap((transition) => transition === 'activated'
+      ? DND_ACTIVE_FREQUENCIES_HZ
+      : DND_INACTIVE_FREQUENCIES_HZ);
+    let startAt = context.currentTime;
+    for (const frequency of frequencies) {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(frequency, startAt);
+      gain.gain.setValueAtTime(0.0001, startAt);
+      gain.gain.exponentialRampToValueAtTime(0.12, startAt + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startAt + DND_NOTE_DURATION_SECONDS);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(startAt);
+      oscillator.stop(startAt + DND_NOTE_DURATION_SECONDS);
+      startAt += DND_NOTE_DURATION_SECONDS + DND_NOTE_GAP_SECONDS;
+    }
     return true;
   } catch {
     return false;

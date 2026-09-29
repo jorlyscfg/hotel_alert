@@ -91,6 +91,7 @@ describe('AREA No molestar tab', () => {
 
   it('moves the unchanged room grid into its tab and updates the count from each snapshot', () => {
     hooks.reset();
+    hooks.locale = 'es';
     vi.stubGlobal('window', {
       AudioContext: undefined,
       setInterval: vi.fn(() => 1),
@@ -99,10 +100,11 @@ describe('AREA No molestar tab', () => {
       removeEventListener: vi.fn()
     });
 
-    const firstRoom = createRoom('room-1', '101');
-    const secondRoom = createRoom('room-2', '202');
+    const firstRoom = createRoom('room-1', '101', '2026-08-31T11:06:00.000Z');
+    const secondRoom = createRoom('room-2', '202', null);
     const initialSnapshot = createAreaSnapshot([firstRoom, secondRoom]);
     const area = getAreaDisplayElement(initialSnapshot);
+    hooks.locale = 'es';
     const defaultView = renderAreaDisplay(area, initialSnapshot);
 
     expect(findElementByClassName(defaultView, 'queue-board')).toBeDefined();
@@ -118,9 +120,23 @@ describe('AREA No molestar tab', () => {
     const selectedGrid = findElementByClassName(selectedView, 'area-dnd-strip');
     expect(findElementByClassName(selectedView, 'queue-board')).toBeUndefined();
     expect(collectText(findElementByClassName(selectedView, 'area-dnd-tab-count'))).toBe('2');
+    expect(findElementByClassName(selectedView, 'area-dnd-tab-count')?.props['className']).toContain('area-dnd-tab-count--green');
     expect(collectText(selectedGrid)).toContain('101');
     expect(collectText(selectedGrid)).toContain('202');
-    expect(findElementByClassName(selectedGrid!, 'area-dnd-room')).toBeDefined();
+    const timedRoomBadge = findElementByClassName(selectedGrid!, 'area-dnd-room--green');
+    const unknownRoomBadge = findElementByClassName(selectedGrid!, 'area-dnd-room--unknown');
+    expect(timedRoomBadge).toBeDefined();
+    expect(collectText(timedRoomBadge)).toContain('Activo desde hace 59 min');
+    expect(unknownRoomBadge).toBeDefined();
+    expect(collectText(unknownRoomBadge)).toContain('Tiempo no disponible');
+
+    const atOneHour = renderAreaDisplay(area, initialSnapshot, new Date('2026-08-31T12:06:00.000Z'));
+    expect(findElementByClassName(atOneHour, 'area-dnd-tab-count')?.props['className']).toContain('area-dnd-tab-count--yellow');
+    expect(findElementByClassName(atOneHour, 'area-dnd-room--yellow')).toBeDefined();
+
+    const atThreeHours = renderAreaDisplay(area, initialSnapshot, new Date('2026-08-31T14:06:00.000Z'));
+    expect(findElementByClassName(atThreeHours, 'area-dnd-tab-count')?.props['className']).toContain('area-dnd-tab-count--red');
+    expect(findElementByClassName(atThreeHours, 'area-dnd-room--red')).toBeDefined();
 
     const oneRoomSnapshot = { ...initialSnapshot, activeDoNotDisturbRooms: [firstRoom] };
     const oneRoomView = renderAreaDisplay(area, oneRoomSnapshot);
@@ -132,8 +148,12 @@ describe('AREA No molestar tab', () => {
     const noRoomsSnapshot = { ...oneRoomSnapshot, activeDoNotDisturbRooms: [] };
     const noRoomsView = renderAreaDisplay(area, noRoomsSnapshot);
     expect(findDoNotDisturbTab(noRoomsView)).toBeDefined();
-    expect(collectText(findElementByClassName(noRoomsView, 'area-dnd-tab-count'))).toBe('0');
+    expect(findElementByClassName(noRoomsView, 'area-dnd-tab-count')).toBeUndefined();
     expect(findElementByClassName(noRoomsView, 'area-dnd-strip')).toBeUndefined();
+
+    const onlyUnknownSnapshot = { ...initialSnapshot, activeDoNotDisturbRooms: [secondRoom] };
+    const onlyUnknownView = renderAreaDisplay(area, onlyUnknownSnapshot);
+    expect(findElementByClassName(onlyUnknownView, 'area-dnd-tab-count')?.props['className']).toContain('area-dnd-tab-count--unknown');
   });
 });
 
@@ -154,9 +174,9 @@ function getAreaDisplayElement(snapshot: DeviceSyncSnapshot): TestElement {
   return area;
 }
 
-function renderAreaDisplay(area: TestElement, snapshot: DeviceSyncSnapshot): TestElement {
+function renderAreaDisplay(area: TestElement, snapshot: DeviceSyncSnapshot, currentTime?: Date): TestElement {
   hooks.hookIndex = 0;
-  return (area.type as (props: Record<string, unknown>) => TestElement)({ ...area.props, snapshot });
+  return (area.type as (props: Record<string, unknown>) => TestElement)({ ...area.props, snapshot, ...(currentTime === undefined ? {} : { currentTime }) });
 }
 
 function findElementByClassName(root: TestElement, className: string): TestElement | undefined {
@@ -169,7 +189,10 @@ function findElementByClassName(root: TestElement, className: string): TestEleme
 }
 
 function findDoNotDisturbTab(root: TestElement): TestElement | undefined {
-  return findButtons(root).find((button) => findElementByClassName(button, 'area-dnd-tab-count') !== undefined);
+  return findButtons(root).find((button) => {
+    const label = collectText(button);
+    return label.includes('No molestar') || label.includes('Do not disturb');
+  });
 }
 
 function findButtons(root: TestElement): TestElement[] {
@@ -196,8 +219,8 @@ function sameDependencies(left: readonly unknown[], right: readonly unknown[]): 
   return left.length === right.length && left.every((value, index) => Object.is(value, right[index]));
 }
 
-function createRoom(id: string, code: string): CompactRoom {
-  return { id, code, displayName: `Room ${code}`, doNotDisturb: true };
+function createRoom(id: string, code: string, doNotDisturbActivatedAt: string | null): CompactRoom {
+  return { id, code, displayName: `Room ${code}`, doNotDisturb: true, doNotDisturbActivatedAt };
 }
 
 function createAreaSnapshot(activeDoNotDisturbRooms: CompactRoom[]): DeviceSyncSnapshot {

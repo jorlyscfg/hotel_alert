@@ -144,7 +144,8 @@ export function parseAdminSession(raw: string): LocalAdminSession | null {
         admin: { id: adminId, username, expiresAt },
         csrfToken
       },
-      installationId
+      installationId,
+      ...(pendingStationRole === undefined ? {} : { pendingStationRole })
     };
   } catch {
     return null;
@@ -286,6 +287,7 @@ function getOrCreateBrowserId(storageKey: string, prefix: string): string {
   return value;
 }
 
+
 function createBrowserUuid(): string {
   const browserCrypto = globalThis.crypto;
   if (typeof browserCrypto.randomUUID === 'function') return browserCrypto.randomUUID();
@@ -355,7 +357,9 @@ function isDeviceSnapshotConfig(value: Record<string, unknown>): boolean {
     && isPositiveInteger(value['heartbeatIntervalMs'])
     && isPositiveInteger(value['heartbeatStaleAfterMs'])
     && isPositiveInteger(value['heartbeatOfflineAfterMs'])
-    && isPositiveInteger(value['pendingAlertIntervalMs']);
+    && isPositiveInteger(value['pendingAlertIntervalMs'])
+    && (value['informationIdleTimeoutSeconds'] === undefined || isPositiveInteger(value['informationIdleTimeoutSeconds']))
+    && (value['informationSlideIntervalSeconds'] === undefined || isPositiveInteger(value['informationSlideIntervalSeconds']));
 }
 
 function isDeviceSnapshotService(value: unknown): boolean {
@@ -403,7 +407,12 @@ function isCompactReference(value: unknown): boolean {
 }
 
 function isCompactRoomReference(value: unknown): boolean {
-  return isCompactReference(value) && isRecord(value) && typeof value['doNotDisturb'] === 'boolean';
+  return isCompactReference(value)
+    && isRecord(value)
+    && typeof value['doNotDisturb'] === 'boolean'
+    && (value['doNotDisturbActivatedAt'] === undefined
+      || value['doNotDisturbActivatedAt'] === null
+      || isNonEmptyString(value['doNotDisturbActivatedAt']) && Number.isFinite(Date.parse(value['doNotDisturbActivatedAt'])));
 }
 
 function isCompactServiceReference(value: unknown): boolean {
