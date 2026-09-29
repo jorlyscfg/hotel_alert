@@ -35,8 +35,8 @@ The user asked to bring the repository up to date on GitHub after approving the 
 
 ### RWP-03 — Commit approved changes safely
 - [x] Create logically grouped Conventional Commits from approved final on-disk file contents with a temporary index; preserve the actual index until each committed path is reconciled.
-- [ ] Update the relevant local task trackers with commit identities and leave unverified checklist items open.
-- [ ] Verify the resulting branch history and ensure no excluded local files or secrets are committed.
+- [x] Update the relevant local task trackers with commit identities and leave unverified checklist items open.
+- [x] Verify the resulting branch history and ensure no excluded local files or secrets are committed.
 - Route: direct. Do not use `git add -A` or commit the current real index.
 
 ### RWP-04 — Push and verify the branch
@@ -52,17 +52,19 @@ The user asked to bring the repository up to date on GitHub after approving the 
 - `corepack pnpm lint`, `corepack pnpm typecheck`, and `corepack pnpm build` passed. Lint initially found an unused `t` binding in `App.tsx`; removed only that binding after confirming the locale-only component did not use it.
 - `E2E_PORT=43751 corepack pnpm test:e2e` passed all 9 tests. The initial run exposed stale selectors expecting a login heading absent from the current compact form; switched to the accessible username field and reran. The unique port and temporary database avoid touching any existing app/server data.
 - Android host verification passed offline: `:app:testDebugUnitTest`, `:app:lintDebug`, and `:app:check` (`BUILD SUCCESSFUL`, 59 actionable tasks). No Windows host, physical-device, live-server, or database-migration checks were run as part of repository publication; existing feature trackers retain those pending statuses.
-- A temporary index initialized from `HEAD` produced a 130-file, 14,739-insertion/968-deletion candidate. `git diff --cached --check` passed. Candidate paths exclude `.codegraph/`, Android `.kotlin/`, `artifacts/`, `data/`, the WhatsApp screenshot, and `logo.png`; it includes the task-referenced `logo-chico.png` and DND audio resources. Credential-like added-line scan returned no matches. The shared real Git index was not used to build the candidate.
-- Created five Conventional Commits from isolated temporary-index slices: `f0ead2f` (server/shared request and information workflows), `dd10aaa` (web AREA/device/admin workflows), `04826ab` (Android room/notification behavior and functional audio/logo assets), `6d015f0` (LAN and Windows notification receivers), and `1d13d28` (Docker deployment config). Each staged slice passed `git diff --cached --check` before commit; the user index remains unreconciled pending path-by-path restoration.
+- The temporary-index candidate excluded `.codegraph/`, Android `.kotlin/`, `artifacts/`, `data/`, the WhatsApp screenshot, and unreferenced `logo.png`; it includes task-referenced `logo-chico.png` and DND audio resources. Credential-like added-line scans returned no matches. The final six-commit range contains 130 files, 14,748 insertions, and 972 deletions; aggregate `git diff --check` passed.
+- Created five Conventional Commits from isolated temporary-index slices: `f0ead2f` (server/shared request and information workflows), `dd10aaa` (web AREA/device/admin workflows), `04826ab` (Android room/notification behavior and functional audio/logo assets), `6d015f0` (LAN and Windows notification receivers), and `1d13d28` (Docker deployment config). The related task trackers and full verification record were committed as `a4a8685` (`docs: record verified feature work and publication plan`). Each staged slice passed `git diff --cached --check` before commit.
+- Reconciled the real index only for committed paths, then restored 25 staged deletions whose on-disk files were byte-identical to `HEAD`. Thirteen pre-existing mixed staged/unstaged paths remain untouched because their indexed versions diverge from on-disk files; these paths were not part of the publication commits. Excluded local caches/data/screenshots also remain in the worktree and are not committed.
+- Verified the aggregate `initial HEAD..HEAD` diff has no excluded paths and the branch is 62 commits ahead of `master` (56 pre-existing plus 6 publication commits).
 
 ## Next Step
-Finish task-document updates and real-index reconciliation for committed paths, verify branch history and exclusions, then push the authorized branch and verify the remote SHA.
+Push only `jorlys/feat/lan-notification-agent` to the authorized GitHub repository, verify the remote SHA, then record the outcome in this tracker.
 
 ## Relevant Files
-- `odd/tasks/area-completed-search-sort.md` — Completed-tab search/sort task; work-unit commit pending.
-- `odd/tasks/request-stage-timing-audit.md` — AREA request age/history retention work; work-unit commits pending.
+- `odd/tasks/area-completed-search-sort.md` — Completed-tab search/sort task; work-unit commit `dd10aaa`.
+- `odd/tasks/request-stage-timing-audit.md` — AREA request age/history retention work; work-unit commits `f0ead2f`, `dd10aaa`, and `04826ab`.
 - `odd/tasks/room-do-not-disturb-enforcement.md` — DND requirements, implementations, and outstanding checks.
-- `odd/tasks/area-console-operational-queue-ui.md` — AREA operational console work and outstanding ACU items.
-- `odd/tasks/lan-notification-receiver.md` — LAN receiver work and platform-specific verification status.
+- `odd/tasks/area-console-operational-queue-ui.md` — AREA operational console tasks ACU-06/07 recorded in `f0ead2f` and `dd10aaa`.
+- `odd/tasks/lan-notification-receiver.md` — LAN receiver T2 recorded in `6d015f0`; platform-specific verification remains pending.
 - `odd/tasks/android-webview-console.md` — Android WebView console work and remaining physical checks.
 - `odd/tasks/android-room-kiosk-presence.md` — ROOM kiosk/presence work and remaining checks.
