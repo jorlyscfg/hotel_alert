@@ -9,9 +9,16 @@ import { applyBrandingSettingsMigration } from './migrations/004_branding_settin
 import { applyDeviceRetirementMigration } from './migrations/005_device_retirement';
 import { applyActiveRoomDeviceAssignmentMigration } from './migrations/006_active_room_device_assignment';
 import { applyRoomBackgroundSettingMigration } from './migrations/007_room_background_setting';
+import { applyInformationImagesMigration } from './migrations/008_information_images';
+import { applyInformationCarouselSettingsMigration } from './migrations/009_information_carousel_settings';
+import { applyInformationImageVariantsMigration } from './migrations/010_information_image_variants';
+import { applyLocalizedCatalogTextMigration } from './migrations/011_localized_catalog_text';
+import { applyInformationImageLocalizationMigration } from './migrations/012_information_image_localization';
+import { applyRoomDoNotDisturbActivationTimestampMigration } from './migrations/013_room_do_not_disturb_activation_timestamp';
+import { applyRequestHistoryRetentionMigration } from './migrations/014_request_history_retention';
 
 export type SqliteDatabase = Database.Database;
-export const LATEST_MIGRATION_VERSION = 7;
+export const LATEST_MIGRATION_VERSION = 14;
 
 interface Migration {
   version: number;
@@ -57,6 +64,41 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
     version: 7,
     name: 'room-background-setting',
     apply: applyRoomBackgroundSettingMigration
+  },
+  {
+    version: 8,
+    name: 'information-images',
+    apply: applyInformationImagesMigration
+  },
+  {
+    version: 9,
+    name: 'information-carousel-settings',
+    apply: applyInformationCarouselSettingsMigration
+  },
+  {
+    version: 10,
+    name: 'information-image-variants',
+    apply: applyInformationImageVariantsMigration
+  },
+  {
+    version: 11,
+    name: 'localized-catalog-text',
+    apply: applyLocalizedCatalogTextMigration
+  },
+  {
+    version: 12,
+    name: 'information-image-localization',
+    apply: applyInformationImageLocalizationMigration
+  },
+  {
+    version: 13,
+    name: 'room-do-not-disturb-activation-timestamp',
+    apply: applyRoomDoNotDisturbActivationTimestampMigration
+  },
+  {
+    version: 14,
+    name: 'request-history-retention-one-year',
+    apply: applyRequestHistoryRetentionMigration
   }
 ];
 
@@ -98,7 +140,7 @@ function ensureDefaultSettings(db: SqliteDatabase): void {
     ['realtime.replayMinMinutes', 60],
     ['realtime.replayMaxEvents', 100000],
     ['requests.pageSizeDefault', 50],
-    ['requests.historyRetentionDays', 30],
+    ['requests.historyRetentionDays', 365],
     ['idempotency.retentionHours', 72],
     ['client.offlineQueueTtlHours', 48],
     ['audit.retentionDays', 180]

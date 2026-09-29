@@ -11,11 +11,15 @@ import type {
   CompactArea,
   CompactRoom,
   DeviceBootstrapResult,
+  DeviceControlResult,
   DeviceConfig,
   DeviceDTO,
   DevicePresence,
   DeviceSyncSnapshot,
   HealthDTO,
+  InformationImageDTO,
+  InformationImageVariantDTO,
+  LocalizedTextVariants,
   PendingTokenRotation,
   RequestDTO,
   RequestHistoryDTO,
@@ -32,6 +36,8 @@ import {
   validateSettings,
   type ActorType,
   type DeviceAssignmentMode,
+  type InformationImageLanguage,
+  type InformationImageVariant,
   type RequestStatus,
   type SettingKey,
   type SettingValues
@@ -52,6 +58,7 @@ import type {
 } from '@hotel/shared';
 import { LATEST_MIGRATION_VERSION, type SqliteDatabase } from '../db/connection';
 import { AppError, conflictError, notFound, validationError } from '../errors';
+import { InformationImageStore, InformationImageStoreError } from '../information/image-store';
 import { assertIdempotencyKeyMatches, validateIdempotencyKey } from './idempotency';
 import { assertLegalRequestTransition, canReadRequest, canTransitionRequest, type RequestScope } from './policies';
 import type { ServerConfig } from '../config/env';
@@ -66,6 +73,7 @@ interface RoomRow {
   display_order: number;
   active: number;
   do_not_disturb: number;
+  do_not_disturb_activated_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -74,7 +82,9 @@ interface AreaRow {
   id: string;
   code: string;
   display_name: string;
+  display_name_variants_json: string;
   description: string | null;
+  description_variants_json: string;
   display_order: number;
   active: number;
   created_at: string;
@@ -85,7 +95,9 @@ interface ServiceRow {
   id: string;
   code: string;
   display_name: string;
+  display_name_variants_json: string;
   description: string | null;
+  description_variants_json: string;
   icon_key: string | null;
   area_id: string;
   display_order: number;
@@ -137,6 +149,7 @@ interface DeviceTokenRow extends DeviceRow {
   token_id: string;
   token_hash: string;
   token_revoked_at: string | null;
+  rotation_grace_expired: number;
 }
 
 interface RequestRow {
@@ -153,9 +166,11 @@ interface RequestRow {
   room_do_not_disturb: number;
   service_code_snapshot: string;
   service_display_name_snapshot: string;
+  service_display_name_variants_snapshot_json: string;
   service_icon_key: string | null;
   area_code_snapshot: string;
   area_display_name_snapshot: string;
+  area_display_name_variants_snapshot_json: string;
   created_at: string;
   accepted_at: string | null;
   in_progress_at: string | null;
@@ -182,6 +197,30 @@ interface IdempotencyRow {
   response_status: number | null;
 }
 
+interface InformationImageRow {
+  id: string;
+  original_name: string;
+  mime_type: InformationImageDTO['mimeType'];
+  byte_size: number;
+  storage_name: string;
+  display_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface InformationImageVariantRow {
+  information_image_id: string;
+  variant: InformationImageVariant;
+  original_name: string;
+  mime_type: InformationImageDTO['mimeType'];
+  byte_size: number;
+  storage_name: string;
+}
+
+interface LocalizedInformationImageVariantRow extends InformationImageVariantRow {
+  language: InformationImageLanguage;
+}
+
 interface StoredRebindResult {
   device: DeviceDTO;
   encryptedDeviceToken: string;
@@ -190,6 +229,7 @@ interface StoredRebindResult {
 }
 
 const REQUEST_PAGE_SIZE_CAP = 100;
+const DEVICE_BEEP_OPERATION = 'device.audioBeep';
 
 interface RequestCursor {
   version: 1;
@@ -242,6 +282,13 @@ export interface LoginSessionResult {
   sessionToken: string;
 }
 
+export interface InformationImageUpload {
+  bytes: Buffer;
+  originalName: string;
+  language?: InformationImageLanguage;
+  variant?: InformationImageVariant;
+}
+
 export interface DeviceTokenPrincipal {
   principal: DevicePrincipal;
   tokenId: string;
@@ -282,14 +329,23 @@ export interface DeviceAssignmentResult {
   configurationRevision: number;
 }
 
+export interface DeviceControlTarget {
+  deviceId: string;
+  lastIp: string;
+}
+
 export class HotelService {
   private securityChangeHandler: SecurityChangeHandler | undefined;
+  private readonly informationImageStore: InformationImageStore;
+  private mutationDepth = 0;
 
   public constructor(
     private readonly db: SqliteDatabase,
     private readonly config: ServerConfig,
     private readonly onCommitted?: () => void
-  ) {}
+  ) {
+    this.informationImageStore = new InformationImageStore(config.informationImageDirectory, config.informationImageMaxBytes);
+  }
 
   public setSecurityChangeHandler(handler: SecurityChangeHandler | undefined): void {
     this.securityChangeHandler = handler;
@@ -343,6 +399,223 @@ export class HotelService {
     }));
   }
 
+  public listInformationImages(): InformationImageDTO[] {
+    const rows = this.db.prepare('SELECT * FROM information_images ORDER BY display_order, id').all() as InformationImageRow[];
+    return rows.map((row) => mapInformationImage(row, this.getInformationImageVariants(row.id), this.getLocalizedInformationImageVariants(row.id)));
+  }
+
+  public getInformationImage(id: string): InformationImageDTO | null {
+    const row = this.getInformationImageRow(id);
+    return row === undefined ? null : mapInformationImage(row, this.getInformationImageVariants(row.id), this.getLocalizedInformationImageVariants(row.id));
+  }
+
+  public getInformationImageContent(id: string, requestedVariant?: InformationImageVariant, requestedLanguage?: InformationImageLanguage): { image: InformationImageDTO; bytes: Buffer } | null {
+    const row = this.getInformationImageRow(id);
+    if (row === undefined) return null;
+    const variants = this.getInformationImageVariants(row.id);
+    const localizedVariants = this.getLocalizedInformationImageVariants(row.id);
+    const selectedVariant = selectInformationImageContentVariant(variants, localizedVariants, requestedVariant, requestedLanguage);
+    const storageName = selectedVariant?.storage_name ?? row.storage_name;
+    const bytes = this.informationImageStore.read(storageName);
+    return bytes === null ? null : { image: mapInformationImage(row, variants, localizedVariants, selectedVariant), bytes };
+  }
+
+  public createInformationImage(bytes: Buffer, originalName: string, actor: Actor, requestId: string): InformationImageDTO {
+    return this.createInformationImageVariants([{ bytes, originalName }], actor, requestId);
+  }
+
+  public createInformationImageVariants(uploads: readonly InformationImageUpload[], actor: Actor, requestId: string): InformationImageDTO {
+    validateInformationImageUploads(uploads);
+    const storedUploads: Array<{ upload: InformationImageUpload; stored: ReturnType<InformationImageStore['write']> }> = [];
+    const id = createId('information_image');
+    const now = new Date().toISOString();
+    try {
+      for (const upload of uploads) {
+        let stored: ReturnType<InformationImageStore['write']>;
+        try {
+          stored = this.informationImageStore.write(upload.bytes, upload.originalName);
+        } catch (error) {
+          if (error instanceof InformationImageStoreError) throw validationError(error.message, { code: error.code });
+          throw error;
+        }
+        storedUploads.push({ upload, stored });
+      }
+
+      const hasLocalizedUploads = uploads.some((upload) => upload.language !== undefined);
+      const primary = hasLocalizedUploads
+        ? storedUploads.find(({ upload }) => upload.language === 'es' && upload.variant === 'wide')
+          ?? storedUploads.find(({ upload }) => upload.language === 'es')
+        : storedUploads.find(({ upload }) => upload.variant === 'wide') ?? storedUploads[0];
+      if (primary === undefined) throw validationError('An image upload is required.');
+
+      return this.mutate(() => {
+        const nextOrder = (this.db.prepare('SELECT COALESCE(MAX(display_order), -1) + 1 AS next_order FROM information_images').get() as { next_order: number }).next_order;
+        this.db.prepare('INSERT INTO information_images(id, original_name, mime_type, byte_size, storage_name, display_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+          id,
+          normalizeInformationImageName(primary.upload.originalName),
+          primary.stored.mimeType,
+          primary.stored.byteSize,
+          primary.stored.storageName,
+          nextOrder,
+          now,
+          now
+        );
+        if (hasLocalizedUploads) {
+          const insertVariant = this.db.prepare('INSERT INTO information_image_localized_variants(information_image_id, language, variant, original_name, mime_type, byte_size, storage_name) VALUES (?, ?, ?, ?, ?, ?, ?)');
+          storedUploads.forEach(({ upload, stored }) => {
+            if (upload.language === undefined || upload.variant === undefined) throw validationError('Localized image uploads require both language and size.');
+            insertVariant.run(id, upload.language, upload.variant, normalizeInformationImageName(upload.originalName), stored.mimeType, stored.byteSize, stored.storageName);
+          });
+        } else {
+          const insertVariant = this.db.prepare('INSERT INTO information_image_variants(information_image_id, variant, original_name, mime_type, byte_size, storage_name) VALUES (?, ?, ?, ?, ?, ?)');
+          storedUploads.filter(({ upload }) => upload.variant !== undefined).forEach(({ upload, stored }) => {
+            insertVariant.run(id, upload.variant, normalizeInformationImageName(upload.originalName), stored.mimeType, stored.byteSize, stored.storageName);
+          });
+        }
+        this.bumpConfiguration();
+        this.audit(actor, 'INFORMATION_IMAGE_CREATED', 'INFORMATION_IMAGE', id, requestId, {
+          byteSize: primary.stored.byteSize,
+          mimeType: primary.stored.mimeType,
+          variants: storedUploads.map(({ upload }) => upload.language === undefined ? upload.variant ?? 'legacy' : `${upload.language}:${upload.variant ?? 'unknown'}`)
+        });
+        this.appendOutbox('system.maintenance', 'SYSTEM', 'information-images', null, { message: 'Information images changed.', severity: 'INFO' });
+        return this.getInformationImage(id) ?? this.assertImpossible('Created information image disappeared.');
+      });
+    } catch (error) {
+      storedUploads.forEach(({ stored }) => this.informationImageStore.delete(stored.storageName));
+      throw error;
+    }
+  }
+
+  public updateInformationImageVariants(id: string, uploads: readonly InformationImageUpload[], actor: Actor, requestId: string): InformationImageDTO {
+    validateInformationImageUploads(uploads, { localizedOnly: true, requireBothLanguages: false });
+    const row = this.getInformationImageRow(id);
+    if (row === undefined) throw notFound('Information image');
+    const previousVariants = this.getLocalizedInformationImageVariants(id);
+    const storedUploads: Array<{ upload: InformationImageUpload; stored: ReturnType<InformationImageStore['write']> }> = [];
+    const now = new Date().toISOString();
+    let metadataCommitted = false;
+
+    try {
+      for (const upload of uploads) {
+        let stored: ReturnType<InformationImageStore['write']>;
+        try {
+          stored = this.informationImageStore.write(upload.bytes, upload.originalName);
+        } catch (error) {
+          if (error instanceof InformationImageStoreError) throw validationError(error.message, { code: error.code });
+          throw error;
+        }
+        storedUploads.push({ upload, stored });
+      }
+
+      const replacedStorageNames = storedUploads.flatMap(({ upload }) => {
+        const previous = previousVariants.find((variant) => variant.language === upload.language && variant.variant === upload.variant);
+        return previous === undefined ? [] : [previous.storage_name];
+      });
+      const stagedDeletes = this.informationImageStore.stageDelete(replacedStorageNames);
+      let updated: InformationImageDTO;
+      try {
+        updated = this.mutate(() => {
+          const upsertVariant = this.db.prepare(`
+            INSERT INTO information_image_localized_variants(information_image_id, language, variant, original_name, mime_type, byte_size, storage_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(information_image_id, language, variant) DO UPDATE SET
+              original_name = excluded.original_name,
+              mime_type = excluded.mime_type,
+              byte_size = excluded.byte_size,
+              storage_name = excluded.storage_name
+          `);
+          for (const { upload, stored } of storedUploads) {
+            if (upload.language === undefined || upload.variant === undefined) throw validationError('Localized image uploads require both language and size.');
+            const previous = previousVariants.find((variant) => variant.language === upload.language && variant.variant === upload.variant);
+            upsertVariant.run(id, upload.language, upload.variant, normalizeInformationImageName(upload.originalName), stored.mimeType, stored.byteSize, stored.storageName);
+            if (previous?.storage_name === row.storage_name) {
+              this.db.prepare('UPDATE information_images SET original_name = ?, mime_type = ?, byte_size = ?, storage_name = ?, updated_at = ? WHERE id = ?')
+                .run(normalizeInformationImageName(upload.originalName), stored.mimeType, stored.byteSize, stored.storageName, now, id);
+            }
+          }
+          this.db.prepare('UPDATE information_images SET updated_at = ? WHERE id = ?').run(now, id);
+          this.bumpConfiguration();
+          this.audit(actor, 'INFORMATION_IMAGE_VARIANTS_UPDATED', 'INFORMATION_IMAGE', id, requestId, {
+            variants: storedUploads.map(({ upload }) => `${upload.language}:${upload.variant}`)
+          });
+          this.appendOutbox('system.maintenance', 'SYSTEM', 'information-images', null, { message: 'Information images changed.', severity: 'INFO' });
+          return this.getInformationImage(id) ?? this.assertImpossible('Updated information image disappeared.');
+        });
+      } catch (error) {
+        const committed = storedUploads.every(({ upload, stored }) => this.db.prepare('SELECT 1 FROM information_image_localized_variants WHERE information_image_id = ? AND language = ? AND variant = ? AND storage_name = ?').get(id, upload.language, upload.variant, stored.storageName) !== undefined);
+        metadataCommitted = committed;
+        if (committed) this.informationImageStore.finalizeStagedDeletes(stagedDeletes);
+        else this.informationImageStore.restoreStagedDeletes(stagedDeletes);
+        throw error;
+      }
+      metadataCommitted = true;
+      this.informationImageStore.finalizeStagedDeletes(stagedDeletes);
+      return updated;
+    } catch (error) {
+      if (!metadataCommitted) storedUploads.forEach(({ stored }) => this.informationImageStore.delete(stored.storageName));
+      throw error;
+    }
+  }
+
+  public deleteInformationImage(id: string, actor: Actor, requestId: string): void {
+    const row = this.getInformationImageRow(id);
+    if (row === undefined) throw notFound('Information image');
+    const variantRows = this.getInformationImageVariants(id);
+    const localizedVariantRows = this.getLocalizedInformationImageVariants(id);
+    const stagedDeletes = this.informationImageStore.stageDelete([
+      row.storage_name,
+      ...variantRows.map((variant) => variant.storage_name),
+      ...localizedVariantRows.map((variant) => variant.storage_name)
+    ]);
+    try {
+      this.mutate(() => {
+        this.db.prepare('DELETE FROM information_images WHERE id = ?').run(id);
+        this.bumpConfiguration();
+        this.audit(actor, 'INFORMATION_IMAGE_DELETED', 'INFORMATION_IMAGE', id, requestId, {});
+        this.appendOutbox('system.maintenance', 'SYSTEM', 'information-images', null, { message: 'Information images changed.', severity: 'INFO' });
+      });
+    } catch (error) {
+      if (this.getInformationImageRow(id) === undefined) {
+        this.informationImageStore.finalizeStagedDeletes(stagedDeletes);
+      } else {
+        this.informationImageStore.restoreStagedDeletes(stagedDeletes);
+      }
+      throw error;
+    }
+    this.informationImageStore.finalizeStagedDeletes(stagedDeletes);
+  }
+
+  public reorderInformationImages(ids: string[], actor: Actor, requestId: string): InformationImageDTO[] {
+    const existing = this.listInformationImages();
+    if (ids.length !== existing.length || new Set(ids).size !== ids.length || ids.some((id) => !existing.some((image) => image.id === id))) {
+      throw validationError('Information image order must contain every image exactly once.');
+    }
+    this.mutate(() => {
+      const update = this.db.prepare('UPDATE information_images SET display_order = ?, updated_at = ? WHERE id = ?');
+      const now = new Date().toISOString();
+      ids.forEach((id, index) => update.run(index, now, id));
+      this.bumpConfiguration();
+      this.audit(actor, 'INFORMATION_IMAGES_REORDERED', 'INFORMATION_IMAGE', null, requestId, { ids });
+      this.appendOutbox('system.maintenance', 'SYSTEM', 'information-images', null, { message: 'Information images changed.', severity: 'INFO' });
+    });
+    return this.listInformationImages();
+  }
+
+  public listInformationImagesForDevice(principal: DevicePrincipal): InformationImageDTO[] {
+    this.assertRoomDevice(principal);
+    return this.listInformationImages();
+  }
+
+  public assertInformationCarouselAccess(principal: DevicePrincipal): void {
+    this.assertRoomDevice(principal);
+  }
+
+  public getInformationImageContentForDevice(principal: DevicePrincipal, id: string, requestedVariant?: InformationImageVariant, requestedLanguage?: InformationImageLanguage): { image: InformationImageDTO; bytes: Buffer } | null {
+    this.assertRoomDevice(principal);
+    return this.getInformationImageContent(id, requestedVariant, requestedLanguage);
+  }
+
   public getHealth(): HealthDTO {
     try {
       const migration = this.db.prepare('SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1').get() as { version: number } | undefined;
@@ -379,6 +652,27 @@ export class HotelService {
       configured: row !== undefined,
       displayHint: row === undefined ? null : row.display_name
     };
+  }
+
+  public runIdempotentMutation<T>(
+    actor: Actor,
+    idempotencyKey: string,
+    operation: string,
+    requestHash: string,
+    resourceId: string | null,
+    mutation: () => T,
+    responseStatus = 200
+  ): MutationResult<T> {
+    const key = validateIdempotencyKey(idempotencyKey);
+    return this.mutate(() => {
+      const replay = this.getIdempotentResult<T>(actor, key, operation, requestHash);
+      if (replay !== undefined) {
+        return { data: replay, idempotentReplay: true };
+      }
+      const data = mutation();
+      this.storeIdempotency(actor, key, operation, requestHash, data, responseStatus, resourceId);
+      return { data, idempotentReplay: false };
+    });
   }
 
   public createAdmin(input: AdminCreateInput, actor: Actor, requestId: string): AdminDTO {
@@ -483,10 +777,28 @@ export class HotelService {
     this.getAdminRow(adminId);
     const now = new Date().toISOString();
     this.mutate(() => {
-      this.db.prepare('UPDATE admin_sessions SET revoked_at = ? WHERE admin_id = ? AND revoked_at IS NULL').run(now, adminId);
-      this.audit({ actorType: 'ADMIN', actorId: principal.adminId }, 'ADMIN_SESSIONS_REVOKED', 'ADMIN', adminId, requestId, {});
+      this.revokeAdminSessionsInTransaction(principal, adminId, requestId, now);
     });
     this.notifySecurityChange({ kind: 'ADMIN', id: adminId });
+  }
+
+  public revokeAdminSessionsIdempotent(principal: AdminPrincipal, adminId: string, idempotencyKey: string | undefined, requestId: string): MutationResult<{ revoked: true }> {
+    const key = validateIdempotencyKey(idempotencyKey);
+    const actor: Actor = { actorType: 'ADMIN', actorId: principal.adminId };
+    const requestHash = hashJson({ adminId });
+    const result = this.mutate(() => {
+      const replay = this.getIdempotentResult<{ revoked: true }>(actor, key, 'admin.sessions.revoke', requestHash);
+      if (replay !== undefined) {
+        return { data: replay, idempotentReplay: true };
+      }
+      const now = new Date().toISOString();
+      this.revokeAdminSessionsInTransaction(principal, adminId, requestId, now);
+      const data = { revoked: true } as const;
+      this.storeIdempotency(actor, key, 'admin.sessions.revoke', requestHash, data, 200, adminId);
+      return { data, idempotentReplay: false };
+    });
+    this.notifySecurityChange({ kind: 'ADMIN', id: adminId });
+    return result;
   }
 
   public changeAdminPassword(principal: AdminPrincipal, adminId: string, currentPassword: string, newPassword: string, requestId: string): AdminDTO {
@@ -569,11 +881,15 @@ export class HotelService {
       this.assertRoomCanDeactivate(id);
     }
     const now = new Date().toISOString();
+    let doNotDisturbActivatedAt: string | null = null;
+    if (nextDoNotDisturb) {
+      doNotDisturbActivatedAt = doNotDisturbChanged ? now : existing.do_not_disturb_activated_at;
+    }
     return this.mutate(() => {
       try {
-        this.db.prepare('UPDATE rooms SET code = ?, display_name = ?, floor = ?, display_order = ?, active = ?, do_not_disturb = ?, updated_at = ? WHERE id = ?').run(
+        this.db.prepare('UPDATE rooms SET code = ?, display_name = ?, floor = ?, display_order = ?, active = ?, do_not_disturb = ?, do_not_disturb_activated_at = ?, updated_at = ? WHERE id = ?').run(
           input.code ?? existing.code, input.displayName ?? existing.display_name, input.floor === undefined ? existing.floor : input.floor,
-          input.displayOrder ?? existing.display_order, nextActive ? 1 : 0, nextDoNotDisturb ? 1 : 0, now, id
+          input.displayOrder ?? existing.display_order, nextActive ? 1 : 0, nextDoNotDisturb ? 1 : 0, doNotDisturbActivatedAt, now, id
         );
       } catch (error) {
         if (isSqliteConstraintError(error)) {
@@ -610,9 +926,12 @@ export class HotelService {
         throw new AppError('INACTIVE_DEPENDENCY', 'The assigned room is inactive.', 409);
       }
       let room = mapRoom(current);
-      if (Boolean(current.do_not_disturb) !== doNotDisturb) {
+      const doNotDisturbEnabled = Boolean(current.do_not_disturb);
+      const activationTimeMissing = doNotDisturb && current.do_not_disturb_activated_at === null;
+      if (doNotDisturbEnabled !== doNotDisturb || activationTimeMissing) {
         const now = new Date().toISOString();
-        this.db.prepare('UPDATE rooms SET do_not_disturb = ?, updated_at = ? WHERE id = ?').run(doNotDisturb ? 1 : 0, now, current.id);
+        this.db.prepare('UPDATE rooms SET do_not_disturb = ?, do_not_disturb_activated_at = ?, updated_at = ? WHERE id = ?')
+          .run(doNotDisturb ? 1 : 0, doNotDisturb ? now : null, now, current.id);
         this.bumpConfiguration();
         room = this.getRoom(current.id) ?? this.assertImpossible('Updated room disappeared.');
         this.audit(actor, 'ROOM_UPDATED', 'ROOM', current.id, requestId, { doNotDisturb });
@@ -637,8 +956,9 @@ export class HotelService {
     const now = new Date().toISOString();
     return this.mutate(() => {
       try {
-        this.db.prepare('INSERT INTO areas(id, code, display_name, description, display_order, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
-          id, input.code, input.displayName, input.description ?? null, input.displayOrder ?? 0, input.active === false ? 0 : 1, now, now
+        this.db.prepare('INSERT INTO areas(id, code, display_name, display_name_variants_json, description, description_variants_json, display_order, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+          id, input.code, input.displayName, serializeLocalizedTextVariants(input.displayNameVariants), input.description ?? null,
+          serializeLocalizedTextVariants(input.descriptionVariants), input.displayOrder ?? 0, input.active === false ? 0 : 1, now, now
         );
       } catch (error) {
         if (isSqliteConstraintError(error)) {
@@ -663,8 +983,11 @@ export class HotelService {
     const now = new Date().toISOString();
     return this.mutate(() => {
       try {
-        this.db.prepare('UPDATE areas SET code = ?, display_name = ?, description = ?, display_order = ?, active = ?, updated_at = ? WHERE id = ?').run(
-          input.code ?? existing.code, input.displayName ?? existing.display_name, input.description === undefined ? existing.description : input.description,
+        this.db.prepare('UPDATE areas SET code = ?, display_name = ?, display_name_variants_json = ?, description = ?, description_variants_json = ?, display_order = ?, active = ?, updated_at = ? WHERE id = ?').run(
+          input.code ?? existing.code, input.displayName ?? existing.display_name,
+          input.displayNameVariants === undefined ? existing.display_name_variants_json : serializeLocalizedTextVariants(input.displayNameVariants),
+          input.description === undefined ? existing.description : input.description,
+          input.descriptionVariants === undefined ? existing.description_variants_json : serializeLocalizedTextVariants(input.descriptionVariants),
           input.displayOrder ?? existing.display_order, nextActive ? 1 : 0, now, id
         );
       } catch (error) {
@@ -698,8 +1021,10 @@ export class HotelService {
     const now = new Date().toISOString();
     return this.mutate(() => {
       try {
-        this.db.prepare('INSERT INTO services(id, code, display_name, description, icon_key, area_id, display_order, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
-          id, input.code, input.displayName, input.description ?? null, input.iconKey ?? null, input.areaId, input.displayOrder ?? 0, input.active === false ? 0 : 1, now, now
+        this.db.prepare('INSERT INTO services(id, code, display_name, display_name_variants_json, description, description_variants_json, icon_key, area_id, display_order, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+          id, input.code, input.displayName, serializeLocalizedTextVariants(input.displayNameVariants), input.description ?? null,
+          serializeLocalizedTextVariants(input.descriptionVariants), input.iconKey ?? null, input.areaId, input.displayOrder ?? 0,
+          input.active === false ? 0 : 1, now, now
         );
       } catch (error) {
         if (isSqliteConstraintError(error)) {
@@ -726,8 +1051,11 @@ export class HotelService {
     const now = new Date().toISOString();
     return this.mutate(() => {
       try {
-        this.db.prepare('UPDATE services SET code = ?, display_name = ?, description = ?, icon_key = ?, area_id = ?, display_order = ?, active = ?, updated_at = ? WHERE id = ?').run(
-          input.code ?? existing.code, input.displayName ?? existing.display_name, input.description === undefined ? existing.description : input.description,
+        this.db.prepare('UPDATE services SET code = ?, display_name = ?, display_name_variants_json = ?, description = ?, description_variants_json = ?, icon_key = ?, area_id = ?, display_order = ?, active = ?, updated_at = ? WHERE id = ?').run(
+          input.code ?? existing.code, input.displayName ?? existing.display_name,
+          input.displayNameVariants === undefined ? existing.display_name_variants_json : serializeLocalizedTextVariants(input.displayNameVariants),
+          input.description === undefined ? existing.description : input.description,
+          input.descriptionVariants === undefined ? existing.description_variants_json : serializeLocalizedTextVariants(input.descriptionVariants),
           input.iconKey === undefined ? existing.icon_key : input.iconKey, areaId, input.displayOrder ?? existing.display_order, nextActive ? 1 : 0, now, id
         );
       } catch (error) {
@@ -761,8 +1089,11 @@ export class HotelService {
 
   public bootstrapDevice(input: DeviceCreateInput, actor: Actor, requestId: string): DeviceBootstrapResult {
     const assignment = this.resolveAssignment(input.assignmentMode, input.roomId ?? null, input.areaId ?? null);
-    const existing = this.db.prepare('SELECT id FROM devices WHERE installation_id = ?').get(input.installationId) as { id: string } | undefined;
+    const existing = this.db.prepare('SELECT id, retired_at FROM devices WHERE installation_id = ?').get(input.installationId) as { id: string; retired_at: string | null } | undefined;
     if (existing !== undefined) {
+      if (existing.retired_at !== null) {
+        throw conflictError('This browser installation belongs to a retired device. A new installation identity is required.', { reason: 'RETIRED_INSTALLATION' });
+      }
       throw conflictError('This browser installation is already bound to a device.');
     }
     const id = createId('dev');
@@ -795,16 +1126,53 @@ export class HotelService {
     });
   }
 
+  public bootstrapDeviceIdempotent(input: DeviceCreateInput, actor: Actor, idempotencyKey: string | undefined, requestId: string): MutationResult<DeviceBootstrapResult> {
+    const key = validateIdempotencyKey(idempotencyKey);
+    const requestHash = hashJson(input);
+    return this.mutate(() => {
+      const replay = this.getIdempotentResult<StoredRebindResult>(actor, key, 'device.bootstrap', requestHash);
+      if (replay !== undefined) {
+        return {
+          data: {
+            device: replay.device,
+            deviceToken: decryptIdempotencySecret(replay.encryptedDeviceToken, this.config.tokenPepper),
+            tokenPrefix: replay.tokenPrefix,
+            configurationRevision: replay.configurationRevision
+          },
+          idempotentReplay: true,
+          configurationRevision: replay.configurationRevision
+        };
+      }
+
+      const data = this.bootstrapDevice(input, actor, requestId);
+      this.storeIdempotency(actor, key, 'device.bootstrap', requestHash, {
+        device: data.device,
+        encryptedDeviceToken: encryptIdempotencySecret(data.deviceToken, this.config.tokenPepper),
+        tokenPrefix: data.tokenPrefix,
+        configurationRevision: data.configurationRevision
+      } satisfies StoredRebindResult, 201, data.device.id);
+      return { data, idempotentReplay: false, configurationRevision: data.configurationRevision };
+    });
+  }
+
   public authenticateDeviceToken(rawToken: string | undefined): DeviceTokenPrincipal {
     if (rawToken === undefined || rawToken.length === 0) {
       throw new AppError('AUTH_REQUIRED', 'A device bearer token is required.', 401);
     }
     const hash = hashToken(rawToken, this.config.tokenPepper);
+    const nowIso = new Date().toISOString();
     const row = this.db.prepare(`
-      SELECT d.*, t.id AS token_id, t.token_hash, t.revoked_at AS token_revoked_at
+      SELECT d.*, t.id AS token_id, t.token_hash, t.revoked_at AS token_revoked_at,
+        EXISTS (
+          SELECT 1
+          FROM device_token_rotations r
+          WHERE r.previous_token_id = t.id
+            AND r.state IN ('ROTATION_PENDING', 'CLAIMED')
+            AND r.grace_expires_at <= ?
+        ) AS rotation_grace_expired
       FROM device_tokens t JOIN devices d ON d.id = t.device_id
       WHERE t.token_hash = ?
-    `).get(hash) as DeviceTokenRow | undefined;
+    `).get(nowIso, hash) as DeviceTokenRow | undefined;
     if (row === undefined) {
       throw new AppError('AUTH_INVALID', 'Device authentication failed.', 401);
     }
@@ -813,6 +1181,9 @@ export class HotelService {
     }
     if (row.retired_at !== null || !row.active) {
       throw new AppError('DEVICE_INACTIVE', 'This device is inactive.', 403);
+    }
+    if (row.rotation_grace_expired) {
+      throw new AppError('TOKEN_ROTATION_EXPIRED', 'This token rotation is expired or unavailable.', 409);
     }
     this.db.prepare('UPDATE device_tokens SET last_used_at = ? WHERE id = ?').run(new Date().toISOString(), row.token_id);
     return { principal: devicePrincipal(row), tokenId: row.token_id };
@@ -875,14 +1246,24 @@ export class HotelService {
     if (existing.retired_at !== null) {
       throw new AppError('RESOURCE_CONFLICT', 'A retired device cannot be reactivated.', 409);
     }
+    if (input.expectedDeviceConfigVersion !== undefined && existing.device_config_version !== input.expectedDeviceConfigVersion) {
+      throw new AppError('VERSION_CONFLICT', 'The device configuration changed before this action was applied.', 409, { currentVersion: existing.device_config_version });
+    }
     const nextActive = input.active ?? Boolean(existing.active);
+    const nextVersion = existing.device_config_version + 1;
     const now = new Date().toISOString();
     const result = this.mutate(() => {
       if (nextActive && existing.assignment_mode === 'ROOM') {
         this.assertActiveRoomAssignmentAvailable(existing.room_id ?? this.assertImpossible('Room assignment is missing.'), id);
       }
       try {
-        this.db.prepare('UPDATE devices SET display_name = ?, active = ?, updated_at = ? WHERE id = ?').run(input.displayName ?? existing.display_name, nextActive ? 1 : 0, now, id);
+        const update = input.expectedDeviceConfigVersion === undefined
+          ? this.db.prepare('UPDATE devices SET display_name = ?, active = ?, device_config_version = ?, updated_at = ? WHERE id = ?').run(input.displayName ?? existing.display_name, nextActive ? 1 : 0, nextVersion, now, id)
+          : this.db.prepare('UPDATE devices SET display_name = ?, active = ?, device_config_version = ?, updated_at = ? WHERE id = ? AND device_config_version = ?').run(input.displayName ?? existing.display_name, nextActive ? 1 : 0, nextVersion, now, id, input.expectedDeviceConfigVersion);
+        if (update.changes !== 1) {
+          const current = this.getDeviceRow(id);
+          throw new AppError('VERSION_CONFLICT', 'The device configuration changed before this action was applied.', 409, { currentVersion: current.device_config_version });
+        }
       } catch (error) {
         if (isSqliteConstraintError(error)) {
           throw conflictError('An active ROOM device is already assigned to this room.');
@@ -894,7 +1275,7 @@ export class HotelService {
       }
       const revision = this.bumpConfiguration();
       this.audit({ actorType: 'ADMIN', actorId: principal.adminId }, nextActive ? 'DEVICE_ACTIVATED' : 'DEVICE_DEACTIVATED', 'DEVICE', id, requestId, {});
-      this.appendDeviceConfigEvent(id, revision, existing.device_config_version, existing.assignment_mode, existing.room_id, existing.area_id, nextActive ? 'DEVICE_ACTIVATED' : 'DEVICE_DEACTIVATED');
+      this.appendDeviceConfigEvent(id, revision, nextVersion, existing.assignment_mode, existing.room_id, existing.area_id, nextActive ? 'DEVICE_ACTIVATED' : 'DEVICE_DEACTIVATED');
       if (!nextActive && existing.active && existing.assignment_mode === 'ROOM' && existing.room_id !== null) {
         this.clearRoomDoNotDisturb(existing.room_id, { actorType: 'ADMIN', actorId: principal.adminId }, requestId);
       }
@@ -922,9 +1303,13 @@ export class HotelService {
         this.assertActiveRoomAssignmentAvailable(assignment.roomId ?? this.assertImpossible('Room assignment is missing.'), id);
       }
       try {
-        this.db.prepare('UPDATE devices SET assignment_mode = ?, room_id = ?, area_id = ?, device_config_version = ?, updated_at = ? WHERE id = ? AND device_config_version = ?').run(
+        const update = this.db.prepare('UPDATE devices SET assignment_mode = ?, room_id = ?, area_id = ?, device_config_version = ?, updated_at = ? WHERE id = ? AND device_config_version = ?').run(
           input.assignmentMode, assignment.roomId, assignment.areaId, nextVersion, now, id, input.expectedDeviceConfigVersion
         );
+        if (update.changes !== 1) {
+          const current = this.getDeviceRow(id);
+          throw new AppError('VERSION_CONFLICT', 'The device configuration changed before this action was applied.', 409, { currentVersion: current.device_config_version });
+        }
       } catch (error) {
         if (isSqliteConstraintError(error)) {
           throw conflictError('An active ROOM device is already assigned to this room.');
@@ -947,22 +1332,32 @@ export class HotelService {
     if (activeToken === undefined) {
       throw new AppError('DEVICE_TOKEN_REVOKED', 'The device has no active token.', 409);
     }
-    const pending = this.db.prepare("SELECT id FROM device_token_rotations WHERE device_id = ? AND state IN ('ROTATION_PENDING', 'CLAIMED')").get(deviceId) as { id: string } | undefined;
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const pending = this.db.prepare("SELECT id FROM device_token_rotations WHERE device_id = ? AND state IN ('ROTATION_PENDING', 'CLAIMED') AND grace_expires_at > ?").get(deviceId, nowIso) as { id: string } | undefined;
     if (pending !== undefined) {
       throw conflictError('A token rotation is already pending for this device.');
     }
     const rotationId = createId('rot');
-    const now = new Date();
     const graceExpiresAt = new Date(now.getTime() + gracePeriodMinutes * 60000).toISOString();
-    const revision = this.mutate(() => {
-      this.db.prepare('INSERT INTO device_token_rotations(id, device_id, previous_token_id, state, created_at, grace_expires_at) VALUES (?, ?, ?, ?, ?, ?)').run(
-        rotationId, deviceId, activeToken.id, 'ROTATION_PENDING', now.toISOString(), graceExpiresAt
-      );
-      const nextRevision = this.bumpConfiguration();
-      this.audit({ actorType: 'ADMIN', actorId: principal.adminId }, 'DEVICE_TOKEN_ROTATION_STARTED', 'DEVICE', deviceId, requestId, { reason });
-      this.appendOutbox('device.token.rotation.required', 'DEVICE', deviceId, device.device_config_version, { deviceId, rotationId, state: 'ROTATION_PENDING', graceExpiresAt, configurationRevision: nextRevision });
-      return nextRevision;
-    });
+    let revision: number;
+    try {
+      revision = this.mutate(() => {
+        this.db.prepare("UPDATE device_token_rotations SET state = 'EXPIRED' WHERE device_id = ? AND state IN ('ROTATION_PENDING', 'CLAIMED') AND grace_expires_at <= ?").run(deviceId, nowIso);
+        this.db.prepare('INSERT INTO device_token_rotations(id, device_id, previous_token_id, state, created_at, grace_expires_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+          rotationId, deviceId, activeToken.id, 'ROTATION_PENDING', nowIso, graceExpiresAt
+        );
+        const nextRevision = this.bumpConfiguration();
+        this.audit({ actorType: 'ADMIN', actorId: principal.adminId }, 'DEVICE_TOKEN_ROTATION_STARTED', 'DEVICE', deviceId, requestId, { reason });
+        this.appendOutbox('device.token.rotation.required', 'DEVICE', deviceId, device.device_config_version, { deviceId, rotationId, state: 'ROTATION_PENDING', graceExpiresAt, configurationRevision: nextRevision });
+        return nextRevision;
+      });
+    } catch (error) {
+      if (isSqliteConstraintError(error)) {
+        throw conflictError('A token rotation is already pending for this device.');
+      }
+      throw error;
+    }
     void revision;
     return { rotationId, state: 'ROTATION_PENDING', graceExpiresAt };
   }
@@ -981,12 +1376,18 @@ export class HotelService {
     if (rotation.state === 'CLAIMED') {
       throw new AppError('TOKEN_ROTATION_EXPIRED', 'The replacement token was already claimed and cannot be recovered.', 409);
     }
+    if (rotation.state !== 'ROTATION_PENDING') {
+      throw new AppError('TOKEN_ROTATION_EXPIRED', 'This token rotation is expired or unavailable.', 409);
+    }
     const rawToken = createRawToken();
     const now = new Date().toISOString();
     return this.mutate(() => {
-      this.db.prepare("UPDATE device_token_rotations SET new_token_hash = ?, new_token_prefix = ?, state = 'CLAIMED', claimed_at = ? WHERE id = ? AND state = 'ROTATION_PENDING'").run(
+      const update = this.db.prepare("UPDATE device_token_rotations SET new_token_hash = ?, new_token_prefix = ?, state = 'CLAIMED', claimed_at = ? WHERE id = ? AND state = 'ROTATION_PENDING'").run(
         hashToken(rawToken, this.config.tokenPepper), rawToken.slice(0, 8), now, rotationId
       );
+      if (update.changes !== 1) {
+        throw new AppError('TOKEN_ROTATION_EXPIRED', 'The replacement token was already claimed and cannot be recovered.', 409);
+      }
       return { rotationId, deviceToken: rawToken, tokenPrefix: rawToken.slice(0, 8) };
     });
   }
@@ -1041,10 +1442,28 @@ export class HotelService {
     this.getDeviceRow(deviceId);
     const now = new Date().toISOString();
     this.mutate(() => {
-      this.db.prepare('UPDATE device_tokens SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL').run(now, deviceId);
-      this.audit({ actorType: 'ADMIN', actorId: principal.adminId }, 'DEVICE_TOKEN_REVOKED', 'DEVICE', deviceId, requestId, {});
+      this.revokeDeviceTokenInTransaction(principal, deviceId, requestId, now);
     });
     this.notifySecurityChange({ kind: 'DEVICE', id: deviceId });
+  }
+
+  public revokeDeviceTokenIdempotent(principal: AdminPrincipal, deviceId: string, idempotencyKey: string | undefined, requestId: string): MutationResult<{ revoked: true }> {
+    const key = validateIdempotencyKey(idempotencyKey);
+    const actor: Actor = { actorType: 'ADMIN', actorId: principal.adminId };
+    const requestHash = hashJson({ deviceId });
+    const result = this.mutate(() => {
+      const replay = this.getIdempotentResult<{ revoked: true }>(actor, key, 'device.token.revoke', requestHash);
+      if (replay !== undefined) {
+        return { data: replay, idempotentReplay: true };
+      }
+      const now = new Date().toISOString();
+      this.revokeDeviceTokenInTransaction(principal, deviceId, requestId, now);
+      const data = { revoked: true } as const;
+      this.storeIdempotency(actor, key, 'device.token.revoke', requestHash, data, 200, deviceId);
+      return { data, idempotentReplay: false };
+    });
+    this.notifySecurityChange({ kind: 'DEVICE', id: deviceId });
+    return result;
   }
 
   public retireDevice(principal: AdminPrincipal, deviceId: string, idempotencyKey: string | undefined, requestId: string): MutationResult<DeviceRetirementResult> {
@@ -1133,12 +1552,51 @@ export class HotelService {
       throw new AppError('DEVICE_INACTIVE', 'This device is inactive.', 403);
     }
     const now = new Date().toISOString();
-    this.db.prepare('UPDATE devices SET last_seen_at = ?, last_heartbeat_at = ?, last_ip = ?, last_user_agent = ?, client_version = ?, updated_at = ? WHERE id = ? AND active = 1').run(
-      now, now, sourceIp ?? null, userAgent ?? null, input.clientVersion ?? null, now, principal.deviceId
-    );
-    this.db.prepare('INSERT INTO device_heartbeat_log(device_id, observed_at, client_version, source_ip, socket_connected) VALUES (?, ?, ?, ?, ?)').run(
-      principal.deviceId, now, input.clientVersion ?? null, sourceIp ?? null, input.socketConnected === false ? 0 : 1
-    );
+    this.mutate(() => {
+      this.db.prepare('UPDATE devices SET last_seen_at = ?, last_heartbeat_at = ?, last_ip = ?, last_user_agent = ?, client_version = ?, updated_at = ? WHERE id = ? AND active = 1').run(
+        now, now, sourceIp ?? null, userAgent ?? null, input.clientVersion ?? null, now, principal.deviceId
+      );
+      this.db.prepare('INSERT INTO device_heartbeat_log(device_id, observed_at, client_version, source_ip, socket_connected) VALUES (?, ?, ?, ?, ?)').run(
+        principal.deviceId, now, input.clientVersion ?? null, sourceIp ?? null, input.socketConnected === false ? 0 : 1
+      );
+    });
+  }
+
+  public getDeviceControlTarget(deviceId: string): DeviceControlTarget {
+    const device = this.getDeviceRow(deviceId);
+    if (device.retired_at !== null || !device.active) {
+      throw new AppError('DEVICE_INACTIVE', 'This device is inactive.', 409);
+    }
+    if (device.last_ip === null || device.last_ip.trim() === '') {
+      throw new AppError('DEVICE_CONTROL_UNAVAILABLE', 'The device has not reported a network address.', 409);
+    }
+    if (device.last_heartbeat_at === null) {
+      throw new AppError('DEVICE_CONTROL_UNAVAILABLE', 'The device has not reported a recent heartbeat.', 409);
+    }
+    const lastHeartbeatAt = new Date(device.last_heartbeat_at).getTime();
+    if (!Number.isFinite(lastHeartbeatAt) || Date.now() - lastHeartbeatAt >= this.config.deviceOfflineAfterMs) {
+      throw new AppError('DEVICE_CONTROL_UNAVAILABLE', 'The device heartbeat is too old for remote control.', 409);
+    }
+    return { deviceId: device.id, lastIp: device.last_ip };
+  }
+
+  public getDeviceControlReplay(principal: AdminPrincipal, deviceId: string, idempotencyKey: string | undefined): DeviceControlResult | undefined {
+    const actor: Actor = { actorType: 'ADMIN', actorId: principal.adminId };
+    const key = validateIdempotencyKey(idempotencyKey);
+    return this.getIdempotentResult<DeviceControlResult>(actor, key, DEVICE_BEEP_OPERATION, hashJson({ deviceId }));
+  }
+
+  public storeDeviceControlResult(principal: AdminPrincipal, deviceId: string, idempotencyKey: string | undefined, result: DeviceControlResult): void {
+    const actor: Actor = { actorType: 'ADMIN', actorId: principal.adminId };
+    const key = validateIdempotencyKey(idempotencyKey);
+    const requestHash = hashJson({ deviceId });
+    this.mutate(() => {
+      this.storeIdempotency(actor, key, DEVICE_BEEP_OPERATION, requestHash, result, 200, deviceId);
+    });
+  }
+
+  public recordDeviceControl(principal: AdminPrincipal, deviceId: string, command: 'audioBeep', outcome: 'SUCCEEDED' | 'FAILED', requestId: string): void {
+    this.audit({ actorType: 'ADMIN', actorId: principal.adminId }, 'DEVICE_CONTROL_BEEP', 'DEVICE', deviceId, requestId, { command, outcome });
   }
 
   public getDeviceSnapshot(principal: DevicePrincipal): DeviceSyncSnapshot {
@@ -1147,7 +1605,9 @@ export class HotelService {
       const device = this.getDeviceRow(principal.deviceId);
       const config = this.getDeviceConfig(device);
       const requestFilters: RequestFilters = {
-        statuses: ['PENDING', 'ACCEPTED', 'IN_PROGRESS'],
+        statuses: principal.assignmentMode === 'AREA'
+          ? ['PENDING', 'ACCEPTED', 'IN_PROGRESS', 'COMPLETED']
+          : ['PENDING', 'ACCEPTED', 'IN_PROGRESS'],
         limit: 100
       };
       if (principal.assignmentMode === 'ROOM' && principal.roomId !== null) {
@@ -1199,7 +1659,7 @@ export class HotelService {
 
   private listActiveDoNotDisturbRooms(): CompactRoom[] {
     const rows = this.db.prepare(
-      `SELECT r.id, r.code, r.display_name, r.do_not_disturb
+      `SELECT r.id, r.code, r.display_name, r.do_not_disturb, r.do_not_disturb_activated_at
        FROM rooms r
        WHERE r.active = 1 AND r.do_not_disturb = 1
          AND EXISTS (
@@ -1207,12 +1667,13 @@ export class HotelService {
            WHERE d.assignment_mode = 'ROOM' AND d.room_id = r.id AND d.active = 1 AND d.retired_at IS NULL
          )
        ORDER BY r.display_order, r.code, r.id`
-    ).all() as Array<Pick<RoomRow, 'id' | 'code' | 'display_name' | 'do_not_disturb'>>;
+    ).all() as Array<Pick<RoomRow, 'id' | 'code' | 'display_name' | 'do_not_disturb' | 'do_not_disturb_activated_at'>>;
     return rows.map((row) => ({
       id: row.id,
       code: row.code,
       displayName: row.display_name,
-      doNotDisturb: Boolean(row.do_not_disturb)
+      doNotDisturb: Boolean(row.do_not_disturb),
+      doNotDisturbActivatedAt: row.do_not_disturb_activated_at
     }));
   }
 
@@ -1241,18 +1702,18 @@ export class HotelService {
       const id = createId('req');
       this.db.prepare(`INSERT INTO requests(
         id, room_id, service_id, responsible_area_id, status, version, created_by_actor_type, created_by_actor_id,
-        room_code_snapshot, room_display_name_snapshot, service_code_snapshot, service_display_name_snapshot,
-        area_code_snapshot, area_display_name_snapshot, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'PENDING', 1, 'DEVICE', ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        room_code_snapshot, room_display_name_snapshot, service_code_snapshot, service_display_name_snapshot, service_display_name_variants_snapshot_json,
+        area_code_snapshot, area_display_name_snapshot, area_display_name_variants_snapshot_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'PENDING', 1, 'DEVICE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         id, room.id, service.id, area.id, principal.deviceId, room.code, room.display_name, service.code, service.display_name,
-        area.code, area.display_name, now, now
+        service.display_name_variants_json, area.code, area.display_name, area.display_name_variants_json, now, now
       );
       const request = this.getRequest(id) ?? this.assertImpossible('Created request disappeared.');
       this.db.prepare('INSERT INTO request_status_history(id, request_id, from_status, to_status, actor_type, actor_id, request_version, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)').run(
         createId('hist'), id, 'PENDING', actor.actorType, actor.actorId, 1, now
       );
       this.audit(actor, 'REQUEST_CREATED', 'REQUEST', id, requestId, {});
-      this.appendOutbox('request.created', 'REQUEST', id, 1, { request, alert: { repeatUntil: 'ACCEPTED' } });
+      this.appendOutbox('request.created', 'REQUEST', id, 1, { request, alert: { repeatUntil: 'IN_PROGRESS' } });
       this.storeIdempotency(actor, key, 'request.create', requestHash, request, 201, id);
       return { data: request, idempotentReplay: false };
     });
@@ -1394,7 +1855,7 @@ export class HotelService {
     return this.listRequestsPage({
       ...filters,
       areaId: principal.areaId,
-      statuses: filters.statuses ?? ['PENDING', 'ACCEPTED', 'IN_PROGRESS'],
+      statuses: filters.statuses ?? ['PENDING', 'ACCEPTED', 'IN_PROGRESS', 'COMPLETED'],
       limit: filters.limit ?? 100
     });
   }
@@ -1436,20 +1897,23 @@ export class HotelService {
   }
 
   public getAdminSnapshot(): AdminSystemSnapshot {
-    const rooms = this.listRooms();
-    const areas = this.listAreas();
-    const services = this.listServices();
-    const devices = this.listDevices();
-    const requests = this.listRequests({ limit: 100, includeCreator: true });
-    const admins = this.listAdmins();
-    const settings = this.listSettings();
-    const auditLog = this.getAuditLog(100);
-    const warnings: AdminWarningCode[] = [];
-    if (areas.every((area) => !area.active)) warnings.push('NO_ACTIVE_AREAS');
-    if (services.some((service) => service.active && !areas.some((area) => area.id === service.areaId && area.active))) warnings.push('ACTIVE_SERVICE_WITHOUT_AREA');
-    if (rooms.some((room) => room.active && services.every((service) => !service.active))) warnings.push('ACTIVE_ROOM_WITHOUT_SERVICE');
-    if (devices.some((device) => device.active && ((device.assignmentMode === 'ROOM' && !rooms.some((room) => room.id === device.roomId && room.active)) || (device.assignmentMode === 'AREA' && !areas.some((area) => area.id === device.areaId && area.active))))) warnings.push('INVALID_ACTIVE_DEVICE_ASSIGNMENT');
-    return { configurationRevision: this.getConfigurationRevision(), rooms, areas, services, devices, requests, admins, settings, auditLog, outboxBacklog: this.getOutboxBacklog(), warnings };
+    return this.db.transaction(() => {
+      const rooms = this.listRooms();
+      const areas = this.listAreas();
+      const services = this.listServices();
+      const devices = this.listDevices();
+      const requests = this.listRequests({ limit: 100, includeCreator: true });
+      const admins = this.listAdmins();
+      const settings = this.listSettings();
+      const informationImages = this.listInformationImages();
+      const auditLog = this.getAuditLog(100);
+      const warnings: AdminWarningCode[] = [];
+      if (areas.every((area) => !area.active)) warnings.push('NO_ACTIVE_AREAS');
+      if (services.some((service) => service.active && !areas.some((area) => area.id === service.areaId && area.active))) warnings.push('ACTIVE_SERVICE_WITHOUT_AREA');
+      if (rooms.some((room) => room.active && services.every((service) => !service.active))) warnings.push('ACTIVE_ROOM_WITHOUT_SERVICE');
+      if (devices.some((device) => device.active && ((device.assignmentMode === 'ROOM' && !rooms.some((room) => room.id === device.roomId && room.active)) || (device.assignmentMode === 'AREA' && !areas.some((area) => area.id === device.areaId && area.active))))) warnings.push('INVALID_ACTIVE_DEVICE_ASSIGNMENT');
+      return { configurationRevision: this.getConfigurationRevision(), rooms, areas, services, devices, requests, admins, settings, auditLog, outboxBacklog: this.getOutboxBacklog(), warnings, informationImages };
+    }).deferred();
   }
 
   public getReplayPlan(lastSeenEventSequence: number | undefined, deviceConfigVersion: number | undefined, principal: Principal): ReplayPlan {
@@ -1552,7 +2016,20 @@ export class HotelService {
     return row.response_json === null ? undefined : JSON.parse(row.response_json) as T;
   }
 
-  private storeIdempotency(actor: Actor, key: string, operation: string, requestHash: string, response: unknown, status: number, resourceId: string): void {
+  private revokeDeviceTokenInTransaction(principal: AdminPrincipal, deviceId: string, requestId: string, revokedAt: string): void {
+    this.getDeviceRow(deviceId);
+    this.db.prepare('UPDATE device_tokens SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL').run(revokedAt, deviceId);
+    this.db.prepare("UPDATE device_token_rotations SET state = 'CANCELLED', cancelled_at = ? WHERE device_id = ? AND state IN ('ROTATION_PENDING', 'CLAIMED')").run(revokedAt, deviceId);
+    this.audit({ actorType: 'ADMIN', actorId: principal.adminId }, 'DEVICE_TOKEN_REVOKED', 'DEVICE', deviceId, requestId, {});
+  }
+
+  private revokeAdminSessionsInTransaction(principal: AdminPrincipal, adminId: string, requestId: string, revokedAt: string): void {
+    this.getAdminRow(adminId);
+    this.db.prepare('UPDATE admin_sessions SET revoked_at = ? WHERE admin_id = ? AND revoked_at IS NULL').run(revokedAt, adminId);
+    this.audit({ actorType: 'ADMIN', actorId: principal.adminId }, 'ADMIN_SESSIONS_REVOKED', 'ADMIN', adminId, requestId, {});
+  }
+
+  private storeIdempotency(actor: Actor, key: string, operation: string, requestHash: string, response: unknown, status: number, resourceId: string | null): void {
     const created = new Date();
     const expires = new Date(created.getTime() + this.getSettings()['idempotency.retentionHours'] * 3600000).toISOString();
     this.db.prepare('INSERT INTO idempotency_keys(id, actor_type, actor_id, key, operation, request_hash, response_status, response_json, resource_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
@@ -1562,8 +2039,8 @@ export class HotelService {
 
   private insertRoom(id: string, input: RoomCreateInput, now: string): void {
     try {
-      this.db.prepare('INSERT INTO rooms(id, code, display_name, floor, display_order, active, do_not_disturb, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
-        id, input.code, input.displayName, input.floor ?? null, input.displayOrder ?? 0, input.active === false ? 0 : 1, input.doNotDisturb === true ? 1 : 0, now, now
+      this.db.prepare('INSERT INTO rooms(id, code, display_name, floor, display_order, active, do_not_disturb, do_not_disturb_activated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+        id, input.code, input.displayName, input.floor ?? null, input.displayOrder ?? 0, input.active === false ? 0 : 1, input.doNotDisturb === true ? 1 : 0, input.doNotDisturb === true ? now : null, now, now
       );
     } catch (error) {
       if (isSqliteConstraintError(error)) throw conflictError('A room with that code already exists.');
@@ -1609,6 +2086,10 @@ export class HotelService {
       services,
       areas,
       hotelName: settings.hotelName,
+      hotelNameVariants: {
+        ...(settings.hotelNameEn.trim().length === 0 ? {} : { en: settings.hotelNameEn }),
+        es: settings.hotelName
+      },
       hotelLogo: settings.hotelLogo,
       roomBackground: settings.roomBackground,
       clockFormat: settings.clockFormat,
@@ -1616,7 +2097,10 @@ export class HotelService {
       heartbeatIntervalMs: settings['heartbeat.intervalMs'],
       heartbeatStaleAfterMs: settings['heartbeat.staleAfterMs'],
       heartbeatOfflineAfterMs: settings['heartbeat.offlineAfterMs'],
-      pendingAlertIntervalMs: settings['alerts.pendingRepeatMs']
+      pendingAlertIntervalMs: settings['alerts.pendingRepeatMs'],
+      informationIdleTimeoutSeconds: settings['information.idleTimeoutSeconds'],
+      informationSlideIntervalSeconds: settings['information.slideIntervalSeconds'],
+      ...(device.assignment_mode === 'ROOM' ? { informationImages: this.listInformationImages() } : {})
     };
   }
 
@@ -1676,7 +2160,7 @@ export class HotelService {
     if (!current.do_not_disturb) return;
 
     const now = new Date().toISOString();
-    const update = this.db.prepare('UPDATE rooms SET do_not_disturb = 0, updated_at = ? WHERE id = ? AND do_not_disturb = 1').run(now, roomId);
+    const update = this.db.prepare('UPDATE rooms SET do_not_disturb = 0, do_not_disturb_activated_at = NULL, updated_at = ? WHERE id = ? AND do_not_disturb = 1').run(now, roomId);
     if (update.changes !== 1) return;
 
     const room = this.getRoom(roomId) ?? this.assertImpossible('Updated room disappeared.');
@@ -1704,10 +2188,18 @@ export class HotelService {
   }
 
   private mutate<T>(operation: () => T): T {
-    const transaction = this.db.transaction(operation);
-    const result = transaction.immediate();
-    this.onCommitted?.();
-    return result;
+    if (this.mutationDepth > 0) {
+      return operation();
+    }
+    this.mutationDepth += 1;
+    try {
+      const transaction = this.db.transaction(operation);
+      const result = transaction.immediate();
+      this.onCommitted?.();
+      return result;
+    } finally {
+      this.mutationDepth -= 1;
+    }
   }
 
   private notifySecurityChange(change: SecurityChange): void {
@@ -1756,14 +2248,27 @@ export class HotelService {
   }
 
   private mapRequest(row: RequestRow, includeCreator = false): RequestDTO {
+    const serviceDisplayNameVariants = parseLocalizedTextVariants(row.service_display_name_variants_snapshot_json);
+    const areaDisplayNameVariants = parseLocalizedTextVariants(row.area_display_name_variants_snapshot_json);
     const request: RequestDTO = {
       id: row.id,
       roomId: row.room_id,
       serviceId: row.service_id,
       responsibleAreaId: row.responsible_area_id,
        room: { id: row.room_id, code: row.room_code_snapshot, displayName: row.room_display_name_snapshot, doNotDisturb: Boolean(row.room_do_not_disturb) },
-       service: { id: row.service_id, code: row.service_code_snapshot, displayName: row.service_display_name_snapshot, iconKey: row.service_icon_key },
-      responsibleArea: { id: row.responsible_area_id, code: row.area_code_snapshot, displayName: row.area_display_name_snapshot },
+       service: {
+         id: row.service_id,
+         code: row.service_code_snapshot,
+         displayName: row.service_display_name_snapshot,
+         ...(serviceDisplayNameVariants === undefined ? {} : { displayNameVariants: serviceDisplayNameVariants }),
+         iconKey: row.service_icon_key
+       },
+      responsibleArea: {
+        id: row.responsible_area_id,
+        code: row.area_code_snapshot,
+        displayName: row.area_display_name_snapshot,
+        ...(areaDisplayNameVariants === undefined ? {} : { displayNameVariants: areaDisplayNameVariants })
+      },
       status: row.status,
       version: row.version,
       createdAt: row.created_at,
@@ -1781,10 +2286,30 @@ export class HotelService {
   private assertImpossible(message: string): never {
     throw new AppError('INTERNAL_ERROR', message, 500);
   }
+
+  private getInformationImageRow(id: string): InformationImageRow | undefined {
+    return this.db.prepare('SELECT * FROM information_images WHERE id = ?').get(id) as InformationImageRow | undefined;
+  }
+
+  private getInformationImageVariants(id: string): InformationImageVariantRow[] {
+    return this.db.prepare("SELECT * FROM information_image_variants WHERE information_image_id = ? ORDER BY CASE variant WHEN 'wide' THEN 0 ELSE 1 END").all(id) as InformationImageVariantRow[];
+  }
+
+  private getLocalizedInformationImageVariants(id: string): LocalizedInformationImageVariantRow[] {
+    return this.db.prepare("SELECT * FROM information_image_localized_variants WHERE information_image_id = ? ORDER BY CASE language WHEN 'es' THEN 0 ELSE 1 END, CASE variant WHEN 'wide' THEN 0 ELSE 1 END").all(id) as LocalizedInformationImageVariantRow[];
+  }
+
+  private assertRoomDevice(principal: DevicePrincipal): void {
+    if (principal.assignmentMode !== 'ROOM' || principal.roomId === null) {
+      throw new AppError('FORBIDDEN_ASSIGNMENT', 'Information carousel is available only to ROOM devices.', 403);
+    }
+  }
 }
 
 function isSqliteConstraintError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes('SQLITE_CONSTRAINT');
+  if (!(error instanceof Error)) return false;
+  const code = (error as Error & { code?: unknown }).code;
+  return error.message.includes('SQLITE_CONSTRAINT') || (typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT'));
 }
 
 function requestFilterKey(filters: RequestFilters): string {
@@ -1846,15 +2371,43 @@ function parseMetadata(value: string): Record<string, unknown> {
 }
 
 function mapRoom(row: RoomRow): RoomDTO {
-  return { id: row.id, code: row.code, displayName: row.display_name, floor: row.floor, displayOrder: row.display_order, active: Boolean(row.active), doNotDisturb: Boolean(row.do_not_disturb), createdAt: row.created_at, updatedAt: row.updated_at };
+  return { id: row.id, code: row.code, displayName: row.display_name, floor: row.floor, displayOrder: row.display_order, active: Boolean(row.active), doNotDisturb: Boolean(row.do_not_disturb), doNotDisturbActivatedAt: row.do_not_disturb_activated_at, createdAt: row.created_at, updatedAt: row.updated_at };
 }
 
 function mapArea(row: AreaRow): AreaDTO {
-  return { id: row.id, code: row.code, displayName: row.display_name, description: row.description, displayOrder: row.display_order, active: Boolean(row.active), createdAt: row.created_at, updatedAt: row.updated_at };
+  const displayNameVariants = parseLocalizedTextVariants(row.display_name_variants_json);
+  const descriptionVariants = parseLocalizedTextVariants(row.description_variants_json);
+  return {
+    id: row.id,
+    code: row.code,
+    displayName: row.display_name,
+    ...(displayNameVariants === undefined ? {} : { displayNameVariants }),
+    description: row.description,
+    ...(descriptionVariants === undefined ? {} : { descriptionVariants }),
+    displayOrder: row.display_order,
+    active: Boolean(row.active),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
 }
 
 function mapService(row: ServiceRow): ServiceDTO {
-  return { id: row.id, code: row.code, displayName: row.display_name, description: row.description, iconKey: row.icon_key, areaId: row.area_id, active: Boolean(row.active), displayOrder: row.display_order, createdAt: row.created_at, updatedAt: row.updated_at };
+  const displayNameVariants = parseLocalizedTextVariants(row.display_name_variants_json);
+  const descriptionVariants = parseLocalizedTextVariants(row.description_variants_json);
+  return {
+    id: row.id,
+    code: row.code,
+    displayName: row.display_name,
+    ...(displayNameVariants === undefined ? {} : { displayNameVariants }),
+    description: row.description,
+    ...(descriptionVariants === undefined ? {} : { descriptionVariants }),
+    iconKey: row.icon_key,
+    areaId: row.area_id,
+    active: Boolean(row.active),
+    displayOrder: row.display_order,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
 }
 
 function mapDevice(row: DeviceRow, presence: DevicePresence): DeviceDTO {
@@ -1863,6 +2416,109 @@ function mapDevice(row: DeviceRow, presence: DevicePresence): DeviceDTO {
 
 function mapAdmin(row: Omit<AdminRow, 'password_hash' | 'failed_login_count' | 'locked_until'>): AdminDTO {
   return { id: row.id, username: row.username, active: Boolean(row.active), lastLoginAt: row.last_login_at, createdAt: row.created_at, updatedAt: row.updated_at };
+}
+
+type InformationImageContentVariant = InformationImageVariantRow | LocalizedInformationImageVariantRow;
+
+function mapInformationImage(
+  row: InformationImageRow,
+  variants: InformationImageVariantRow[] = [],
+  localizedVariants: LocalizedInformationImageVariantRow[] = [],
+  selectedVariant?: InformationImageContentVariant
+): InformationImageDTO {
+  const metadata = selectedVariant ?? row;
+  const result: InformationImageDTO = {
+    id: row.id,
+    originalName: metadata.original_name,
+    mimeType: metadata.mime_type,
+    byteSize: metadata.byte_size,
+    displayOrder: row.display_order,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+  if (variants.length > 0 || localizedVariants.length > 0) {
+    result.variants = [
+      ...variants.map((variant): InformationImageVariantDTO => ({
+      variant: variant.variant,
+      originalName: variant.original_name,
+      mimeType: variant.mime_type,
+      byteSize: variant.byte_size
+      })),
+      ...localizedVariants.map((variant): InformationImageVariantDTO => ({
+        language: variant.language,
+        variant: variant.variant,
+        originalName: variant.original_name,
+        mimeType: variant.mime_type,
+        byteSize: variant.byte_size
+      }))
+    ];
+  }
+  return result;
+}
+
+function validateInformationImageUploads(
+  uploads: readonly InformationImageUpload[],
+  options: { localizedOnly?: boolean; requireBothLanguages?: boolean } = {}
+): void {
+  if (uploads.length === 0) throw validationError('An image upload is required.');
+  const hasLocalizedUpload = uploads.some((upload) => upload.language !== undefined);
+  if (options.localizedOnly === true && !hasLocalizedUpload) throw validationError('Localized image repairs require a language and size for every file.');
+  if (hasLocalizedUpload) {
+    if (uploads.length > 4) throw validationError('An information image may contain at most four language and size variants.');
+    if (uploads.some((upload) => upload.language === undefined || upload.variant === undefined)) {
+      throw validationError('Localized image uploads require both language and size for every file.');
+    }
+    const keys = uploads.map(({ language, variant }) => `${language}:${variant}`);
+    if (new Set(keys).size !== keys.length) throw validationError('Each information image language and size variant may be uploaded only once.');
+    if (options.requireBothLanguages !== false && new Set(uploads.map((upload) => upload.language)).size !== 2) {
+      throw validationError('A new information image must include at least one English and one Spanish file.');
+    }
+    return;
+  }
+  if (options.localizedOnly === true) throw validationError('Localized image repairs require a language and size for every file.');
+  if (uploads.length > 2) throw validationError('An information image may contain at most two variants.');
+  const hasLegacyUpload = uploads.some((upload) => upload.variant === undefined);
+  if (hasLegacyUpload && uploads.length > 1) throw validationError('A legacy image upload cannot be combined with image variants.');
+  const variants = uploads.flatMap((upload) => upload.variant === undefined ? [] : [upload.variant]);
+  if (new Set(variants).size !== variants.length) throw validationError('Each information image variant may be uploaded only once.');
+}
+
+function selectInformationImageVariant(variants: InformationImageVariantRow[], requestedVariant?: InformationImageVariant): InformationImageVariantRow | undefined {
+  if (requestedVariant !== undefined) {
+    const requested = variants.find((variant) => variant.variant === requestedVariant);
+    if (requested !== undefined) return requested;
+  }
+  return variants[0];
+}
+
+function selectInformationImageContentVariant(
+  variants: InformationImageVariantRow[],
+  localizedVariants: LocalizedInformationImageVariantRow[],
+  requestedVariant?: InformationImageVariant,
+  requestedLanguage?: InformationImageLanguage
+): InformationImageContentVariant | undefined {
+  if (requestedLanguage !== undefined) {
+    const sameLanguage = localizedVariants.filter((variant) => variant.language === requestedLanguage);
+    const localized = sameLanguage.find((variant) => variant.variant === requestedVariant) ?? sameLanguage[0];
+    if (localized !== undefined) return localized;
+  }
+
+  const legacy = selectInformationImageVariant(variants, requestedVariant);
+  if (legacy !== undefined) return legacy;
+  if (requestedLanguage === undefined) {
+    const spanish = localizedVariants.filter((variant) => variant.language === 'es');
+    const defaultLocalized = spanish[0] ?? localizedVariants[0];
+    return defaultLocalized;
+  }
+  return undefined;
+}
+
+function normalizeInformationImageName(value: string): string {
+  const normalized = [...value].filter((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint > 31 && codePoint !== 127;
+  }).join('').trim();
+  return (normalized.length === 0 ? 'image' : normalized).slice(0, 255);
 }
 
 function devicePrincipal(row: Pick<DeviceRow, 'id' | 'assignment_mode' | 'room_id' | 'area_id'>): DevicePrincipal {
@@ -1874,7 +2530,32 @@ function compactRoom(room: RoomDTO): CompactRoom {
 }
 
 function compactArea(area: AreaDTO): CompactArea {
-  return { id: area.id, code: area.code, displayName: area.displayName };
+  return {
+    id: area.id,
+    code: area.code,
+    displayName: area.displayName,
+    ...(area.displayNameVariants === undefined ? {} : { displayNameVariants: area.displayNameVariants })
+  };
+}
+
+function parseLocalizedTextVariants(value: string | null | undefined): LocalizedTextVariants | undefined {
+  if (value === undefined || value === null || value.length === 0) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value) as unknown;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;
+    const variants: LocalizedTextVariants = {};
+    for (const locale of ['en', 'es'] as const) {
+      const text = (parsed as Record<string, unknown>)[locale];
+      if (typeof text === 'string' && text.trim().length > 0) variants[locale] = text;
+    }
+    return Object.keys(variants).length === 0 ? undefined : variants;
+  } catch {
+    return undefined;
+  }
+}
+
+function serializeLocalizedTextVariants(variants: LocalizedTextVariants | undefined): string {
+  return JSON.stringify(variants ?? {});
 }
 
 function requestScope(row: Pick<RequestRow, 'room_id' | 'responsible_area_id' | 'status'>): RequestScope {

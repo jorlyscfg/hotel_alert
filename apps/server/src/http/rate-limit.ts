@@ -6,6 +6,7 @@ interface RateLimitOptions {
   name: string;
   limit: number;
   windowMs: number;
+  maxBuckets?: number;
   key: (request: Request) => string;
 }
 
@@ -14,16 +15,29 @@ interface Bucket {
   resetAt: number;
 }
 
+const DEFAULT_MAX_BUCKETS = 10_000;
+
 export function createRateLimiter(options: RateLimitOptions): RequestHandler {
   const buckets = new Map<string, Bucket>();
+  const maxBuckets = options.maxBuckets ?? DEFAULT_MAX_BUCKETS;
 
   return (request, response, next) => {
     const now = Date.now();
     const key = `${options.name}:${options.key(request)}`;
+    for (const [bucketKey, bucket] of buckets) {
+      if (bucket.resetAt <= now) buckets.delete(bucketKey);
+    }
+
     const current = buckets.get(key);
-    const bucket = current === undefined || current.resetAt <= now
-      ? { count: 0, resetAt: now + options.windowMs }
-      : current;
+    if (current === undefined && buckets.size >= maxBuckets) {
+      const earliestResetAt = Math.min(...Array.from(buckets.values(), (bucket) => bucket.resetAt));
+      const retryAfterSeconds = Math.max(1, Math.ceil((earliestResetAt - now) / 1000));
+      response.setHeader('Retry-After', retryAfterSeconds.toString());
+      next(new AppError('RATE_LIMITED', 'Too many requests. Try again later.', 429, { retryAfterSeconds }));
+      return;
+    }
+
+    const bucket = current ?? { count: 0, resetAt: now + options.windowMs };
 
     if (bucket.count >= options.limit) {
       const retryAfterSeconds = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));

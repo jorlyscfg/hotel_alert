@@ -1,10 +1,39 @@
 import {
+  areaCreateSchema,
+  areaPatchSchema,
   DEFAULT_SETTINGS,
   isLegalRequestTransition,
+  SETTING_KEYS,
+  serviceCreateSchema,
+  servicePatchSchema,
   validateSettings
 } from '@hotel/shared';
 
 describe('shared domain contracts', () => {
+  it('defaults request history retention to one year', () => {
+    expect(DEFAULT_SETTINGS['requests.historyRetentionDays']).toBe(365);
+  });
+
+  it('validates optional English and Spanish catalog variants while rejecting unsupported locale keys', () => {
+    expect(areaCreateSchema.safeParse({
+      code: 'night-cleaning',
+      displayName: 'Limpieza nocturna',
+      displayNameVariants: { en: 'Night cleaning' },
+      description: 'Servicio de noche',
+      descriptionVariants: { en: 'Night service' }
+    }).success).toBe(true);
+    expect(serviceCreateSchema.safeParse({
+      code: 'custom-crib',
+      displayName: 'Preparar cuna',
+      displayNameVariants: { en: 'Prepare a crib' },
+      areaId: 'area-1'
+    }).success).toBe(true);
+    expect(areaPatchSchema.safeParse({ displayNameVariants: {} }).success).toBe(true);
+    expect(servicePatchSchema.safeParse({ descriptionVariants: { es: 'Descripción traducida' } }).success).toBe(true);
+    expect(areaCreateSchema.safeParse({ code: 'invalid-locale', displayName: 'Área', displayNameVariants: { fr: 'Zone' } }).success).toBe(false);
+    expect(serviceCreateSchema.safeParse({ code: 'invalid-name', displayName: 'Servicio', displayNameVariants: { en: '   ' }, areaId: 'area-1' }).success).toBe(false);
+  });
+
   it('allows only the forward request lifecycle', () => {
     expect(isLegalRequestTransition('PENDING', 'ACCEPTED')).toBe(true);
     expect(isLegalRequestTransition('ACCEPTED', 'IN_PROGRESS')).toBe(true);
@@ -25,9 +54,27 @@ describe('shared domain contracts', () => {
     }
   });
 
+  it('accepts bounded Information carousel timing settings and rejects values outside the UI range', () => {
+    const idleTimeoutKey = 'information.idleTimeoutSeconds';
+    const slideIntervalKey = 'information.slideIntervalSeconds';
+    const defaults = DEFAULT_SETTINGS as Record<string, unknown>;
+
+    expect(SETTING_KEYS).toEqual(expect.arrayContaining([idleTimeoutKey, slideIntervalKey]));
+    expect(defaults[idleTimeoutKey]).toBe(5);
+    expect(defaults[slideIntervalKey]).toBe(5);
+    expect(validateSettings({ [idleTimeoutKey]: 1, [slideIntervalKey]: 300 }, DEFAULT_SETTINGS).ok).toBe(true);
+
+    for (const value of [0, 301]) {
+      const result = validateSettings({ [idleTimeoutKey]: value }, DEFAULT_SETTINGS);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.errors.map((error) => error.key)).toContain(idleTimeoutKey);
+    }
+  });
+
   it('accepts normalized hotel branding and explicit clock settings', () => {
     const result = validateSettings({
       hotelName: '  Hotel Aurora  ',
+      hotelNameEn: '  Aurora Hotel  ',
       hotelLogo: 'data:image/png;base64,AAAA',
       clockFormat: '24h'
     }, DEFAULT_SETTINGS);
@@ -37,9 +84,15 @@ describe('shared domain contracts', () => {
       values: {
         ...DEFAULT_SETTINGS,
         hotelName: 'Hotel Aurora',
+        hotelNameEn: 'Aurora Hotel',
         hotelLogo: 'data:image/png;base64,AAAA',
         clockFormat: '24h'
       }
+    });
+
+    expect(validateSettings({ hotelName: 'Hotel Aurora' }, DEFAULT_SETTINGS)).toMatchObject({
+      ok: false,
+      errors: expect.arrayContaining([expect.objectContaining({ key: 'hotelNameEn' })])
     });
   });
 

@@ -16,6 +16,7 @@ export interface ServerConfig {
   tokenPepper: string;
   adminSessionTtlMinutes: number;
   loginMaxAttempts: number;
+  loginRateLimitMaxRequests: number;
   loginLockMinutes: number;
   heartbeatIntervalMs: number;
   deviceStaleAfterMs: number;
@@ -35,6 +36,11 @@ export interface ServerConfig {
   heartbeatLogRetentionDays: number;
   backupDirectory: string;
   backupRetentionDays: number;
+  informationImageDirectory: string;
+  informationImageMaxBytes: number;
+  freeKioskApiPort: number;
+  freeKioskApiKey: string | undefined;
+  freeKioskApiTimeoutMs: number;
 }
 
 export interface ConfigOverrides {
@@ -45,6 +51,12 @@ export interface ConfigOverrides {
   port?: number;
   nodeEnv?: ServerConfig['nodeEnv'];
   appOrigin?: string;
+  loginRateLimitMaxRequests?: number;
+  informationImageDirectory?: string;
+  informationImageMaxBytes?: number;
+  freeKioskApiPort?: number;
+  freeKioskApiKey?: string;
+  freeKioskApiTimeoutMs?: number;
 }
 
 function integerFromEnv(name: string, fallback: number): number {
@@ -71,6 +83,10 @@ export function loadConfig(overrides: ConfigOverrides = {}): ServerConfig {
   const nodeEnv = overrides.nodeEnv ?? (process.env['NODE_ENV'] as ServerConfig['nodeEnv'] | undefined) ?? 'development';
   const databasePath = overrides.databasePath ?? process.env['DATABASE_PATH'] ?? './data/hotel.sqlite';
   const port = overrides.port ?? integerFromEnv('PORT', nodeEnv === 'development' ? 3001 : 3000);
+  const configuredFreeKioskApiKey = overrides.freeKioskApiKey ?? process.env['FREEKIOSK_API_KEY'];
+  const freeKioskApiKey = configuredFreeKioskApiKey === undefined || configuredFreeKioskApiKey.trim() === ''
+    ? undefined
+    : configuredFreeKioskApiKey;
   const config: ServerConfig = {
     nodeEnv,
     host: overrides.host ?? process.env['HOST'] ?? '0.0.0.0',
@@ -81,6 +97,7 @@ export function loadConfig(overrides: ConfigOverrides = {}): ServerConfig {
     tokenPepper: overrides.tokenPepper ?? secretFromEnv('TOKEN_PEPPER'),
     adminSessionTtlMinutes: integerFromEnv('ADMIN_SESSION_TTL_MINUTES', 480),
     loginMaxAttempts: integerFromEnv('LOGIN_MAX_ATTEMPTS', 5),
+    loginRateLimitMaxRequests: overrides.loginRateLimitMaxRequests ?? integerFromEnv('LOGIN_RATE_LIMIT_MAX_REQUESTS', 5),
     loginLockMinutes: integerFromEnv('LOGIN_LOCK_MINUTES', 15),
     heartbeatIntervalMs: integerFromEnv('HEARTBEAT_INTERVAL_MS', 15000),
     deviceStaleAfterMs: integerFromEnv('DEVICE_STALE_AFTER_MS', 45000),
@@ -95,11 +112,16 @@ export function loadConfig(overrides: ConfigOverrides = {}): ServerConfig {
     requestPageSizeMax: integerFromEnv('REQUEST_PAGE_SIZE_MAX', 100),
     idempotencyRetentionHours: integerFromEnv('IDEMPOTENCY_RETENTION_HOURS', 72),
     offlineQueueTtlHours: integerFromEnv('OFFLINE_QUEUE_TTL_HOURS', 48),
-    requestHistoryRetentionDays: integerFromEnv('REQUEST_HISTORY_RETENTION_DAYS', 30),
+    requestHistoryRetentionDays: integerFromEnv('REQUEST_HISTORY_RETENTION_DAYS', 365),
     auditRetentionDays: integerFromEnv('AUDIT_RETENTION_DAYS', 180),
     heartbeatLogRetentionDays: integerFromEnv('HEARTBEAT_LOG_RETENTION_DAYS', 7),
     backupDirectory: resolveRepositoryPath(process.env['BACKUP_DIRECTORY'] ?? './data/backups'),
-    backupRetentionDays: integerFromEnv('BACKUP_RETENTION_DAYS', 30)
+    backupRetentionDays: integerFromEnv('BACKUP_RETENTION_DAYS', 30),
+    informationImageDirectory: resolveRepositoryPath(overrides.informationImageDirectory ?? process.env['INFORMATION_IMAGE_DIRECTORY'] ?? './data/information-images'),
+    informationImageMaxBytes: overrides.informationImageMaxBytes ?? integerFromEnv('INFORMATION_IMAGE_MAX_BYTES', 10 * 1024 * 1024),
+    freeKioskApiPort: overrides.freeKioskApiPort ?? integerFromEnv('FREEKIOSK_API_PORT', 8080),
+    freeKioskApiKey,
+    freeKioskApiTimeoutMs: overrides.freeKioskApiTimeoutMs ?? integerFromEnv('FREEKIOSK_API_TIMEOUT_MS', 3000)
   };
 
   if (config.nodeEnv === 'production' && (!process.env['SESSION_SECRET'] || !process.env['TOKEN_PEPPER'])) {
@@ -113,6 +135,15 @@ export function loadConfig(overrides: ConfigOverrides = {}): ServerConfig {
   }
   if (config.socketEventReplayMinMinutes < 60 || config.socketEventReplayMaxEvents < 100000) {
     throw new Error('Socket replay retention cannot be configured below the 60-minute and 100000-event floors.');
+  }
+  if (!Number.isInteger(config.freeKioskApiPort) || config.freeKioskApiPort < 1 || config.freeKioskApiPort > 65535) {
+    throw new Error('FREEKIOSK_API_PORT must be an integer between 1 and 65535.');
+  }
+  if (!Number.isInteger(config.freeKioskApiTimeoutMs) || config.freeKioskApiTimeoutMs < 100 || config.freeKioskApiTimeoutMs > 10000) {
+    throw new Error('FREEKIOSK_API_TIMEOUT_MS must be an integer between 100 and 10000.');
+  }
+  if (!Number.isInteger(config.informationImageMaxBytes) || config.informationImageMaxBytes < 1 || config.informationImageMaxBytes > 50 * 1024 * 1024) {
+    throw new Error('INFORMATION_IMAGE_MAX_BYTES must be an integer between 1 and 52428800.');
   }
   return config;
 }

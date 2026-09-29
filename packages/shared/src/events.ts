@@ -15,7 +15,9 @@ export interface DurableRealtimeEvent<TName extends string, TPayload> {
 
 export interface RequestCreatedPayload {
   request: RequestDTO;
-  alert: { repeatUntil: 'ACCEPTED' };
+  // ACCEPTED remains accepted for replaying legacy events. New events stop
+  // repeating once the responsible area starts resolving the request.
+  alert: { repeatUntil: 'ACCEPTED' | 'IN_PROGRESS' };
 }
 
 export interface RequestUpdatedPayload {

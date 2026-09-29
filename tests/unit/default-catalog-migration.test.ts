@@ -69,8 +69,8 @@ describe('default catalog migration', () => {
 
     expect(readAreas(database)).toEqual(expectedAreas);
     expect(readServices(database)).toEqual(expectedServices);
-    expect(readMigrationVersions(database)).toEqual([1, 2, 3, 4, 5, 6, 7]);
-    expect(readBrandingSettings(database)).toEqual({ hotelName: 'Hotel Local', hotelLogo: null, roomBackground: null, clockFormat: '12h' });
+    expect(readMigrationVersions(database)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    expect(readBrandingSettings(database)).toEqual({ hotelName: 'Hotel Local', hotelNameEn: '', hotelLogo: null, roomBackground: null, clockFormat: '12h' });
     expect(database.prepare('SELECT do_not_disturb FROM rooms').get()).toBeUndefined();
     expect(readConfigurationRevision(database)).toBe(2);
 
@@ -164,7 +164,7 @@ describe('default catalog migration', () => {
     expect(database.prepare('SELECT * FROM services WHERE id = ?').get('svc-custom-wake-up')).toMatchObject({ code: 'WAKE-UP-CALL', display_name: 'Custom wake-up workflow' });
     expect(readConfigurationRevision(database)).toBe(revisionBeforeReplay);
     expect((database.prepare('SELECT COUNT(*) AS count FROM outbox_events').get() as { count: number }).count).toBe(eventCountBeforeReplay);
-    expect(readMigrationVersions(database)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(readMigrationVersions(database)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
   });
 
   it('adds branding defaults while upgrading a version three database', () => {
@@ -172,8 +172,34 @@ describe('default catalog migration', () => {
 
     runMigrations(database);
 
-    expect(readMigrationVersions(database)).toEqual([1, 2, 3, 4, 5, 6, 7]);
-    expect(readBrandingSettings(database)).toEqual({ hotelName: 'Hotel Local', hotelLogo: null, roomBackground: null, clockFormat: '12h' });
+    expect(readMigrationVersions(database)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    expect(readBrandingSettings(database)).toEqual({ hotelName: 'Hotel Local', hotelNameEn: '', hotelLogo: null, roomBackground: null, clockFormat: '12h' });
+  });
+
+  it('seeds the English hotel name on an existing v11 database without changing legacy carousel metadata', () => {
+    runMigrations(database);
+    database.prepare('UPDATE system_settings SET value_json = ? WHERE key = ?').run(JSON.stringify('Hotel Costa Azul'), 'hotelName');
+    database.prepare('INSERT INTO information_images(id, original_name, mime_type, byte_size, storage_name, display_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+      'legacy-information-1', 'welcome.png', 'image/png', 15, 'legacy-information-file.png', 0, '2026-09-01T10:00:00.000Z', '2026-09-01T10:00:00.000Z'
+    );
+    database.prepare('INSERT INTO information_image_variants(information_image_id, variant, original_name, mime_type, byte_size, storage_name) VALUES (?, ?, ?, ?, ?, ?)').run(
+      'legacy-information-1', 'wide', 'welcome-wide.png', 'image/png', 19, 'legacy-information-wide.png'
+    );
+    database.exec('DROP TABLE information_image_localized_variants');
+    database.prepare('DELETE FROM system_settings WHERE key = ?').run('hotelNameEn');
+    database.prepare('DELETE FROM schema_migrations WHERE version = ?').run(12);
+
+    runMigrations(database);
+
+    expect(database.prepare('SELECT original_name, storage_name, byte_size FROM information_images WHERE id = ?').get('legacy-information-1')).toEqual({
+      original_name: 'welcome.png', storage_name: 'legacy-information-file.png', byte_size: 15
+    });
+    expect(database.prepare('SELECT variant, storage_name FROM information_image_variants WHERE information_image_id = ?').all('legacy-information-1')).toEqual([
+      { variant: 'wide', storage_name: 'legacy-information-wide.png' }
+    ]);
+    expect(database.prepare('SELECT value_json FROM system_settings WHERE key = ?').get('hotelName')).toEqual({ value_json: JSON.stringify('Hotel Costa Azul') });
+    expect(database.prepare('SELECT value_json FROM system_settings WHERE key = ?').get('hotelNameEn')).toEqual({ value_json: JSON.stringify('') });
+    expect(database.prepare('SELECT version FROM schema_migrations WHERE version = 12').get()).toEqual({ version: 12 });
   });
 
   it('reconciles duplicate active ROOM assignments before creating the uniqueness index', () => {
@@ -203,7 +229,7 @@ describe('default catalog migration', () => {
 
     runMigrations(database);
 
-    expect(readMigrationVersions(database)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(readMigrationVersions(database)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
     expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_one_active_room_device'").get()).toEqual({ name: 'idx_one_active_room_device' });
 
     const devices = database.prepare('SELECT id, active, retired_at, updated_at FROM devices WHERE room_id = ? ORDER BY id').all('room-duplicate') as Array<{
@@ -264,7 +290,7 @@ function readConfigurationRevision(database: SqliteDatabase): number {
   return (database.prepare('SELECT configuration_revision FROM configuration_state WHERE singleton_id = 1').get() as { configuration_revision: number }).configuration_revision;
 }
 
-function readBrandingSettings(database: SqliteDatabase): { hotelName: unknown; hotelLogo: unknown; roomBackground: unknown; clockFormat: unknown } {
-  const rows = database.prepare("SELECT key, value_json FROM system_settings WHERE key IN ('hotelName', 'hotelLogo', 'roomBackground', 'clockFormat') ORDER BY key").all() as Array<{ key: string; value_json: string }>;
-  return Object.fromEntries(rows.map((row) => [row.key, JSON.parse(row.value_json)])) as { hotelName: unknown; hotelLogo: unknown; roomBackground: unknown; clockFormat: unknown };
+function readBrandingSettings(database: SqliteDatabase): { hotelName: unknown; hotelNameEn: unknown; hotelLogo: unknown; roomBackground: unknown; clockFormat: unknown } {
+  const rows = database.prepare("SELECT key, value_json FROM system_settings WHERE key IN ('hotelName', 'hotelNameEn', 'hotelLogo', 'roomBackground', 'clockFormat') ORDER BY key").all() as Array<{ key: string; value_json: string }>;
+  return Object.fromEntries(rows.map((row) => [row.key, JSON.parse(row.value_json)])) as { hotelName: unknown; hotelNameEn: unknown; hotelLogo: unknown; roomBackground: unknown; clockFormat: unknown };
 }

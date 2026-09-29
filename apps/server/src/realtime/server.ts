@@ -16,6 +16,9 @@ import type { Principal } from '../security/principal';
 
 const ADMIN_SESSION_COOKIE = 'hotel_admin_session';
 const MAX_SOCKET_PAYLOAD_BYTES = 64 * 1024;
+const DEVICE_HEARTBEAT_LIMIT = 6;
+const DEVICE_HEARTBEAT_WINDOW_MS = 60_000;
+const MAX_HEARTBEAT_BUCKETS = 10_000;
 
 const realtimeAuthSchema = z.object({
   deviceId: z.string().trim().min(1).max(128).optional(),
@@ -83,10 +86,15 @@ export function attachRealtime(httpServer: HttpServer, service: HotelService, co
     cors: {
       origin: (requestOrigin, callback) => callback(null, isAllowedRealtimeOrigin(requestOrigin, config)),
       credentials: true
+    },
+    allowRequest: (request, callback) => {
+      const requestOrigin = request.headers.origin;
+      callback(null, requestOrigin === undefined || (typeof requestOrigin === 'string' && isAllowedRealtimeOrigin(requestOrigin, config)));
     }
   });
   const realtime = io.of('/realtime');
   const socketsByPrincipal = new Map<string, Set<Socket>>();
+  const heartbeatRateLimiter = createHeartbeatRateLimiter();
   const publishPendingEvents = createPublisher(realtime, service, (deviceId) => {
     refreshDeviceSubscriptions(socketsByPrincipal, service, deviceId);
   });
@@ -122,7 +130,7 @@ export function attachRealtime(httpServer: HttpServer, service: HotelService, co
     registerSocket(socket, principalKey, socketsByPrincipal);
     joinDerivedRooms(socket, context.principal);
     sendInitialSync(socket, service.getReplayPlan(context.auth.lastSeenEventSequence, context.auth.deviceConfigVersion, context.principal));
-    registerSocketHandlers(socket, service);
+    registerSocketHandlers(socket, service, heartbeatRateLimiter);
   });
 
   const interval = setInterval(publishPendingEvents, config.outboxPublishIntervalMs);
@@ -137,9 +145,42 @@ export function attachRealtime(httpServer: HttpServer, service: HotelService, co
       clearInterval(interval);
       clearInterval(maintenanceInterval);
       service.setSecurityChangeHandler(undefined);
+      heartbeatRateLimiter.clear();
       await new Promise<void>((resolve) => io.close(() => resolve()));
       socketsByPrincipal.clear();
     }
+  };
+}
+
+interface HeartbeatBucket {
+  count: number;
+  resetAt: number;
+}
+
+interface HeartbeatRateLimiter {
+  consume(deviceId: string): boolean;
+  clear(): void;
+}
+
+function createHeartbeatRateLimiter(): HeartbeatRateLimiter {
+  const buckets = new Map<string, HeartbeatBucket>();
+
+  return {
+    consume: (deviceId) => {
+      const now = Date.now();
+      for (const [bucketKey, bucket] of buckets) {
+        if (bucket.resetAt <= now) buckets.delete(bucketKey);
+      }
+
+      const current = buckets.get(deviceId);
+      if (current === undefined && buckets.size >= MAX_HEARTBEAT_BUCKETS) return false;
+      const bucket = current ?? { count: 0, resetAt: now + DEVICE_HEARTBEAT_WINDOW_MS };
+      if (bucket.count >= DEVICE_HEARTBEAT_LIMIT) return false;
+      bucket.count += 1;
+      buckets.set(deviceId, bucket);
+      return true;
+    },
+    clear: () => buckets.clear()
   };
 }
 
@@ -409,7 +450,7 @@ function sendReplayEvents(socket: Socket, events: OutboxRow[]): boolean {
   return true;
 }
 
-function registerSocketHandlers(socket: Socket, service: HotelService): void {
+function registerSocketHandlers(socket: Socket, service: HotelService, heartbeatRateLimiter: HeartbeatRateLimiter): void {
   socket.on('connection.sync', (payload, acknowledgement) => {
     try {
       const context = requireContext(socket);
@@ -441,6 +482,9 @@ function registerSocketHandlers(socket: Socket, service: HotelService): void {
       const context = requireContext(socket);
       if (context.principal.kind !== 'DEVICE') {
         throw new AppError('FORBIDDEN_ASSIGNMENT', 'Only devices can send heartbeats.', 403);
+      }
+      if (!heartbeatRateLimiter.consume(context.principal.deviceId)) {
+        throw new AppError('RATE_LIMITED', 'Too many heartbeat events. Try again later.', 429);
       }
       const input = heartbeatSchema.parse(payload);
       service.recordHeartbeat(context.principal, {

@@ -1,13 +1,22 @@
 import { z } from 'zod';
-import { APP_MODES, DEVICE_ASSIGNMENT_MODES, ICON_KEYS, REQUEST_STATUSES } from './domain';
+import { APP_MODES, DEVICE_ASSIGNMENT_MODES, ICON_KEYS, INFORMATION_IMAGE_VARIANTS, REQUEST_STATUSES } from './domain';
 
 const boundedId = z.string().trim().min(1).max(128);
 const boundedCode = z.string().trim().min(1).max(64);
 const boundedName = z.string().trim().min(1).max(120);
 const boundedDescription = z.string().trim().max(500);
+const localizedNameVariants = z.object({
+  en: boundedName.optional(),
+  es: boundedName.optional()
+}).strict();
+const localizedDescriptionVariants = z.object({
+  en: boundedDescription.optional(),
+  es: boundedDescription.optional()
+}).strict();
 
 export const idempotencyKeySchema = z.string().min(1).max(128);
 export const installationIdSchema = z.string().trim().min(1).max(128);
+export const informationImageVariantSchema = z.enum(INFORMATION_IMAGE_VARIANTS);
 
 export const adminLoginSchema = z.object({
   username: z.string().trim().min(1).max(64),
@@ -58,7 +67,9 @@ export const roomDoNotDisturbSchema = z.object({ doNotDisturb: z.boolean() }).st
 export const areaCreateSchema = z.object({
   code: z.string().trim().min(1).max(32),
   displayName: boundedName,
+  displayNameVariants: localizedNameVariants.optional(),
   description: boundedDescription.nullable().optional(),
+  descriptionVariants: localizedDescriptionVariants.optional(),
   displayOrder: z.number().int().min(-100000).max(100000).optional(),
   active: z.boolean().optional()
 }).strict();
@@ -66,7 +77,9 @@ export const areaCreateSchema = z.object({
 export const areaPatchSchema = z.object({
   code: z.string().trim().min(1).max(32).optional(),
   displayName: boundedName.optional(),
+  displayNameVariants: localizedNameVariants.optional(),
   description: boundedDescription.nullable().optional(),
+  descriptionVariants: localizedDescriptionVariants.optional(),
   displayOrder: z.number().int().min(-100000).max(100000).optional(),
   active: z.boolean().optional(),
   expectedUpdatedAt: z.string().datetime({ offset: true }).optional()
@@ -77,7 +90,9 @@ export const areaPatchSchema = z.object({
 export const serviceCreateSchema = z.object({
   code: boundedCode,
   displayName: boundedName,
+  displayNameVariants: localizedNameVariants.optional(),
   description: boundedDescription.nullable().optional(),
+  descriptionVariants: localizedDescriptionVariants.optional(),
   iconKey: z.enum(ICON_KEYS).nullable().optional(),
   areaId: boundedId,
   displayOrder: z.number().int().min(-100000).max(100000).optional(),
@@ -87,7 +102,9 @@ export const serviceCreateSchema = z.object({
 export const servicePatchSchema = z.object({
   code: boundedCode.optional(),
   displayName: boundedName.optional(),
+  displayNameVariants: localizedNameVariants.optional(),
   description: boundedDescription.nullable().optional(),
+  descriptionVariants: localizedDescriptionVariants.optional(),
   iconKey: z.enum(ICON_KEYS).nullable().optional(),
   areaId: boundedId.optional(),
   displayOrder: z.number().int().min(-100000).max(100000).optional(),
@@ -152,6 +169,10 @@ export const heartbeatSchema = z.object({
 
 export const settingsPatchSchema = z.object({
   changes: z.record(z.string().max(64), z.unknown())
+}).strict();
+
+export const informationImageReorderSchema = z.object({
+  ids: z.array(boundedId).max(1000)
 }).strict();
 
 export const modeSchema = z.enum(APP_MODES);

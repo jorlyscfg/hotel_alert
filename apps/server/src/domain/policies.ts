@@ -25,9 +25,6 @@ export function canReadRequest(principal: Principal, request: RequestScope): boo
 }
 
 export function canTransitionRequest(principal: Principal, request: RequestScope): boolean {
-  if (principal.kind === 'ADMIN') {
-    return true;
-  }
   return isAreaPrincipal(principal) && principal.areaId === request.responsibleAreaId;
 }
 

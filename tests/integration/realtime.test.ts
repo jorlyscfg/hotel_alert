@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { io as connectSocket, type Socket } from 'socket.io-client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig, type ServerConfig } from '../../apps/server/src/config/env';
 import { closeDatabase, openDatabase, runMigrations, type SqliteDatabase } from '../../apps/server/src/db/connection';
 import { HotelService } from '../../apps/server/src/domain/hotel-service';
@@ -43,6 +43,7 @@ describe('Socket.IO realtime transport', () => {
     await closeHttpServer(httpServer);
     closeDatabase(database);
     fs.rmSync(databaseDirectory, { recursive: true, force: true });
+    vi.restoreAllMocks();
   });
 
   it('allows private LAN browser origins only outside production when they use the configured web port', () => {
@@ -51,6 +52,36 @@ describe('Socket.IO realtime transport', () => {
     expect(isAllowedRealtimeOrigin('https://192.168.1.20:4173', { nodeEnv: 'development', appOrigin: 'http://localhost:4173' })).toBe(false);
     expect(isAllowedRealtimeOrigin('http://192.168.1.20:4173', { nodeEnv: 'production', appOrigin: 'https://hotel.example' })).toBe(false);
     expect(isAllowedRealtimeOrigin('https://hotel.example', { nodeEnv: 'production', appOrigin: 'https://hotel.example' })).toBe(true);
+  });
+
+  it('rejects a foreign websocket origin during the Engine.IO handshake', async () => {
+    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
+    const bootstrap = service.bootstrapDevice({
+      installationId: 'installation-101',
+      displayName: 'Room 101 tablet',
+      assignmentMode: 'ROOM',
+      roomId: room.id
+    }, systemActor, 'setup-device');
+
+    await listen(httpServer);
+    const address = httpServer.address();
+    if (address === null || typeof address === 'string') throw new Error('Realtime test server did not expose a TCP address.');
+    socket = connectSocket(`http://127.0.0.1:${address.port}/realtime`, {
+      transports: ['websocket'],
+      timeout: 2000,
+      extraHeaders: { Origin: 'https://evil.example' },
+      auth: {
+        deviceId: bootstrap.device.id,
+        deviceToken: bootstrap.deviceToken,
+        clientInstanceId: 'foreign-origin-client',
+        clientVersion: '0.1.0'
+      }
+    });
+
+    const error = await onceEvent<Error>(socket, 'connect_error');
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).not.toBe('');
+    expect(socket.connected).toBe(false);
   });
 
   it('authenticates a device, derives its logical rooms, and publishes committed requests', async () => {
@@ -91,6 +122,97 @@ describe('Socket.IO realtime transport', () => {
     const event = await createdEvent;
     expect(event.eventSequence).toBeGreaterThan(cursor);
     expect(event.payload.request).toMatchObject({ id: created.id, roomId: room.id, serviceId: catalogService.id });
+  });
+
+  it('limits device heartbeats to six events per minute across sockets for one device', async () => {
+    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
+    const bootstrap = service.bootstrapDevice({
+      installationId: 'installation-101',
+      displayName: 'Room 101 tablet',
+      assignmentMode: 'ROOM',
+      roomId: room.id
+    }, systemActor, 'setup-device');
+    const recordHeartbeat = vi.spyOn(service, 'recordHeartbeat');
+
+    await listen(httpServer);
+    const address = httpServer.address();
+    if (address === null || typeof address === 'string') throw new Error('Realtime test server did not expose a TCP address.');
+    const url = `http://127.0.0.1:${address.port}/realtime`;
+    socket = connectSocket(url, {
+      transports: ['websocket'],
+      timeout: 2000,
+      auth: { deviceId: bootstrap.device.id, deviceToken: bootstrap.deviceToken, clientInstanceId: 'heartbeat-client-1', clientVersion: '0.1.0' }
+    });
+    const secondSocket = connectSocket(url, {
+      transports: ['websocket'],
+      timeout: 2000,
+      auth: { deviceId: bootstrap.device.id, deviceToken: bootstrap.deviceToken, clientInstanceId: 'heartbeat-client-2', clientVersion: '0.1.0' }
+    });
+    await Promise.all([
+      onceEvent<{ sync: string }>(socket, 'connection.ready'),
+      onceEvent<{ sync: string }>(secondSocket, 'connection.ready')
+    ]);
+
+    const windowStart = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(windowStart);
+    const acknowledgements: HeartbeatAck[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      acknowledgements.push(await emitHeartbeat(socket, { clientVersion: '0.1.0', socketConnected: true }));
+      acknowledgements.push(await emitHeartbeat(secondSocket, { clientVersion: '0.1.0', socketConnected: true }));
+    }
+
+    expect(acknowledgements).toEqual(Array.from({ length: 6 }, () => ({ ok: true })));
+    expect(await emitHeartbeat(socket, { clientVersion: '0.1.0', socketConnected: true })).toEqual({ ok: false, errorCode: 'RATE_LIMITED' });
+    expect(recordHeartbeat).toHaveBeenCalledTimes(6);
+
+    clock.mockReturnValue(windowStart + 60_000);
+    expect(await emitHeartbeat(secondSocket, { clientVersion: '0.1.0', socketConnected: true })).toEqual({ ok: true });
+    expect(recordHeartbeat).toHaveBeenCalledTimes(7);
+    secondSocket.disconnect();
+  });
+
+  it('checks the device role before limiting and charges malformed heartbeats to the device budget', async () => {
+    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
+    const bootstrap = service.bootstrapDevice({
+      installationId: 'installation-101',
+      displayName: 'Room 101 tablet',
+      assignmentMode: 'ROOM',
+      roomId: room.id
+    }, systemActor, 'setup-device');
+    service.createAdmin({ username: 'admin', password: adminPassword }, systemActor, 'setup-admin');
+    const login = service.loginAdmin('admin', adminPassword, 'login-admin', undefined, undefined);
+    const recordHeartbeat = vi.spyOn(service, 'recordHeartbeat');
+
+    await listen(httpServer);
+    const address = httpServer.address();
+    if (address === null || typeof address === 'string') throw new Error('Realtime test server did not expose a TCP address.');
+    const url = `http://127.0.0.1:${address.port}/realtime`;
+    const adminSocket = connectSocket(url, {
+      transports: ['websocket'],
+      timeout: 2000,
+      extraHeaders: { Cookie: `hotel_admin_session=${encodeURIComponent(login.sessionToken)}` },
+      auth: { clientInstanceId: 'heartbeat-admin-client', clientVersion: '0.1.0' }
+    });
+    socket = connectSocket(url, {
+      transports: ['websocket'],
+      timeout: 2000,
+      auth: { deviceId: bootstrap.device.id, deviceToken: bootstrap.deviceToken, clientInstanceId: 'heartbeat-device-client', clientVersion: '0.1.0' }
+    });
+    await Promise.all([
+      onceEvent<{ sync: string }>(adminSocket, 'connection.ready'),
+      onceEvent<{ sync: string }>(socket, 'connection.ready')
+    ]);
+
+    expect(await emitHeartbeat(adminSocket, { clientVersion: '0.1.0' })).toEqual({ ok: false, errorCode: 'FORBIDDEN_ASSIGNMENT' });
+    const malformedAcknowledgements: HeartbeatAck[] = [];
+    for (let index = 0; index < 6; index += 1) {
+      malformedAcknowledgements.push(await emitHeartbeat(socket, { unexpected: true }));
+    }
+
+    expect(malformedAcknowledgements).toEqual(Array.from({ length: 6 }, () => ({ ok: false, errorCode: 'VALIDATION_ERROR' })));
+    expect(await emitHeartbeat(socket, { clientVersion: '0.1.0' })).toEqual({ ok: false, errorCode: 'RATE_LIMITED' });
+    expect(recordHeartbeat).not.toHaveBeenCalled();
+    adminSocket.disconnect();
   });
 
   it('publishes room updates to the assigned room, area consoles, and administrators', async () => {
@@ -336,6 +458,18 @@ describe('Socket.IO realtime transport', () => {
     await expect(settingsChanged).resolves.toMatchObject({ payload: { message: expect.stringContaining('Configuration revision') } });
   });
 });
+
+type HeartbeatAck = { ok: boolean; errorCode?: string };
+
+function emitHeartbeat(client: Socket, payload: unknown): Promise<HeartbeatAck> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Timed out waiting for heartbeat acknowledgement.')), 2000);
+    client.emit('device.heartbeat', payload, (acknowledgement: HeartbeatAck) => {
+      clearTimeout(timer);
+      resolve(acknowledgement);
+    });
+  });
+}
 
 function onceEvent<T>(client: Socket, name: string): Promise<T> {
   return new Promise((resolve, reject) => {

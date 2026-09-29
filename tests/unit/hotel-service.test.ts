@@ -96,6 +96,68 @@ describe('HotelService request access', () => {
     expect(replayed.data).toEqual(created.data);
     expect((database.prepare('SELECT COUNT(*) AS count FROM requests WHERE room_id = ?').get(room.id) as { count: number }).count).toBe(1);
   });
+
+  it('persists explicit catalog variants through ROOM services, snapshots, and request references', () => {
+    const area = service.createArea({
+      code: 'custom-night-cleaning',
+      displayName: 'Limpieza nocturna',
+      displayNameVariants: { en: 'Night cleaning' },
+      description: 'Servicio de limpieza por la noche',
+      descriptionVariants: { en: 'Nighttime room cleaning' }
+    }, systemActor, 'setup-area-bilingual');
+    const updatedArea = service.patchArea(area.id, { displayName: 'Limpieza nocturna actualizada' }, systemActor, 'update-area-bilingual');
+    const catalogService = service.createService({
+      code: 'custom-crib',
+      displayName: 'Preparar cuna',
+      displayNameVariants: { en: 'Prepare a crib' },
+      description: 'Solicitar una cuna para bebé',
+      descriptionVariants: { en: 'Request a baby crib' },
+      areaId: updatedArea.id
+    }, systemActor, 'setup-service-bilingual');
+    const updatedService = service.patchService(catalogService.id, { displayName: 'Preparar cuna nueva' }, systemActor, 'update-service-bilingual');
+    const room = service.createRoom({ code: 'bilingual-101', displayName: 'Habitación bilingüe' }, systemActor, 'setup-room-bilingual');
+    const device = service.bootstrapDevice({
+      installationId: 'installation-bilingual-101',
+      displayName: 'Habitación 101',
+      assignmentMode: 'ROOM',
+      roomId: room.id
+    }, systemActor, 'setup-device-bilingual');
+    const principal = service.authenticateDeviceToken(device.deviceToken).principal;
+
+    expect(updatedArea).toMatchObject({
+      displayName: 'Limpieza nocturna actualizada',
+      displayNameVariants: { en: 'Night cleaning' },
+      descriptionVariants: { en: 'Nighttime room cleaning' }
+    });
+    expect(updatedService).toMatchObject({
+      displayName: 'Preparar cuna nueva',
+      displayNameVariants: { en: 'Prepare a crib' },
+      descriptionVariants: { en: 'Request a baby crib' }
+    });
+    expect(service.getRoomServices(principal)).toContainEqual(expect.objectContaining({
+      id: updatedService.id,
+      displayName: 'Preparar cuna nueva',
+      displayNameVariants: { en: 'Prepare a crib' },
+      descriptionVariants: { en: 'Request a baby crib' }
+    }));
+    expect(service.getDeviceSnapshot(principal).config.areas).toContainEqual({
+      id: updatedArea.id,
+      code: updatedArea.code,
+      displayName: 'Limpieza nocturna actualizada',
+      displayNameVariants: { en: 'Night cleaning' }
+    });
+
+    const createdRequest = service.createRequest(principal, updatedService.id, 'bilingual-request', 'bilingual-request').data;
+    expect(createdRequest.service).toMatchObject({
+      displayName: 'Preparar cuna nueva',
+      displayNameVariants: { en: 'Prepare a crib' }
+    });
+    expect(createdRequest.responsibleArea).toMatchObject({
+      displayName: 'Limpieza nocturna actualizada',
+      displayNameVariants: { en: 'Night cleaning' }
+    });
+  });
+
   it('includes the configured service icon in request references', () => {
     const area = service.createArea({ code: 'test-maintenance', displayName: 'Maintenance' }, systemActor, 'setup-area');
     const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
@@ -145,6 +207,59 @@ describe('HotelService request access', () => {
 
     expect(filtered.map((request) => request.id)).toEqual([firstRequest.id]);
     expect(adminRequest?.createdByDeviceId).toBe(firstDevice.device.id);
+  });
+
+  it('keeps admin snapshot collections and revision on one SQLite snapshot', () => {
+    const room = service.createRoom({ code: '101', displayName: 'Before mutation' }, systemActor, 'setup-room');
+    const beforeRevision = service.getConfigurationRevision();
+    const writer = openDatabase(config);
+    let mutationApplied = false;
+
+    try {
+      const applyConcurrentMutation = writer.transaction(() => {
+        writer.prepare('UPDATE rooms SET display_name = ?, updated_at = ? WHERE id = ?').run('After mutation', new Date().toISOString(), room.id);
+        writer.prepare('UPDATE configuration_state SET configuration_revision = configuration_revision + 1 WHERE singleton_id = 1').run();
+      });
+      const snapshotDatabase = new Proxy(database, {
+        get(target, property) {
+          if (property === 'prepare') {
+            return (source: string) => {
+              const statement = target.prepare(source);
+              if (source !== 'SELECT * FROM rooms ORDER BY active DESC, display_order, code') return statement;
+              return new Proxy(statement, {
+                get(statementTarget, statementProperty) {
+                  if (statementProperty !== 'all') return Reflect.get(statementTarget, statementProperty, statementTarget);
+                  return (...parameters: unknown[]) => {
+                    const rows = statementTarget.all(...parameters);
+                    if (!mutationApplied) {
+                      mutationApplied = true;
+                      applyConcurrentMutation.immediate();
+                    }
+                    return rows;
+                  };
+                }
+              });
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        }
+      });
+      const snapshotService = new HotelService(snapshotDatabase, config);
+
+      const snapshot = snapshotService.getAdminSnapshot();
+      const snapshotRoom = snapshot.rooms.find((candidate) => candidate.id === room.id);
+      const storedRoom = database.prepare('SELECT display_name FROM rooms WHERE id = ?').get(room.id) as { display_name: string };
+      const storedRevision = (database.prepare('SELECT configuration_revision FROM configuration_state WHERE singleton_id = 1').get() as { configuration_revision: number }).configuration_revision;
+
+      expect(mutationApplied).toBe(true);
+      expect(storedRoom.display_name).toBe('After mutation');
+      expect(storedRevision).toBe(beforeRevision + 1);
+      expect(snapshotRoom?.displayName).toBe('Before mutation');
+      expect(snapshot.configurationRevision).toBe(beforeRevision);
+    } finally {
+      closeDatabase(writer);
+    }
   });
 
   it('returns a stable request page with an opaque cursor while preserving array callers', () => {
@@ -365,6 +480,8 @@ describe('HotelService request access', () => {
     setPersistedSetting(database, 'hotelLogo', 'data:image/png;base64,AAAA', admin.id);
     setPersistedSetting(database, 'roomBackground', 'data:image/webp;base64,AAAA', admin.id);
     setPersistedSetting(database, 'clockFormat', '24h', admin.id);
+    setPersistedSetting(database, 'information.idleTimeoutSeconds', 12, admin.id);
+    setPersistedSetting(database, 'information.slideIntervalSeconds', 18, admin.id);
     database.prepare('UPDATE devices SET last_seen_at = ?, last_heartbeat_at = ? WHERE id = ?').run(
       new Date(Date.now() - 20_000).toISOString(),
       new Date(Date.now() - 20_000).toISOString(),
@@ -383,7 +500,9 @@ describe('HotelService request access', () => {
       hotelName: 'Hotel Aurora',
       hotelLogo: 'data:image/png;base64,AAAA',
       roomBackground: 'data:image/webp;base64,AAAA',
-      clockFormat: '24h'
+      clockFormat: '24h',
+      informationIdleTimeoutSeconds: 12,
+      informationSlideIntervalSeconds: 18
     });
   });
 
@@ -501,10 +620,42 @@ describe('HotelService request access', () => {
       'client.offlineQueueTtlHours': 48,
       'audit.retentionDays': 365,
       hotelName: 'Hotel Local',
+      hotelNameEn: '',
       hotelLogo: null,
       roomBackground: null,
-      clockFormat: '12h'
+      clockFormat: '12h',
+      'information.idleTimeoutSeconds': 5,
+      'information.slideIntervalSeconds': 5
     });
+  });
+
+  it('rolls back the device update when heartbeat log persistence fails', () => {
+    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
+    const device = service.bootstrapDevice({
+      installationId: 'installation-101',
+      displayName: 'Room 101 tablet',
+      assignmentMode: 'ROOM',
+      roomId: room.id
+    }, systemActor, 'setup-device');
+    const principal = service.authenticateDeviceToken(device.deviceToken).principal;
+
+    service.recordHeartbeat(principal, { clientVersion: '0.1.0', socketConnected: true }, '192.168.1.20', 'before-agent');
+    const before = database.prepare('SELECT last_seen_at, last_heartbeat_at, last_ip, last_user_agent, client_version, updated_at FROM devices WHERE id = ?').get(device.device.id);
+    const heartbeatCountBefore = (database.prepare('SELECT COUNT(*) AS count FROM device_heartbeat_log WHERE device_id = ?').get(device.device.id) as { count: number }).count;
+    expect(heartbeatCountBefore).toBe(1);
+    database.exec(`
+      CREATE TRIGGER fail_device_heartbeat_log_insert
+      BEFORE INSERT ON device_heartbeat_log
+      BEGIN
+        SELECT RAISE(ABORT, 'forced heartbeat log failure');
+      END;
+    `);
+
+    expect(() => service.recordHeartbeat(principal, { clientVersion: '0.2.0', socketConnected: false }, '192.168.1.21', 'after-agent'))
+      .toThrowError('forced heartbeat log failure');
+
+    expect(database.prepare('SELECT last_seen_at, last_heartbeat_at, last_ip, last_user_agent, client_version, updated_at FROM devices WHERE id = ?').get(device.device.id)).toEqual(before);
+    expect((database.prepare('SELECT COUNT(*) AS count FROM device_heartbeat_log WHERE device_id = ?').get(device.device.id) as { count: number }).count).toBe(heartbeatCountBefore);
   });
 
   it('cleans auxiliary retention records when no published replay boundary exists', () => {
@@ -542,6 +693,30 @@ describe('HotelService request access', () => {
     });
   });
 
+  it('retains request history through the 365-day cutoff and purges anything older', () => {
+    config.requestHistoryRetentionDays = 365;
+    const area = service.createArea({ code: 'test-housekeeping', displayName: 'Housekeeping' }, systemActor, 'setup-area');
+    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
+    const catalogService = service.createService({ code: 'test-towels', displayName: 'Fresh towels', areaId: area.id }, systemActor, 'setup-service');
+    const device = service.bootstrapDevice({ installationId: 'installation-101', displayName: 'Room 101 tablet', assignmentMode: 'ROOM', roomId: room.id }, systemActor, 'setup-device');
+    const principal = service.authenticateDeviceToken(device.deviceToken).principal;
+    const boundaryRequest = service.createRequest(principal, catalogService.id, 'request-key-boundary', 'request-boundary').data;
+    const expiredRequest = service.createRequest(principal, catalogService.id, 'request-key-expired', 'request-expired').data;
+    const now = new Date();
+    const retentionMs = 365 * 24 * 60 * 60 * 1000;
+    const cutoff = new Date(now.getTime() - retentionMs).toISOString();
+    const olderThanCutoff = new Date(now.getTime() - retentionMs - 1).toISOString();
+    database.prepare('UPDATE request_status_history SET created_at = ? WHERE request_id = ?').run(cutoff, boundaryRequest.id);
+    database.prepare('UPDATE request_status_history SET created_at = ? WHERE request_id = ?').run(olderThanCutoff, expiredRequest.id);
+
+    const result = service.purgeRetention(now);
+
+    expect(result.requestHistoryDeleted).toBe(1);
+    expect(database.prepare('SELECT request_id, created_at FROM request_status_history ORDER BY request_id').all()).toEqual([
+      { request_id: boundaryRequest.id, created_at: cutoff }
+    ]);
+  });
+
   it('allows only one active ROOM device per room while permitting an inactive replacement', () => {
     const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
     const firstDevice = service.bootstrapDevice({
@@ -571,6 +746,68 @@ describe('HotelService request access', () => {
 
     service.patchDevice(adminPrincipal, firstDevice.device.id, { active: false }, 'deactivate-first');
     expect(service.patchDevice(adminPrincipal, replacement.device.id, { active: true }, 'activate-replacement-after-release').active).toBe(true);
+  });
+
+  it('advances the device config version and event version for a patch', () => {
+    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
+    const device = service.bootstrapDevice({
+      installationId: 'installation-101',
+      displayName: 'Room 101 tablet',
+      assignmentMode: 'ROOM',
+      roomId: room.id
+    }, systemActor, 'setup-device');
+    const adminPrincipal = createAdminPrincipal(service);
+    const expectedVersion = device.device.deviceConfigVersion;
+
+    const updated = service.patchDevice(adminPrincipal, device.device.id, {
+      displayName: 'Room 101 tablet updated',
+      expectedDeviceConfigVersion: expectedVersion
+    }, 'patch-device');
+    const event = database.prepare("SELECT aggregate_version, payload_json FROM outbox_events WHERE event_name = 'device.config.changed' AND aggregate_id = ? ORDER BY id DESC LIMIT 1").get(device.device.id) as { aggregate_version: number | null; payload_json: string } | undefined;
+
+    expect(updated.deviceConfigVersion).toBe(expectedVersion + 1);
+    expect(event?.aggregate_version).toBe(updated.deviceConfigVersion);
+    expect(JSON.parse(event?.payload_json ?? '{}')).toMatchObject({
+      deviceId: device.device.id,
+      deviceConfigVersion: updated.deviceConfigVersion
+    });
+  });
+
+  it('rejects a stale device patch with the current config version', () => {
+    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
+    const device = service.bootstrapDevice({
+      installationId: 'installation-101',
+      displayName: 'Room 101 tablet',
+      assignmentMode: 'ROOM',
+      roomId: room.id
+    }, systemActor, 'setup-device');
+    const adminPrincipal = createAdminPrincipal(service);
+    const expectedVersion = device.device.deviceConfigVersion;
+    const updated = service.patchDevice(adminPrincipal, device.device.id, {
+      displayName: 'Room 101 tablet updated',
+      expectedDeviceConfigVersion: expectedVersion
+    }, 'patch-device');
+    let error: unknown;
+
+    try {
+      service.patchDevice(adminPrincipal, device.device.id, {
+        displayName: 'Stale tablet name',
+        expectedDeviceConfigVersion: expectedVersion
+      }, 'stale-device-patch');
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(AppError);
+    expect(error).toMatchObject({
+      code: 'VERSION_CONFLICT',
+      statusCode: 409,
+      details: { currentVersion: updated.deviceConfigVersion }
+    });
+    expect(service.getDevice(device.device.id)).toMatchObject({
+      displayName: updated.displayName,
+      deviceConfigVersion: updated.deviceConfigVersion
+    });
   });
 
   it('allows duplicate active AREA devices and checks ROOM conflicts when assigning an active device', () => {
@@ -614,6 +851,266 @@ describe('HotelService request access', () => {
     }, 'assign-released-room');
 
     expect(assigned.device).toMatchObject({ assignmentMode: 'ROOM', roomId: room.id, areaId: null, active: true });
+  });
+
+  it('cancels a claimed rotation when the device token is revoked', () => {
+    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
+    const device = service.bootstrapDevice({
+      installationId: 'installation-101',
+      displayName: 'Room 101 tablet',
+      assignmentMode: 'ROOM',
+      roomId: room.id
+    }, systemActor, 'setup-device');
+    const admin = createAdminPrincipal(service);
+    const rotation = service.startTokenRotation(admin, device.device.id, 5, 'Replace the device token', 'start-rotation');
+    const devicePrincipal = service.authenticateDeviceToken(device.deviceToken).principal;
+    const claim = service.claimTokenRotation(devicePrincipal, rotation.rotationId);
+
+    service.revokeDeviceToken(admin, device.device.id, 'revoke-device');
+
+    expect(() => service.authenticateRotationToken(claim.deviceToken)).toThrowError('This token rotation is expired or unavailable.');
+    expect((database.prepare('SELECT state FROM device_token_rotations WHERE id = ?').get(rotation.rotationId) as { state: string })).toEqual({ state: 'CANCELLED' });
+  });
+
+  it.each(['ROTATION_PENDING', 'CLAIMED'] as const)('allows the previous token during %s grace and rejects it after expiry', (rotationState) => {
+    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
+    const device = service.bootstrapDevice({
+      installationId: 'installation-101',
+      displayName: 'Room 101 tablet',
+      assignmentMode: 'ROOM',
+      roomId: room.id
+    }, systemActor, 'setup-device');
+    const admin = createAdminPrincipal(service);
+    const rotation = service.startTokenRotation(admin, device.device.id, 5, 'Replace the device token', 'start-rotation');
+    const devicePrincipal = service.authenticateDeviceToken(device.deviceToken).principal;
+
+    if (rotationState === 'CLAIMED') {
+      service.claimTokenRotation(devicePrincipal, rotation.rotationId);
+    }
+
+    expect(service.authenticateDeviceToken(device.deviceToken).principal.deviceId).toBe(device.device.id);
+
+    const expiredAt = new Date(Date.now() - 60_000).toISOString();
+    database.prepare('UPDATE device_token_rotations SET grace_expires_at = ? WHERE id = ?').run(expiredAt, rotation.rotationId);
+
+    let error: unknown;
+    try {
+      service.authenticateDeviceToken(device.deviceToken);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(AppError);
+    expect(error).toMatchObject({ code: 'TOKEN_ROTATION_EXPIRED', statusCode: 409 });
+  });
+
+  it('does not issue another replacement after a rotation is acknowledged', () => {
+    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
+    const device = service.bootstrapDevice({
+      installationId: 'installation-101',
+      displayName: 'Room 101 tablet',
+      assignmentMode: 'ROOM',
+      roomId: room.id
+    }, systemActor, 'setup-device');
+    const admin = createAdminPrincipal(service);
+    const rotation = service.startTokenRotation(admin, device.device.id, 5, 'Replace the device token', 'start-rotation');
+    const oldPrincipal = service.authenticateDeviceToken(device.deviceToken).principal;
+    const claim = service.claimTokenRotation(oldPrincipal, rotation.rotationId);
+    const replacementPrincipal = service.authenticateRotationToken(claim.deviceToken);
+
+    service.acknowledgeTokenRotation(replacementPrincipal, rotation.rotationId, 'acknowledge-rotation');
+
+    expect(() => service.claimTokenRotation(service.authenticateDeviceToken(claim.deviceToken).principal, rotation.rotationId)).toThrowError('This token rotation is expired or unavailable.');
+  });
+
+  it('rejects a losing token rotation claim when its guarded update affects no rows', () => {
+    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
+    const device = service.bootstrapDevice({
+      installationId: 'installation-101',
+      displayName: 'Room 101 tablet',
+      assignmentMode: 'ROOM',
+      roomId: room.id
+    }, systemActor, 'setup-device');
+    const admin = createAdminPrincipal(service);
+    const rotation = service.startTokenRotation(admin, device.device.id, 5, 'Replace the device token', 'start-rotation');
+    const devicePrincipal = service.authenticateDeviceToken(device.deviceToken).principal;
+    const serviceWithMutate = service as HotelService & {
+      mutate<T>(operation: () => T): T;
+    };
+    const originalMutate = serviceWithMutate.mutate.bind(service);
+    let nested = false;
+    let winningToken: string | undefined;
+    let losingClaim: { deviceToken: string } | undefined;
+    let losingError: AppError | undefined;
+
+    serviceWithMutate.mutate = <T>(operation: () => T): T => {
+      if (!nested) {
+        nested = true;
+        winningToken = service.claimTokenRotation(devicePrincipal, rotation.rotationId).deviceToken;
+      }
+      return originalMutate(operation);
+    };
+
+    try {
+      try {
+        losingClaim = service.claimTokenRotation(devicePrincipal, rotation.rotationId);
+      } catch (error) {
+        losingError = error as AppError;
+      }
+    } finally {
+      serviceWithMutate.mutate = originalMutate;
+    }
+
+    expect(losingError).toBeInstanceOf(AppError);
+    expect(losingError?.code).toBe('TOKEN_ROTATION_EXPIRED');
+    expect(losingError?.statusCode).toBe(409);
+    expect(losingError?.message).toBe('The replacement token was already claimed and cannot be recovered.');
+    expect(losingClaim).toBeUndefined();
+    expect(winningToken).toMatch(/^htl_/);
+  });
+
+  it('maps a concurrent token rotation insert conflict to a domain conflict', () => {
+    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
+    const device = service.bootstrapDevice({
+      installationId: 'installation-101',
+      displayName: 'Room 101 tablet',
+      assignmentMode: 'ROOM',
+      roomId: room.id
+    }, systemActor, 'setup-device');
+    const admin = createAdminPrincipal(service);
+    const serviceWithMutate = service as HotelService & {
+      mutate<T>(operation: () => T): T;
+    };
+    const originalMutate = serviceWithMutate.mutate.bind(service);
+    let nested = false;
+
+    serviceWithMutate.mutate = <T>(operation: () => T): T => {
+      if (!nested) {
+        nested = true;
+        service.startTokenRotation(admin, device.device.id, 5, 'Concurrent rotation', 'nested-rotation');
+      }
+      return originalMutate(operation);
+    };
+
+    try {
+      expect(() => service.startTokenRotation(admin, device.device.id, 5, 'Concurrent rotation', 'outer-rotation')).toThrow(AppError);
+      expect(() => service.startTokenRotation(admin, device.device.id, 5, 'Concurrent rotation', 'second-rotation')).toThrow(/already pending/i);
+    } finally {
+      serviceWithMutate.mutate = originalMutate;
+    }
+  });
+
+  it('rejects a stale device assignment after the guarded update matches no rows', () => {
+    const area = service.createArea({ code: 'test-housekeeping', displayName: 'Housekeeping' }, systemActor, 'setup-area');
+    const firstRoom = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room-first');
+    const secondRoom = service.createRoom({ code: '102', displayName: 'Room 102' }, systemActor, 'setup-room-second');
+    const device = service.bootstrapDevice({
+      installationId: 'installation-housekeeping',
+      displayName: 'Housekeeping tablet',
+      assignmentMode: 'AREA',
+      areaId: area.id
+    }, systemActor, 'setup-device');
+    const admin = createAdminPrincipal(service);
+    const expectedVersion = device.device.deviceConfigVersion;
+    const nestedInput = {
+      assignmentMode: 'ROOM' as const,
+      roomId: secondRoom.id,
+      areaId: null,
+      expectedDeviceConfigVersion: expectedVersion,
+      reason: 'Concurrent assignment'
+    };
+    const outerInput = { ...nestedInput, roomId: firstRoom.id, reason: 'Stale assignment' };
+    const serviceWithMutate = service as HotelService & {
+      mutate<T>(operation: () => T): T;
+    };
+    const originalMutate = serviceWithMutate.mutate.bind(service);
+    let nested = false;
+
+    serviceWithMutate.mutate = <T>(operation: () => T): T => {
+      if (!nested) {
+        nested = true;
+        service.assignDevice(admin, device.device.id, nestedInput, 'nested-assignment');
+      }
+      return originalMutate(operation);
+    };
+
+    try {
+      expect(() => service.assignDevice(admin, device.device.id, outerInput, 'outer-assignment')).toThrowError(/configuration changed/i);
+      expect(service.getDevice(device.device.id)).toMatchObject({ roomId: secondRoom.id, deviceConfigVersion: expectedVersion + 1 });
+    } finally {
+      serviceWithMutate.mutate = originalMutate;
+    }
+  });
+
+  it('expires an old rotation before starting a new one', () => {
+    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
+    const device = service.bootstrapDevice({
+      installationId: 'installation-101',
+      displayName: 'Room 101 tablet',
+      assignmentMode: 'ROOM',
+      roomId: room.id
+    }, systemActor, 'setup-device');
+    const admin = createAdminPrincipal(service);
+    const activeTokenId = service.authenticateDeviceToken(device.deviceToken).tokenId;
+    const expiredAt = new Date(Date.now() - 60_000).toISOString();
+    database.prepare('INSERT INTO device_token_rotations(id, device_id, previous_token_id, state, created_at, grace_expires_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+      'rot-expired', device.device.id, activeTokenId, 'ROTATION_PENDING', expiredAt, expiredAt
+    );
+
+    const replacement = service.startTokenRotation(admin, device.device.id, 5, 'Replace the expired rotation', 'restart-rotation');
+
+    expect(replacement.state).toBe('ROTATION_PENDING');
+    expect((database.prepare('SELECT state FROM device_token_rotations WHERE id = ?').get('rot-expired') as { state: string }).state).toBe('EXPIRED');
+  });
+
+  it('distinguishes retired installation conflicts from active installation conflicts', () => {
+    const area = service.createArea({ code: 'test-housekeeping', displayName: 'Housekeeping' }, systemActor, 'setup-area');
+    const retired = service.bootstrapDevice({
+      installationId: 'installation-retired',
+      displayName: 'Retired station',
+      assignmentMode: 'AREA',
+      areaId: area.id
+    }, systemActor, 'setup-retired-device');
+    service.retireDevice(createAdminPrincipal(service), retired.device.id, 'retire-device', 'retire-device-request');
+
+    let retiredError: unknown;
+    try {
+      service.bootstrapDevice({
+        installationId: 'installation-retired',
+        displayName: 'Replacement station',
+        assignmentMode: 'AREA',
+        areaId: area.id
+      }, systemActor, 'replacement-device');
+    } catch (error) {
+      retiredError = error;
+    }
+    expect(retiredError).toBeInstanceOf(AppError);
+    expect(retiredError).toMatchObject({
+      code: 'RESOURCE_CONFLICT',
+      statusCode: 409,
+      details: { reason: 'RETIRED_INSTALLATION' }
+    });
+    expect((retiredError as Error).message).toMatch(/retired/i);
+
+    service.bootstrapDevice({
+      installationId: 'installation-active',
+      displayName: 'Active station',
+      assignmentMode: 'AREA',
+      areaId: area.id
+    }, systemActor, 'setup-active-device');
+    let activeError: unknown;
+    try {
+      service.bootstrapDevice({
+        installationId: 'installation-active',
+        displayName: 'Duplicate station',
+        assignmentMode: 'AREA',
+        areaId: area.id
+      }, systemActor, 'duplicate-active-device');
+    } catch (error) {
+      activeError = error;
+    }
+    expect(activeError).toMatchObject({ code: 'RESOURCE_CONFLICT', statusCode: 409, details: undefined });
+    expect((activeError as Error).message).toBe('This browser installation is already bound to a device.');
   });
 });
 

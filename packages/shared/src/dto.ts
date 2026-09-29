@@ -1,4 +1,4 @@
-import type { AppMode, ActorType, DeviceAssignmentMode, DevicePresence, RequestStatus, RoomBackgroundValue, SettingKey, SettingValue } from './domain';
+import type { AppMode, ActorType, DeviceAssignmentMode, DevicePresence, InformationImageLanguage, InformationImageVariant, RequestStatus, RoomBackgroundValue, SettingKey, SettingValue } from './domain';
 
 export type LocalizedTextVariants = Partial<Record<string, string>>;
 
@@ -11,6 +11,7 @@ export interface RoomDTO {
   displayOrder: number;
   active: boolean;
   doNotDisturb: boolean;
+  doNotDisturbActivatedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -73,12 +74,34 @@ export interface SettingDTO {
   updatedByAdminId: string | null;
 }
 
+export interface InformationImageDTO {
+  id: string;
+  originalName: string;
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+  byteSize: number;
+  displayOrder: number;
+  createdAt: string;
+  updatedAt: string;
+  variants?: InformationImageVariantDTO[];
+}
+
+export interface InformationImageVariantDTO {
+  /** Omitted for legacy uploads created before language was tracked. */
+  language?: InformationImageLanguage;
+  variant: InformationImageVariant;
+  originalName: string;
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+  byteSize: number;
+}
+
 export interface CompactRoom {
   id: string;
   code: string;
   displayName: string;
   displayNameVariants?: LocalizedTextVariants;
   doNotDisturb: boolean;
+  /** Optional for older cached snapshots; null means its activation time is unknown. */
+  doNotDisturbActivatedAt?: string | null;
 }
 
 export interface CompactArea {
@@ -157,6 +180,8 @@ export interface DeviceConfig {
   /** Named service areas are omitted only from legacy cached snapshots. */
   areas?: CompactArea[];
   hotelName: string;
+  /** Optional for compatibility with cached snapshots created before hotel-name localization. */
+  hotelNameVariants?: LocalizedTextVariants;
   hotelLogo: string | null;
   roomBackground: RoomBackgroundValue;
   clockFormat: '12h' | '24h';
@@ -165,6 +190,11 @@ export interface DeviceConfig {
   heartbeatStaleAfterMs: number;
   heartbeatOfflineAfterMs: number;
   pendingAlertIntervalMs: number;
+  /** Optional for compatibility with legacy cached snapshots. */
+  informationIdleTimeoutSeconds?: number;
+  /** Optional for compatibility with legacy cached snapshots. */
+  informationSlideIntervalSeconds?: number;
+  informationImages?: InformationImageDTO[];
 }
 
 export interface PendingTokenRotation {
@@ -193,6 +223,12 @@ export interface MutationResponse<T> {
   idempotentReplay?: boolean;
 }
 
+export interface DeviceControlResult {
+  deviceId: string;
+  command: 'audioBeep' | 'screenSaverOff' | 'screenSaverOn';
+  executed: true;
+}
+
 export interface BootstrapState {
   installationId: string;
   configured: boolean;
@@ -211,6 +247,7 @@ export interface AdminSystemSnapshot {
   auditLog: AuditLogDTO[];
   outboxBacklog: number;
   warnings: AdminWarningCode[];
+  informationImages?: InformationImageDTO[];
 }
 
 export type AdminWarningCode =

@@ -15,6 +15,8 @@ import {
   devicePatchSchema,
   deviceRebindSchema,
   heartbeatSchema,
+  informationImageVariantSchema,
+  informationImageReorderSchema,
   requestCreateSchema,
   requestStatusSchema,
   requestTransitionSchema,
@@ -27,16 +29,20 @@ import {
   settingsPatchSchema,
   tokenRotationSchema,
   type PageResult,
+  type InformationImageLanguage,
+  type InformationImageVariant,
   type RequestStatus
 } from '@hotel/shared';
 import type { ServerConfig } from '../config/env';
-import type { HotelService, RequestFilters } from '../domain/hotel-service';
-import { AppError, isAppError, validationError } from '../errors';
+import type { HotelService, InformationImageUpload, RequestFilters, RotationTokenPrincipal } from '../domain/hotel-service';
+import { AppError, isAppError, notFound, validationError } from '../errors';
+import { createFreeKioskClient, type FreeKioskBeepResult, type FreeKioskScreensaverResult } from '../integrations/freekiosk-client';
+import { hashJson } from '../security/crypto';
 import { actorForPrincipal, type AdminPrincipal, type Principal } from '../security/principal';
 import { createRateLimiter, principalKey, sourceIpKey } from './rate-limit';
 
 const ADMIN_SESSION_COOKIE = 'hotel_admin_session';
-const JSON_BODY_LIMIT = '256kb';
+const JSON_BODY_LIMIT = '64kb';
 
 declare global {
   // Express request context is populated by the first middleware.
@@ -45,6 +51,7 @@ declare global {
     interface Request {
       requestId: string;
       principal?: Principal;
+      rotationTokenPrincipal?: RotationTokenPrincipal;
     }
   }
 }
@@ -55,11 +62,20 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
   const admin = requireAdmin(service);
   const device = requireDevice(service);
   const anyPrincipal = requireAnyPrincipal(service);
-  const loginRateLimit = createRateLimiter({ name: 'admin-login', limit: 5, windowMs: 60_000, key: sourceIpKey });
+  const loginRateLimit = createRateLimiter({ name: 'admin-login', limit: config.loginRateLimitMaxRequests, windowMs: 60_000, key: sourceIpKey });
   const bootstrapStateRateLimit = createRateLimiter({ name: 'bootstrap-state', limit: 30, windowMs: 60_000, key: sourceIpKey });
   const principalMutationRateLimit = createRateLimiter({ name: 'authenticated-mutation', limit: 120, windowMs: 60_000, key: principalKey });
   const adminOperationRateLimit = createRateLimiter({ name: 'admin-operation', limit: 10, windowMs: 60_000, key: principalKey });
   const heartbeatRateLimit = createRateLimiter({ name: 'device-heartbeat', limit: 6, windowMs: 60_000, key: principalKey });
+  const freeKioskClient = createFreeKioskClient(config);
+  const informationImageUpload = express.raw({
+    limit: `${config.informationImageMaxBytes * 4 + 128 * 1024}b`,
+    type: (req) => {
+      const contentTypeHeader = req.headers['content-type'];
+      const contentType = Array.isArray(contentTypeHeader) ? contentTypeHeader[0] ?? '' : contentTypeHeader ?? '';
+      return contentType.startsWith('multipart/form-data') || contentType.startsWith('application/octet-stream') || contentType.startsWith('image/');
+    }
+  });
   const adminMutation = [admin, requireAdminCsrf(service), principalMutationRateLimit];
   const adminSensitiveMutation = [admin, requireAdminCsrf(service), adminOperationRateLimit];
   const requestMutation = [anyPrincipal, requireAdminCsrfIfNeeded(service), principalMutationRateLimit];
@@ -115,11 +131,11 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
   }));
 
   const bootstrapDevice = asyncHandler(async (req, res) => {
-    requireMutationKey(req);
+    const idempotencyKey = requireMutationKey(req);
     const principal = getAdminPrincipal(req);
     const input = parseBody(deviceCreateSchema, req.body);
-    const data = service.bootstrapDevice(input, actorForPrincipal(principal), req.requestId);
-    sendData(res, 201, data, req.requestId, { configurationRevision: data.configurationRevision });
+    const result = service.bootstrapDeviceIdempotent(input, actorForPrincipal(principal), idempotencyKey, req.requestId);
+    sendData(res, 201, result.data, req.requestId, { configurationRevision: result.data.configurationRevision, idempotentReplay: result.idempotentReplay });
   });
   api.post('/devices/bootstrap', adminSensitiveMutation, bootstrapDevice);
   api.post('/devices', adminSensitiveMutation, bootstrapDevice);
@@ -137,14 +153,14 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     sendData(res, 200, { ok: true }, req.requestId);
   }));
 
-  api.post('/device/token-rotation/claim', device, asyncHandler(async (req, res) => {
+  api.post('/device/token-rotation/claim', [device, adminOperationRateLimit], asyncHandler(async (req, res) => {
     const input = parseBody(rotationClaimSchema, req.body);
     const data = service.claimTokenRotation(getDevicePrincipal(req), input.rotationId);
     sendData(res, 200, data, req.requestId);
   }));
 
-  api.post('/device/token-rotation/acknowledge', asyncHandler(async (req, res) => {
-    const principal = service.authenticateRotationToken(readBearerToken(req));
+  api.post('/device/token-rotation/acknowledge', [requireRotationToken(service), adminOperationRateLimit], asyncHandler(async (req, res) => {
+    const principal = getRotationTokenPrincipal(req);
     const input = parseBody(rotationClaimSchema, req.body);
     service.acknowledgeTokenRotation(principal, input.rotationId, req.requestId);
     sendData(res, 200, { rotationId: input.rotationId, acknowledged: true }, req.requestId);
@@ -173,7 +189,7 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     sendPage(res, service.listAreaRequestsPage(getDevicePrincipal(req), parseRequestFilters(req)), req.requestId);
   }));
 
-  api.post('/requests', device, asyncHandler(async (req, res) => {
+  api.post('/requests', [device, principalMutationRateLimit], asyncHandler(async (req, res) => {
     const input = parseBody(requestCreateSchema, req.body);
     const result = service.createRequest(getDevicePrincipal(req), input.serviceId, requireMutationKey(req), req.requestId);
     sendData(res, 201, result.data, req.requestId, { idempotentReplay: result.idempotentReplay });
@@ -210,14 +226,19 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     sendResource(res, service.getRoom(routeParam(req.params['id'], 'id')), req.requestId, 'Room');
   }));
   api.post('/rooms', adminMutation, asyncHandler(async (req, res) => {
-    requireMutationKey(req);
-    const data = service.createRoom(parseBody(roomCreateSchema, req.body), actorForPrincipal(getAdminPrincipal(req)), req.requestId);
-    sendData(res, 201, data, req.requestId, { configurationRevision: service.getConfigurationRevision() });
+    const idempotencyKey = requireMutationKey(req);
+    const principal = getAdminPrincipal(req);
+    const input = parseBody(roomCreateSchema, req.body);
+    const result = service.runIdempotentMutation(actorForPrincipal(principal), idempotencyKey, 'room.create', hashJson(input), null, () => service.createRoom(input, actorForPrincipal(principal), req.requestId), 201);
+    sendData(res, 201, result.data, req.requestId, { configurationRevision: service.getConfigurationRevision(), idempotentReplay: result.idempotentReplay });
   }));
   api.patch('/rooms/:id', adminMutation, asyncHandler(async (req, res) => {
-    requireMutationKey(req);
-    const data = service.patchRoom(routeParam(req.params['id'], 'id'), parseBody(roomPatchSchema, req.body), actorForPrincipal(getAdminPrincipal(req)), req.requestId);
-    sendData(res, 200, data, req.requestId, { configurationRevision: service.getConfigurationRevision() });
+    const idempotencyKey = requireMutationKey(req);
+    const principal = getAdminPrincipal(req);
+    const roomId = routeParam(req.params['id'], 'id');
+    const input = parseBody(roomPatchSchema, req.body);
+    const result = service.runIdempotentMutation(actorForPrincipal(principal), idempotencyKey, 'room.update', hashJson(input), roomId, () => service.patchRoom(roomId, input, actorForPrincipal(principal), req.requestId));
+    sendData(res, 200, result.data, req.requestId, { configurationRevision: service.getConfigurationRevision(), idempotentReplay: result.idempotentReplay });
   }));
   registerToggleRoutes(api, '/rooms/:id', adminMutation, (req, active) => service.patchRoom(routeParam(req.params['id'], 'id'), { active }, actorForPrincipal(getAdminPrincipal(req)), req.requestId), service, true);
 
@@ -228,14 +249,19 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     sendResource(res, service.getArea(routeParam(req.params['id'], 'id')), req.requestId, 'Area');
   }));
   api.post('/areas', adminMutation, asyncHandler(async (req, res) => {
-    requireMutationKey(req);
-    const data = service.createArea(parseBody(areaCreateSchema, req.body), actorForPrincipal(getAdminPrincipal(req)), req.requestId);
-    sendData(res, 201, data, req.requestId, { configurationRevision: service.getConfigurationRevision() });
+    const idempotencyKey = requireMutationKey(req);
+    const principal = getAdminPrincipal(req);
+    const input = parseBody(areaCreateSchema, req.body);
+    const result = service.runIdempotentMutation(actorForPrincipal(principal), idempotencyKey, 'area.create', hashJson(input), null, () => service.createArea(input, actorForPrincipal(principal), req.requestId), 201);
+    sendData(res, 201, result.data, req.requestId, { configurationRevision: service.getConfigurationRevision(), idempotentReplay: result.idempotentReplay });
   }));
   api.patch('/areas/:id', adminMutation, asyncHandler(async (req, res) => {
-    requireMutationKey(req);
-    const data = service.patchArea(routeParam(req.params['id'], 'id'), parseBody(areaPatchSchema, req.body), actorForPrincipal(getAdminPrincipal(req)), req.requestId);
-    sendData(res, 200, data, req.requestId, { configurationRevision: service.getConfigurationRevision() });
+    const idempotencyKey = requireMutationKey(req);
+    const principal = getAdminPrincipal(req);
+    const areaId = routeParam(req.params['id'], 'id');
+    const input = parseBody(areaPatchSchema, req.body);
+    const result = service.runIdempotentMutation(actorForPrincipal(principal), idempotencyKey, 'area.update', hashJson(input), areaId, () => service.patchArea(areaId, input, actorForPrincipal(principal), req.requestId));
+    sendData(res, 200, result.data, req.requestId, { configurationRevision: service.getConfigurationRevision(), idempotentReplay: result.idempotentReplay });
   }));
   registerToggleRoutes(api, '/areas/:id', adminMutation, (req, active) => service.patchArea(routeParam(req.params['id'], 'id'), { active }, actorForPrincipal(getAdminPrincipal(req)), req.requestId), service, true);
 
@@ -248,14 +274,19 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     sendResource(res, service.getService(routeParam(req.params['id'], 'id')), req.requestId, 'Service');
   }));
   api.post('/services', adminMutation, asyncHandler(async (req, res) => {
-    requireMutationKey(req);
-    const data = service.createService(parseBody(serviceCreateSchema, req.body), actorForPrincipal(getAdminPrincipal(req)), req.requestId);
-    sendData(res, 201, data, req.requestId, { configurationRevision: service.getConfigurationRevision() });
+    const idempotencyKey = requireMutationKey(req);
+    const principal = getAdminPrincipal(req);
+    const input = parseBody(serviceCreateSchema, req.body);
+    const result = service.runIdempotentMutation(actorForPrincipal(principal), idempotencyKey, 'service.create', hashJson(input), null, () => service.createService(input, actorForPrincipal(principal), req.requestId), 201);
+    sendData(res, 201, result.data, req.requestId, { configurationRevision: service.getConfigurationRevision(), idempotentReplay: result.idempotentReplay });
   }));
   api.patch('/services/:id', adminMutation, asyncHandler(async (req, res) => {
-    requireMutationKey(req);
-    const data = service.patchService(routeParam(req.params['id'], 'id'), parseBody(servicePatchSchema, req.body), actorForPrincipal(getAdminPrincipal(req)), req.requestId);
-    sendData(res, 200, data, req.requestId, { configurationRevision: service.getConfigurationRevision() });
+    const idempotencyKey = requireMutationKey(req);
+    const principal = getAdminPrincipal(req);
+    const serviceId = routeParam(req.params['id'], 'id');
+    const input = parseBody(servicePatchSchema, req.body);
+    const result = service.runIdempotentMutation(actorForPrincipal(principal), idempotencyKey, 'service.update', hashJson(input), serviceId, () => service.patchService(serviceId, input, actorForPrincipal(principal), req.requestId));
+    sendData(res, 200, result.data, req.requestId, { configurationRevision: service.getConfigurationRevision(), idempotentReplay: result.idempotentReplay });
   }));
   registerToggleRoutes(api, '/services/:id', adminMutation, (req, active) => service.patchService(routeParam(req.params['id'], 'id'), { active }, actorForPrincipal(getAdminPrincipal(req)), req.requestId), service, true);
 
@@ -266,30 +297,83 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     sendResource(res, service.getDevice(routeParam(req.params['id'], 'id')), req.requestId, 'Device');
   }));
   api.patch('/devices/:id', adminMutation, asyncHandler(async (req, res) => {
-    requireMutationKey(req);
-    const data = service.patchDevice(getAdminPrincipal(req), routeParam(req.params['id'], 'id'), parseBody(devicePatchSchema, req.body), req.requestId);
-    sendData(res, 200, data, req.requestId, { configurationRevision: service.getConfigurationRevision() });
+    const idempotencyKey = requireMutationKey(req);
+    const principal = getAdminPrincipal(req);
+    const deviceId = routeParam(req.params['id'], 'id');
+    const input = parseBody(devicePatchSchema, req.body);
+    const result = service.runIdempotentMutation(actorForPrincipal(principal), idempotencyKey, 'device.update', hashJson(input), deviceId, () => service.patchDevice(principal, deviceId, input, req.requestId));
+    sendData(res, 200, result.data, req.requestId, { configurationRevision: service.getConfigurationRevision(), idempotentReplay: result.idempotentReplay });
   }));
   registerToggleRoutes(api, '/devices/:id', adminMutation, (req, active) => service.patchDevice(getAdminPrincipal(req), routeParam(req.params['id'], 'id'), { active }, req.requestId), service, true);
   api.post('/devices/:id/retire', adminSensitiveMutation, asyncHandler(async (req, res) => {
     const result = service.retireDevice(getAdminPrincipal(req), routeParam(req.params['id'], 'id'), requireMutationKey(req), req.requestId);
     sendData(res, 200, result.data, req.requestId, { configurationRevision: result.configurationRevision, idempotentReplay: result.idempotentReplay });
   }));
+  api.post('/devices/:id/audio/beep', adminSensitiveMutation, asyncHandler(async (req, res) => {
+    const idempotencyKey = requireMutationKey(req);
+    const principal = getAdminPrincipal(req);
+    const deviceId = routeParam(req.params['id'], 'id');
+    const replay = service.getDeviceControlReplay(principal, deviceId, idempotencyKey);
+    if (replay !== undefined) {
+      sendData(res, 200, replay, req.requestId, { idempotentReplay: true });
+      return;
+    }
+    const target = service.getDeviceControlTarget(deviceId);
+    let result: FreeKioskBeepResult;
+    try {
+      result = await freeKioskClient.beep(target.lastIp);
+    } catch (error) {
+      service.recordDeviceControl(principal, deviceId, 'audioBeep', 'FAILED', req.requestId);
+      throw error;
+    }
+    const response = { deviceId, ...result };
+    service.storeDeviceControlResult(principal, deviceId, idempotencyKey, response);
+    service.recordDeviceControl(principal, deviceId, result.command, 'SUCCEEDED', req.requestId);
+    sendData(res, 200, response, req.requestId, { idempotentReplay: false });
+  }));
+  const deviceScreensaver = (enabled: boolean) => [device, principalMutationRateLimit, asyncHandler(async (req, res) => {
+    const principal = getDevicePrincipal(req);
+    service.assertInformationCarouselAccess(principal);
+    const target = service.getDeviceControlTarget(principal.deviceId);
+    const result: FreeKioskScreensaverResult = await freeKioskClient.setScreensaver(target.lastIp, enabled);
+    sendData(res, 200, result, req.requestId);
+  })] as RequestHandler[];
+  api.post('/device/information/screensaver/off', deviceScreensaver(false));
+  api.post('/device/information/screensaver/on', deviceScreensaver(true));
+
+  api.get('/device/information/images', device, asyncHandler(async (req, res) => {
+    sendList(res, service.listInformationImagesForDevice(getDevicePrincipal(req)), req.requestId);
+  }));
+  api.get('/device/information/images/:id/content', device, asyncHandler(async (req, res) => {
+    const content = service.getInformationImageContentForDevice(getDevicePrincipal(req), routeParam(req.params['id'], 'id'), parseOptionalInformationImageVariant(req.query['variant']), parseOptionalInformationImageLanguage(req.query['language']));
+    if (content === null) throw notFound('Information image');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Request-Id', req.requestId);
+    res.type(content.image.mimeType).send(content.bytes);
+  }));
   api.post('/devices/:id/assignment', adminMutation, asyncHandler(async (req, res) => {
-    requireMutationKey(req);
-    const data = service.assignDevice(getAdminPrincipal(req), routeParam(req.params['id'], 'id'), parseBody(deviceAssignmentSchema, req.body), req.requestId);
-    sendData(res, 200, data.device, req.requestId, { configurationRevision: data.configurationRevision });
+    const idempotencyKey = requireMutationKey(req);
+    const principal = getAdminPrincipal(req);
+    const deviceId = routeParam(req.params['id'], 'id');
+    const input = parseBody(deviceAssignmentSchema, req.body);
+    const result = service.runIdempotentMutation(actorForPrincipal(principal), idempotencyKey, 'device.assignment', hashJson(input), deviceId, () => service.assignDevice(principal, deviceId, input, req.requestId));
+    sendData(res, 200, result.data.device, req.requestId, { configurationRevision: result.data.configurationRevision, idempotentReplay: result.idempotentReplay });
   }));
   api.post('/devices/:id/token-rotation', adminSensitiveMutation, asyncHandler(async (req, res) => {
-    requireMutationKey(req);
+    const idempotencyKey = requireMutationKey(req);
     const input = parseBody(tokenRotationSchema, req.body);
-    const data = service.startTokenRotation(getAdminPrincipal(req), routeParam(req.params['id'], 'id'), input.gracePeriodMinutes ?? 30, input.reason, req.requestId);
-    sendData(res, 202, data, req.requestId, { configurationRevision: service.getConfigurationRevision() });
+    const principal = getAdminPrincipal(req);
+    const deviceId = routeParam(req.params['id'], 'id');
+    const normalizedInput = { gracePeriodMinutes: input.gracePeriodMinutes ?? 30, reason: input.reason };
+    const result = service.runIdempotentMutation(actorForPrincipal(principal), idempotencyKey, 'device.tokenRotation.start', hashJson(normalizedInput), deviceId, () => service.startTokenRotation(principal, deviceId, normalizedInput.gracePeriodMinutes, normalizedInput.reason, req.requestId), 202);
+    sendData(res, 202, result.data, req.requestId, { configurationRevision: service.getConfigurationRevision(), idempotentReplay: result.idempotentReplay });
   }));
   api.post('/devices/:id/revoke-token', adminSensitiveMutation, asyncHandler(async (req, res) => {
-    requireMutationKey(req);
-    service.revokeDeviceToken(getAdminPrincipal(req), routeParam(req.params['id'], 'id'), req.requestId);
-    sendData(res, 200, { revoked: true }, req.requestId, { configurationRevision: service.getConfigurationRevision() });
+    const idempotencyKey = requireMutationKey(req);
+    const principal = getAdminPrincipal(req);
+    const deviceId = routeParam(req.params['id'], 'id');
+    const result = service.revokeDeviceTokenIdempotent(principal, deviceId, idempotencyKey, req.requestId);
+    sendData(res, 200, result.data, req.requestId, { configurationRevision: service.getConfigurationRevision(), idempotentReplay: result.idempotentReplay });
   }));
 
   api.get('/admins', admin, asyncHandler(async (req, res) => {
@@ -299,16 +383,21 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     sendResource(res, service.getAdmin(routeParam(req.params['id'], 'id')), req.requestId, 'Administrator');
   }));
   api.post('/admins', adminMutation, asyncHandler(async (req, res) => {
-    requireMutationKey(req);
-    const data = service.createAdmin(parseBody(adminCreateSchema, req.body), actorForPrincipal(getAdminPrincipal(req)), req.requestId);
-    sendData(res, 201, data, req.requestId);
+    const idempotencyKey = requireMutationKey(req);
+    const principal = getAdminPrincipal(req);
+    const input = parseBody(adminCreateSchema, req.body);
+    const result = service.runIdempotentMutation(actorForPrincipal(principal), idempotencyKey, 'admin.create', hashJson(input), null, () => service.createAdmin(input, actorForPrincipal(principal), req.requestId), 201);
+    sendData(res, 201, result.data, req.requestId, { idempotentReplay: result.idempotentReplay });
   }));
   api.patch('/admins/:id', adminMutation, asyncHandler(async (req, res) => {
-    requireMutationKey(req);
-    const data = service.patchAdmin(getAdminPrincipal(req), routeParam(req.params['id'], 'id'), parseBody(adminPatchSchema, req.body), req.requestId);
-    sendData(res, 200, data, req.requestId);
+    const idempotencyKey = requireMutationKey(req);
+    const principal = getAdminPrincipal(req);
+    const adminId = routeParam(req.params['id'], 'id');
+    const input = parseBody(adminPatchSchema, req.body);
+    const result = service.runIdempotentMutation(actorForPrincipal(principal), idempotencyKey, 'admin.update', hashJson(input), adminId, () => service.patchAdmin(principal, adminId, input, req.requestId));
+    sendData(res, 200, result.data, req.requestId, { idempotentReplay: result.idempotentReplay });
   }));
-  registerAdminToggleRoutes(api, '/admins/:id', adminMutation, (req, active) => service.patchAdmin(getAdminPrincipal(req), routeParam(req.params['id'], 'id'), { active }, req.requestId));
+  registerAdminToggleRoutes(api, '/admins/:id', adminMutation, (req, active) => service.patchAdmin(getAdminPrincipal(req), routeParam(req.params['id'], 'id'), { active }, req.requestId), service);
   api.post('/admins/:id/password', adminMutation, asyncHandler(async (req, res) => {
     requireMutationKey(req);
     const input = parseBody(passwordChangeSchema, req.body);
@@ -316,9 +405,11 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     sendData(res, 200, data, req.requestId);
   }));
   api.post('/admins/:id/revoke-sessions', adminMutation, asyncHandler(async (req, res) => {
-    requireMutationKey(req);
-    service.revokeAdminSessions(getAdminPrincipal(req), routeParam(req.params['id'], 'id'), req.requestId);
-    sendData(res, 200, { revoked: true }, req.requestId);
+    const idempotencyKey = requireMutationKey(req);
+    const principal = getAdminPrincipal(req);
+    const adminId = routeParam(req.params['id'], 'id');
+    const result = service.revokeAdminSessionsIdempotent(principal, adminId, idempotencyKey, req.requestId);
+    sendData(res, 200, result.data, req.requestId, { idempotentReplay: result.idempotentReplay });
   }));
 
   api.get('/audit-log', admin, asyncHandler(async (req, res) => {
@@ -329,16 +420,53 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     sendList(res, service.listSettings(), req.requestId);
   }));
   api.patch('/settings', adminMutation, asyncHandler(async (req, res) => {
-    requireMutationKey(req);
+    const idempotencyKey = requireMutationKey(req);
     const input = parseBody(settingsPatchSchema, req.body);
-    const data = service.updateSettings(getAdminPrincipal(req), input.changes, req.requestId);
+    const principal = getAdminPrincipal(req);
+    const result = service.runIdempotentMutation(actorForPrincipal(principal), idempotencyKey, 'settings.update', hashJson(input.changes), 'settings', () => service.updateSettings(principal, input.changes, req.requestId));
+    sendList(res, result.data, req.requestId, { configurationRevision: service.getConfigurationRevision(), idempotentReplay: result.idempotentReplay });
+  }));
+  api.get('/information/images', admin, asyncHandler(async (req, res) => {
+    sendList(res, service.listInformationImages(), req.requestId);
+  }));
+  api.get('/information/images/:id/content', admin, asyncHandler(async (req, res) => {
+    const content = service.getInformationImageContent(routeParam(req.params['id'], 'id'), parseOptionalInformationImageVariant(req.query['variant']), parseOptionalInformationImageLanguage(req.query['language']));
+    if (content === null) throw notFound('Information image');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Request-Id', req.requestId);
+    res.type(content.image.mimeType).send(content.bytes);
+  }));
+  api.post('/information/images', [admin, requireAdminCsrf(service), principalMutationRateLimit, informationImageUpload], asyncHandler(async (req, res) => {
+    const idempotencyKey = requireMutationKey(req);
+    const upload = parseInformationImageUpload(req);
+    const actor = actorForPrincipal(getAdminPrincipal(req));
+    const result = service.runIdempotentMutation(actor, idempotencyKey, 'information.image.create', hashInformationImageUploads(upload), null, () => service.createInformationImageVariants(upload, actor, req.requestId), 201);
+    sendData(res, 201, result.data, req.requestId, { configurationRevision: service.getConfigurationRevision(), idempotentReplay: result.idempotentReplay });
+  }));
+  api.post('/information/images/:id/variants', [admin, requireAdminCsrf(service), principalMutationRateLimit, informationImageUpload], asyncHandler(async (req, res) => {
+    const idempotencyKey = requireMutationKey(req);
+    const upload = parseInformationImageUpload(req);
+    const imageId = routeParam(req.params['id'], 'id');
+    const actor = actorForPrincipal(getAdminPrincipal(req));
+    const result = service.runIdempotentMutation(actor, idempotencyKey, 'information.image.variants.update', hashInformationImageUploads(upload), imageId, () => service.updateInformationImageVariants(imageId, upload, actor, req.requestId));
+    sendData(res, 200, result.data, req.requestId, { configurationRevision: service.getConfigurationRevision(), idempotentReplay: result.idempotentReplay });
+  }));
+  api.patch('/information/images/order', adminMutation, asyncHandler(async (req, res) => {
+    requireMutationKey(req);
+    const data = service.reorderInformationImages(parseBody(informationImageReorderSchema, req.body).ids, actorForPrincipal(getAdminPrincipal(req)), req.requestId);
     sendList(res, data, req.requestId, { configurationRevision: service.getConfigurationRevision() });
+  }));
+  api.delete('/information/images/:id', adminMutation, asyncHandler(async (req, res) => {
+    requireMutationKey(req);
+    service.deleteInformationImage(routeParam(req.params['id'], 'id'), actorForPrincipal(getAdminPrincipal(req)), req.requestId);
+    sendData(res, 200, { deleted: true }, req.requestId, { configurationRevision: service.getConfigurationRevision() });
   }));
   api.get('/system/health', asyncHandler(async (req, res) => {
     const health = service.getHealth();
     sendData(res, health.status === 'ready' ? 200 : 503, health, req.requestId);
   }));
   api.get('/system/snapshot', admin, asyncHandler(async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
     sendData(res, 200, service.getAdminSnapshot(), req.requestId);
   }));
 
@@ -403,6 +531,19 @@ function requireDevice(service: HotelService): RequestHandler {
         throw new AppError('AUTH_REQUIRED', 'A device bearer token is required.', 401);
       }
       req.principal = service.authenticateDeviceToken(credentials.bearer).principal;
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
+function requireRotationToken(service: HotelService): RequestHandler {
+  return (req, _res, next) => {
+    try {
+      const rotationTokenPrincipal = service.authenticateRotationToken(readBearerToken(req));
+      req.rotationTokenPrincipal = rotationTokenPrincipal;
+      req.principal = rotationTokenPrincipal.principal;
       next();
     } catch (error) {
       next(error);
@@ -503,6 +644,13 @@ function getDevicePrincipal(req: Request) {
   return principal;
 }
 
+function getRotationTokenPrincipal(req: Request): RotationTokenPrincipal {
+  if (req.rotationTokenPrincipal === undefined) {
+    throw new AppError('AUTH_REQUIRED', 'Authentication is required.', 401);
+  }
+  return req.rotationTokenPrincipal;
+}
+
 function getSessionExpiry(service: HotelService, principal: AdminPrincipal): string {
   return service.getAdminSessionExpiry(principal);
 }
@@ -513,6 +661,136 @@ function parseBody<T>(schema: z.ZodType<T>, body: unknown): T {
     throw validationError('Request body failed validation.', result.error.flatten());
   }
   return result.data;
+}
+
+type ParsedInformationImageUpload = InformationImageUpload & { contentType?: string };
+
+function parseInformationImageUpload(req: Request): ParsedInformationImageUpload[] {
+  if (!Buffer.isBuffer(req.body)) {
+    throw validationError('An image upload is required.');
+  }
+  const contentType = req.get('content-type') ?? '';
+  if (contentType.startsWith('multipart/form-data')) {
+    return parseMultipartInformationImage(req.body, contentType);
+  }
+  const uploadContentType = normalizeInformationImageContentType(req.get('content-type'));
+  return [{
+    bytes: req.body,
+    originalName: req.get('x-image-name') ?? 'image',
+    ...(uploadContentType === undefined ? {} : { contentType: uploadContentType })
+  }];
+}
+
+function parseMultipartInformationImage(body: Buffer, contentType: string): ParsedInformationImageUpload[] {
+  const boundaryMatch = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType);
+  const boundary = (boundaryMatch?.[1] ?? boundaryMatch?.[2])?.trim();
+  if (boundary === undefined || boundary.length === 0) {
+    throw validationError('Multipart image upload is missing its boundary.');
+  }
+  const delimiter = Buffer.from(`--${boundary}`, 'ascii');
+  const headerSeparator = Buffer.from('\r\n\r\n', 'ascii');
+  if (!body.subarray(0, delimiter.length).equals(delimiter) || !hasMultipartBoundarySuffix(body, delimiter.length)) {
+    throw validationError('Multipart image upload has an invalid boundary.');
+  }
+
+  const uploads: ParsedInformationImageUpload[] = [];
+  const fields = new Set<string>();
+  let cursor = delimiter.length;
+  if (isMultipartClosingBoundary(body, cursor)) return uploads;
+  if (!hasCrLf(body, cursor)) {
+    throw validationError('Multipart image upload has an invalid boundary.');
+  }
+  cursor += 2;
+
+  while (cursor < body.length) {
+    const headerEnd = body.indexOf(headerSeparator, cursor);
+    if (headerEnd < 0) break;
+    const contentStart = headerEnd + headerSeparator.length;
+    const nextBoundary = findMultipartBoundary(body, delimiter, contentStart);
+    if (nextBoundary < 0) break;
+    const contentEnd = nextBoundary - 2;
+    const headers = body.subarray(cursor, headerEnd).toString('latin1');
+    const disposition = /content-disposition:[^\r\n]*\bname="(image|square480|wide|(?:en|es)[.-](?:square480|wide))"[^\r\n]*\bfilename="([^"]*)"/i.exec(headers);
+    if (disposition !== null) {
+      const field = disposition[1] ?? 'image';
+      const partContentType = normalizeInformationImageContentType(/^content-type:\s*([^\r\n]*)$/im.exec(headers)?.[1]);
+      if (fields.has(field)) throw validationError(`Multipart image upload contains duplicate ${field} fields.`);
+      fields.add(field);
+      const normalizedField = field.toLowerCase();
+      const localizedField = /^(en|es)[.-](square480|wide)$/.exec(normalizedField);
+      const variant = localizedField?.[2] ?? (normalizedField === 'square480' || normalizedField === 'wide' ? normalizedField : undefined);
+      uploads.push({
+        bytes: Buffer.from(body.subarray(contentStart, contentEnd)),
+        originalName: disposition[2] ?? 'image',
+        ...(partContentType === undefined ? {} : { contentType: partContentType }),
+        ...(variant === undefined ? {} : { variant: variant as InformationImageVariant }),
+        ...(localizedField === null ? {} : { language: localizedField[1] as InformationImageLanguage })
+      });
+    }
+
+    cursor = nextBoundary + delimiter.length;
+    if (isMultipartClosingBoundary(body, cursor)) break;
+    if (!hasCrLf(body, cursor)) {
+      throw validationError('Multipart image upload has an invalid boundary.');
+    }
+    cursor += 2;
+  }
+  if (uploads.length === 0) throw validationError('Multipart image upload must include an image field.');
+  return uploads;
+}
+
+function hashInformationImageUploads(uploads: readonly ParsedInformationImageUpload[]): string {
+  return hashJson(uploads.map(({ bytes, originalName, language, variant, contentType }) => ({
+    language: language ?? null,
+    variant: variant ?? 'legacy',
+    originalName,
+    contentType: contentType ?? null,
+    bytes: bytes.toString('base64')
+  })));
+}
+
+function normalizeInformationImageContentType(value: string | undefined): string | undefined {
+  const contentType = value?.trim().toLowerCase();
+  return contentType === undefined || contentType.length === 0 ? undefined : contentType;
+}
+
+function findMultipartBoundary(body: Buffer, delimiter: Buffer, from: number): number {
+  let position = body.indexOf(delimiter, from);
+  while (position >= 0) {
+    const hasLinePrefix = position >= 2 && body[position - 2] === 0x0d && body[position - 1] === 0x0a;
+    if (hasLinePrefix && hasMultipartBoundarySuffix(body, position + delimiter.length)) {
+      return position;
+    }
+    position = body.indexOf(delimiter, position + 1);
+  }
+  return -1;
+}
+
+function hasMultipartBoundarySuffix(body: Buffer, offset: number): boolean {
+  return hasCrLf(body, offset) || isMultipartClosingBoundary(body, offset);
+}
+
+function isMultipartClosingBoundary(body: Buffer, offset: number): boolean {
+  return body[offset] === 0x2d && body[offset + 1] === 0x2d;
+}
+
+function hasCrLf(body: Buffer, offset: number): boolean {
+  return body[offset] === 0x0d && body[offset + 1] === 0x0a;
+}
+
+function parseOptionalInformationImageVariant(value: unknown): InformationImageVariant | undefined {
+  const raw = optionalQuery(value, 32);
+  if (raw === undefined) return undefined;
+  const parsed = informationImageVariantSchema.safeParse(raw);
+  if (!parsed.success) throw validationError('Image variant is invalid.', parsed.error.flatten());
+  return parsed.data;
+}
+
+function parseOptionalInformationImageLanguage(value: unknown): InformationImageLanguage | undefined {
+  const raw = queryValue(value);
+  if (raw === undefined) return undefined;
+  if (raw === 'en' || raw === 'es') return raw;
+  throw validationError('The information image language must be en or es.');
 }
 
 function parseRequiredQuery(value: unknown, name: string, maxLength: number): string {
@@ -638,9 +916,17 @@ function registerToggleRoutes(
 ): void {
   for (const toggle of ['activate', 'deactivate'] as const) {
     router.post(`${route}/${toggle}`, middleware, asyncHandler(async (req, res) => {
-      if (requiresKey) requireMutationKey(req);
-      const data = update(req, toggle === 'activate');
-      sendData(res, 200, data, req.requestId, { configurationRevision: service.getConfigurationRevision() });
+      if (!requiresKey) {
+        const data = update(req, toggle === 'activate');
+        sendData(res, 200, data, req.requestId, { configurationRevision: service.getConfigurationRevision() });
+        return;
+      }
+      const idempotencyKey = requireMutationKey(req);
+      const principal = getAdminPrincipal(req);
+      const resourceId = routeParam(req.params['id'], 'id');
+      const input = { active: toggle === 'activate' };
+      const result = service.runIdempotentMutation(actorForPrincipal(principal), idempotencyKey, `${route}.${toggle}`, hashJson(input), resourceId, () => update(req, input.active));
+      sendData(res, 200, result.data, req.requestId, { configurationRevision: service.getConfigurationRevision(), idempotentReplay: result.idempotentReplay });
     }));
   }
 }
@@ -649,12 +935,17 @@ function registerAdminToggleRoutes(
   router: Router,
   route: string,
   middleware: RequestHandler[],
-  update: (req: Request, active: boolean) => unknown
+  update: (req: Request, active: boolean) => unknown,
+  service: HotelService
 ): void {
   for (const toggle of ['activate', 'deactivate'] as const) {
     router.post(`${route}/${toggle}`, middleware, asyncHandler(async (req, res) => {
-      requireMutationKey(req);
-      sendData(res, 200, update(req, toggle === 'activate'), req.requestId);
+      const idempotencyKey = requireMutationKey(req);
+      const principal = getAdminPrincipal(req);
+      const resourceId = routeParam(req.params['id'], 'id');
+      const input = { active: toggle === 'activate' };
+      const result = service.runIdempotentMutation(actorForPrincipal(principal), idempotencyKey, `${route}.${toggle}`, hashJson(input), resourceId, () => update(req, input.active));
+      sendData(res, 200, result.data, req.requestId, { idempotentReplay: result.idempotentReplay });
     }));
   }
 }
@@ -675,12 +966,20 @@ const errorHandler: ErrorRequestHandler = (error: unknown, req, res, _next) => {
     res.status(422).json({ error: { code: 'VALIDATION_ERROR', message: 'Request validation failed.', details: error.flatten(), requestId } });
     return;
   }
+  if (isPayloadTooLargeError(error)) {
+    res.status(413).json({ error: { code: 'VALIDATION_ERROR', message: 'Request body is too large.', requestId } });
+    return;
+  }
   if (error instanceof SyntaxError) {
     res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Request body contains invalid JSON.', requestId } });
     return;
   }
   res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'An unexpected server error occurred.', requestId } });
 };
+
+function isPayloadTooLargeError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'type' in error && error.type === 'entity.too.large';
+}
 
 const passwordChangeSchema = z.object({
   currentPassword: z.string().min(1).max(256),
