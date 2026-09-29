@@ -40,8 +40,8 @@ The user asked to bring the repository up to date on GitHub after approving the 
 - Route: direct. Do not use `git add -A` or commit the current real index.
 
 ### RWP-04 — Push and verify the branch
-- [ ] Push only `jorlys/feat/lan-notification-agent` to the explicitly authorized GitHub repository using the active GitHub CLI session.
-- [ ] Verify the remote branch resolves to the final local `HEAD`; do not create a PR or merge.
+- [x] Push only `jorlys/feat/lan-notification-agent` to the explicitly authorized GitHub repository using the active GitHub CLI session.
+- [x] Verify the remote branch resolves to the published local `HEAD`; do not create a PR or merge.
 
 ## Progress and Evidence
 - Read-only delegated inventory found the real index contains stale staged deletions while restored/revised files exist in the working tree; current index contents are not the intended final tree.
@@ -56,9 +56,10 @@ The user asked to bring the repository up to date on GitHub after approving the 
 - Created five Conventional Commits from isolated temporary-index slices: `f0ead2f` (server/shared request and information workflows), `dd10aaa` (web AREA/device/admin workflows), `04826ab` (Android room/notification behavior and functional audio/logo assets), `6d015f0` (LAN and Windows notification receivers), and `1d13d28` (Docker deployment config). The related task trackers and full verification record were committed as `a4a8685` (`docs: record verified feature work and publication plan`). Each staged slice passed `git diff --cached --check` before commit.
 - Reconciled the real index only for committed paths, then restored 25 staged deletions whose on-disk files were byte-identical to `HEAD`. Twelve pre-existing mixed staged/unstaged paths remain untouched because their indexed versions diverge from on-disk files; these paths were not part of the publication commits. Excluded local caches/data/screenshots also remain in the worktree and are not committed.
 - Verified the aggregate diff from the initial branch tip has no excluded paths; the pre-existing 56-commit feature-branch history remains intact. This tracker evidence follow-up is `8e648e0` (`docs: record publication verification evidence`).
+- The authorized push created `jorlys/feat/lan-notification-agent` on `https://github.com/jorlyscfg/hotel_alert.git`. `git ls-remote` returned `ba9d350544dec80dd57fc3194412ce8f2f44c0a7`, identical to local `HEAD` at that push. Git used the active `gh auth git-credential` helper for this command only; no global credential configuration was changed. No pull request or merge was created.
 
 ## Next Step
-Push only `jorlys/feat/lan-notification-agent` to the authorized GitHub repository, verify the remote SHA, then record the outcome in this tracker.
+The branch push and remote-SHA verification are complete. This final tracker status update is also part of the authorized branch publication; no PR or merge is requested.
 
 ## Relevant Files
 - `odd/tasks/area-completed-search-sort.md` — Completed-tab search/sort task; work-unit commit `dd10aaa`.
