@@ -38,7 +38,7 @@ Android adaptive brightness can leave the ROOM panel too dim to read. Operators 
 - [x] Persist on Save/Return, preview while configuring, and discard/revert an unsaved draft when maintenance closes.
 - [x] Add focused JUnit4 policy tests for automatic default and manual level bounds; run the Android runner above.
 - [x] Build the Debug APK and run the Android runner successfully. Direct `adb install -r` returned `Success` for `R9PT70GX3PA` and `192.168.0.243:44999`. The authorized `192.168.0.121:36259` target returned `adb: device '192.168.0.121:36259' not found`; no reconnect or device discovery was attempted.
-- [ ] Create an isolated work-unit commit on the existing feature branch and record its identity here if Git metadata permits; preserve unrelated staged content.
+- [x] Create an isolated work-unit commit on the existing feature branch and record its identity here if Git metadata permits; preserve unrelated staged content. Commit: `831b91ccf40e70174226d44da1f04a2991b091f6` (`feat(android): add ROOM app brightness control`).
 
 ## Acceptance Criteria
 
@@ -54,11 +54,11 @@ Android adaptive brightness can leave the ROOM panel too dim to read. Operators 
 - [x] Default behavior decision resolved by user: preserve adaptive brightness until a manual level is configured.
 - [x] BRIGHT-01 implementation, verification, and packaging completed. The full runner passed (78 Gradle tasks; 19 executed), including unit tests, Debug assembly, lint, and check. APK: `apps/android-notification-receiver/app/build/outputs/apk/debug/app-debug.apk`, SHA-256 `d08f9c9279a4fd52575e42298bbdf9093ea0c928916f52ce45e5240900bb9c8d`.
 - [x] Installed with `adb install -r` on `R9PT70GX3PA` and `192.168.0.243:44999` (both returned `Success`). Installation to `192.168.0.121:36259` remains pending because that exact authorized ADB target was not connected.
-- [ ] Isolated work-unit commit and commit identity recording pending.
+- [x] Isolated work-unit commit created as `831b91ccf40e70174226d44da1f04a2991b091f6` (`feat(android): add ROOM app brightness control`). It contains only brightness implementation/tests and this feature tracker; unrelated staged and unstaged changes were excluded.
 
 ## Next Step
 
-Create the isolated BRIGHT-01 work-unit commit without including unrelated dirty changes. The `.121` installation can be retried only after its previously authorized ADB session is available; do not reconnect or discover devices in this task.
+The `.121` installation can be retried only after its previously authorized ADB session is available; do not reconnect or discover devices in this task.
 
 ## Relevant Files
 
