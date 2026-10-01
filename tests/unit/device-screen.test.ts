@@ -13,6 +13,7 @@ import {
   formatAreaRequestAge,
   formatRoomRequestAge,
   formatClock,
+  formatRoomScreensaverDate,
   groupRoomServicesByArea,
   resolveRoomAreaOverflow,
   resolveRoomServicePageSize,
@@ -22,6 +23,7 @@ import {
   resolvePendingAlertIntervalMs,
   resolveRoomBackgroundStyle
 } from '../../apps/web/src/features/device/DeviceScreen';
+import { RoomScreensaver } from '../../apps/web/src/features/device/RoomScreensaver';
 import { ApiError, isDeviceAuthFailure, isDeviceInvalidationError } from '../../apps/web/src/api';
 import { I18nProvider, SpanishI18nProvider } from '../../apps/web/src/i18n';
 import type { DeviceSyncSnapshot, RequestDTO, ServiceDTO } from '@hotel/shared';
@@ -144,7 +146,9 @@ describe('device pending alert helpers', () => {
     }));
 
     expect(roomMarkup).toContain('data:image/png;base64,AAAA');
+    expect(roomMarkup).not.toContain('data-room-screensaver="true"');
     expect(areaMarkup).not.toContain('data:image/png;base64,AAAA');
+    expect(areaMarkup).not.toContain('data-room-screensaver="true"');
   });
 
   it('queues room requests immediately unless the connection is online', () => {
@@ -174,6 +178,25 @@ describe('device pending alert helpers', () => {
   it('formats the authoritative server clock for the station header', () => {
     expect(formatClock(new Date('2026-08-31T09:05:00.000Z'), 'en-US', 'UTC')).toBe('9:05 AM');
     expect(formatClock(new Date('2026-08-31T09:05:00.000Z'), 'en-US', 'UTC', '24h')).toBe('09:05');
+  });
+
+  it('renders localized screensaver date and clock with no fabricated sensor readings', () => {
+    const currentTime = new Date('2026-09-30T13:45:00.000Z');
+    const date = formatRoomScreensaverDate(currentTime, 'es');
+    const markup = renderToStaticMarkup(createElement(RoomScreensaver, {
+      label: 'Salvapantallas de la habitación',
+      time: formatClock(currentTime, 'es', 'UTC', '24h'),
+      date,
+      dateTime: currentTime.toISOString()
+    }));
+
+    expect(markup).toContain('aria-label="Salvapantallas de la habitación"');
+    expect(markup).toContain('data-room-screensaver="true"');
+    expect(markup).toContain('>13:45</time>');
+    expect(date).toContain(' de ');
+    expect(date).toMatch(/20\d{2}/);
+    expect(markup).toContain(date);
+    expect(markup).not.toMatch(/temperature|humidity|temperatura|humedad/i);
   });
 
   it('uses the configured clock format for synchronization but keeps AREA card creation times in AM/PM', () => {

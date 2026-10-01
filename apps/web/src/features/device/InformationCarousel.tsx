@@ -20,7 +20,7 @@ export const DEFAULT_INFORMATION_CAROUSEL_TIMING: InformationCarouselTiming = {
   slideIntervalMs: INFORMATION_CAROUSEL_SLIDE_MS
 };
 
-export type InformationCarouselPhase = 'ROOM' | 'GRACE' | { kind: 'IMAGE'; index: number };
+export type InformationCarouselPhase = 'ROOM' | 'GRACE' | 'SAVER' | { kind: 'IMAGE'; index: number };
 
 export function resolveInformationCarouselPhase(imageCount: number, elapsedMs: number, timing: InformationCarouselTiming = DEFAULT_INFORMATION_CAROUSEL_TIMING): InformationCarouselPhase {
   const count = normalizeImageCount(imageCount);
@@ -32,7 +32,7 @@ export function resolveInformationCarouselPhase(imageCount: number, elapsedMs: n
   const imageIndex = Math.floor(carouselElapsed / normalizedTiming.slideIntervalMs);
   if (imageIndex < count) return { kind: 'IMAGE', index: imageIndex };
   if (carouselElapsed < (count + 1) * normalizedTiming.slideIntervalMs) return 'GRACE';
-  return 'ROOM';
+  return 'SAVER';
 }
 
 export interface LoadedInformationImage {
@@ -41,7 +41,7 @@ export interface LoadedInformationImage {
 }
 
 export interface InformationCarouselLifecycleState {
-  phase: 'ROOM' | 'IMAGE' | 'GRACE';
+  phase: 'ROOM' | 'IMAGE' | 'GRACE' | 'SAVER';
   activeIndex: number;
 }
 
@@ -167,18 +167,11 @@ export function createInformationCarouselLifecycle(options: InformationCarouselL
     if (disposed || generation !== expectedGeneration || cycleId !== expectedCycleId || phase !== 'GRACE') return;
 
     cycleActive = false;
-    phase = 'ROOM';
+    phase = 'SAVER';
     activeIndex = 0;
     generation += 1;
     emitState();
-
-    const completionGeneration = generation;
-    const reenable = queueScreensaverCommand(true);
     options.onCycleComplete?.();
-    void reenable.then(() => {
-      if (disposed) return;
-      if (generation === completionGeneration) scheduleInactivity();
-    });
   };
 
   const advanceCycle = (expectedGeneration: number, expectedCycleId: number): void => {
@@ -361,10 +354,11 @@ export interface InformationCarouselProps {
   onCycleComplete?: (() => void) | undefined;
   inactivityMs?: number;
   slideIntervalMs?: number;
+  screensaver?: ReactNode;
   children: ReactNode;
 }
 
-export function InformationCarousel({ images, locale = 'es', deviceToken, onAuthFailure, onCycleComplete, inactivityMs, slideIntervalMs, children }: InformationCarouselProps) {
+export function InformationCarousel({ images, locale = 'es', deviceToken, onAuthFailure, onCycleComplete, inactivityMs, slideIntervalMs, screensaver = null, children }: InformationCarouselProps) {
   const [loadedImages, setLoadedImages] = useState<LoadedInformationImage[]>([]);
   const [loadedManifestKey, setLoadedManifestKey] = useState('');
   const [experience, setExperience] = useState<InformationCarouselLifecycleState['phase']>('ROOM');
@@ -478,9 +472,20 @@ export function InformationCarousel({ images, locale = 'es', deviceToken, onAuth
   const activeImage = loadedImages[activeIndex];
 
   return (
-    <div className="information-experience" onPointerDown={handleActivity} onTouchStart={handleActivity} onKeyDown={handleActivity}>
-      {children}
-      {experience !== 'ROOM' && activeImage !== undefined && (
+    <div className={`information-experience${experience === 'SAVER' ? ' information-experience--screensaver' : ''}`} onPointerDown={handleActivity} onTouchStart={handleActivity} onKeyDown={handleActivity}>
+      {experience === 'SAVER' ? (
+        <div
+          className="room-screensaver-interaction"
+          onPointerDown={handleOverlayPointerDown}
+          onTouchStart={handleOverlayPointerDown}
+          onPointerCancel={handleOverlayCancel}
+          onKeyDown={handleOverlayCancel}
+          onClick={handleOverlayCancel}
+        >
+          {screensaver}
+        </div>
+      ) : children}
+      {(experience === 'IMAGE' || experience === 'GRACE') && activeImage !== undefined && (
         <div
           key={`${activeImage.image.id}:${activeIndex}`}
           className={`information-carousel${experience === 'GRACE' ? ' information-carousel--grace' : ''}`}

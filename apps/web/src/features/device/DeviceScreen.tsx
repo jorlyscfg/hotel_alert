@@ -20,6 +20,7 @@ import {
 import { closeNotificationAudioContext, createNotificationAudioContext, playDoNotDisturbTransitionTones, playNotificationTone, replaceNotificationAudioContext } from '../../notification-audio';
 import { DEFAULT_INFORMATION_CAROUSEL_TIMING, InformationCarousel, type InformationCarouselTiming } from './InformationCarousel';
 import { PendingRequestWarningController, resolveBrowserPendingWarningRequests } from './pending-request-warning';
+import { RoomScreensaver } from './RoomScreensaver';
 import { transitionNativeRequest, type NativeWebViewBridge } from '../../native-bridge';
 
 const { isRoomBackgroundValue } = Shared;
@@ -295,6 +296,15 @@ export function formatClock(value: Date, locale?: string, timeZone?: string, clo
   }).format(value);
 }
 
+export function formatRoomScreensaverDate(value: Date, locale: Locale = 'en'): string {
+  return new Intl.DateTimeFormat(locale, {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric'
+  }).format(value);
+}
+
 export function formatAreaRequestAge(createdAt: string, currentTime: Date, locale: Locale = 'en'): string {
   return formatElapsed(createdAt, currentTime, locale);
 }
@@ -561,6 +571,14 @@ export function DeviceScreen({ snapshot, deviceToken, deviceCommandsSupported = 
           onCycleComplete={onInformationCycleComplete}
           inactivityMs={informationCarouselTiming.inactivityMs}
           slideIntervalMs={informationCarouselTiming.slideIntervalMs}
+          screensaver={(
+            <RoomScreensaver
+              label={t('device.roomScreensaver')}
+              time={formatClock(currentTime, locale, undefined, snapshot.config.clockFormat)}
+              date={formatRoomScreensaverDate(currentTime, locale)}
+              dateTime={currentTime.toISOString()}
+            />
+          )}
         >
           {header}
           {deviceContent}

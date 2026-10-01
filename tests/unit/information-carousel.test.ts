@@ -43,7 +43,7 @@ describe('information carousel timeline', () => {
     expect(resolveInformationCarouselPhase(3, 15_000)).toEqual({ kind: 'IMAGE', index: 2 });
     expect(resolveInformationCarouselPhase(3, 20_000)).toBe('GRACE');
     expect(resolveInformationCarouselPhase(3, 24_999)).toBe('GRACE');
-    expect(resolveInformationCarouselPhase(3, 25_000)).toBe('ROOM');
+    expect(resolveInformationCarouselPhase(3, 25_000)).toBe('SAVER');
   });
 
   it('never starts when there are no information images', () => {
@@ -57,7 +57,7 @@ describe('information carousel timeline', () => {
     expect(resolveInformationCarouselPhase(2, 1_000, timing)).toEqual({ kind: 'IMAGE', index: 0 });
     expect(resolveInformationCarouselPhase(2, 2_999, timing)).toEqual({ kind: 'IMAGE', index: 0 });
     expect(resolveInformationCarouselPhase(2, 3_000, timing)).toEqual({ kind: 'IMAGE', index: 1 });
-    expect(resolveInformationCarouselPhase(2, 7_000, timing)).toBe('ROOM');
+    expect(resolveInformationCarouselPhase(2, 7_000, timing)).toBe('SAVER');
   });
 
   it('shields the full carousel surface from click-through and interaction leakage', () => {
@@ -66,6 +66,7 @@ describe('information carousel timeline', () => {
     expect(informationCarouselSource).toMatch(/onPointerCancel=\{handleOverlayCancel\}/);
     expect(informationCarouselSource).toMatch(/onKeyDown=\{handleOverlayCancel\}/);
     expect(informationCarouselSource).toMatch(/onClick=\{handleOverlayCancel\}/);
+    expect(informationCarouselSource).toMatch(/className="room-screensaver-interaction"[\s\S]*?onPointerDown=\{handleOverlayPointerDown\}[\s\S]*?onClick=\{handleOverlayCancel\}/);
   });
 
   it('keys the active overlay by image and slide so its fade replays on changes', () => {
@@ -112,6 +113,33 @@ describe('information carousel timeline', () => {
     expect(states.at(-1)).toEqual({ phase: 'ROOM', activeIndex: 0 });
     lifecycle.dispose();
   });
+
+  it('keeps the custom saver active through pointer-down and returns to ROOM after the click', async () => {
+    vi.useFakeTimers();
+    const states: InformationCarouselLifecycleState[] = [];
+    const setScreensaver = vi.fn(async (_enabled: boolean) => undefined);
+    const lifecycle = createInformationCarouselLifecycle({ imageCount: 1, setScreensaver, onStateChange: (state) => states.push(state) });
+
+    lifecycle.start();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(states.at(-1)).toEqual({ phase: 'SAVER', activeIndex: 0 });
+
+    const order: string[] = [];
+    const handlers = createInformationCarouselOverlayHandlers(() => lifecycle.cancel());
+    const pointerDown = createObservableOverlayEvent(order);
+    handlers.block(pointerDown);
+    expect(states.at(-1)).toEqual({ phase: 'SAVER', activeIndex: 0 });
+
+    const click = createObservableOverlayEvent(order);
+    handlers.cancel(click);
+    await flushPromises();
+
+    expect(click.prevented).toBe(true);
+    expect(click.stopped).toBe(true);
+    expect(states.at(-1)).toEqual({ phase: 'ROOM', activeIndex: 0 });
+    expect(setScreensaver).toHaveBeenLastCalledWith(true);
+    lifecycle.dispose();
+  });
 });
 
 describe('information carousel lifecycle', () => {
@@ -134,7 +162,7 @@ describe('information carousel lifecycle', () => {
     expect(schedule).not.toHaveBeenCalled();
   });
 
-  it('completes exactly once at the end of the post-final grace period', async () => {
+  it('enters the custom saver after the grace period and stays until interaction', async () => {
     vi.useFakeTimers();
     const states: InformationCarouselLifecycleState[] = [];
     const setScreensaver = vi.fn(async (_enabled: boolean) => undefined);
@@ -165,57 +193,68 @@ describe('information carousel lifecycle', () => {
     expect(onCycleComplete).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(onCycleComplete).toHaveBeenCalledOnce();
-    expect(setScreensaver).toHaveBeenNthCalledWith(2, true);
+    expect(states.at(-1)).toEqual({ phase: 'SAVER', activeIndex: 0 });
+    expect(setScreensaver).toHaveBeenCalledOnce();
+    expect(setScreensaver).toHaveBeenNthCalledWith(1, false);
 
-    lifecycle.setImageCount(0);
     await vi.advanceTimersByTimeAsync(60_000);
+    expect(states.at(-1)).toEqual({ phase: 'SAVER', activeIndex: 0 });
+    expect(setScreensaver).toHaveBeenCalledOnce();
     expect(onCycleComplete).toHaveBeenCalledOnce();
+
+    lifecycle.cancel();
+    await flushPromises();
+    expect(states.at(-1)).toEqual({ phase: 'ROOM', activeIndex: 0 });
+    expect(setScreensaver).toHaveBeenNthCalledWith(2, true);
     lifecycle.dispose();
   });
 
-  it('notifies completion even when re-enabling the screensaver never settles', async () => {
+  it('does not re-enable the device screensaver when the custom saver begins', async () => {
     vi.useFakeTimers();
-    const enablePromise = new Promise<void>(() => undefined);
-    const setScreensaver = vi.fn((enabled: boolean): Promise<void> => enabled ? enablePromise : Promise.resolve());
+    const states: InformationCarouselLifecycleState[] = [];
+    const setScreensaver = vi.fn(async (_enabled: boolean) => undefined);
     const onCycleComplete = vi.fn();
-    const lifecycle = createInformationCarouselLifecycle({ imageCount: 1, setScreensaver, onCycleComplete });
+    const lifecycle = createInformationCarouselLifecycle({ imageCount: 1, setScreensaver, onStateChange: (state) => states.push(state), onCycleComplete });
 
     lifecycle.start();
     await vi.advanceTimersByTimeAsync(15_000);
 
-    expect(setScreensaver).toHaveBeenNthCalledWith(2, true);
+    expect(states.at(-1)).toEqual({ phase: 'SAVER', activeIndex: 0 });
+    expect(setScreensaver).toHaveBeenCalledOnce();
+    expect(setScreensaver).toHaveBeenNthCalledWith(1, false);
     expect(onCycleComplete).toHaveBeenCalledOnce();
 
     await vi.advanceTimersByTimeAsync(60_000);
     expect(onCycleComplete).toHaveBeenCalledOnce();
+    expect(setScreensaver).toHaveBeenCalledOnce();
     lifecycle.dispose();
   });
 
-  it('starts one new cycle after natural completion and settled screensaver re-enable', async () => {
+  it('starts one new information cycle only after interaction with the custom saver', async () => {
     vi.useFakeTimers();
     const commands: boolean[] = [];
-    let resolveEnable: (() => void) | undefined;
     const setScreensaver = vi.fn((enabled: boolean): Promise<void> => {
       commands.push(enabled);
-      if (!enabled) return Promise.resolve();
-      return new Promise<void>((resolve) => {
-        resolveEnable = resolve;
-      });
+      return Promise.resolve();
     });
     const onCycleComplete = vi.fn();
-    const lifecycle = createInformationCarouselLifecycle({ imageCount: 1, setScreensaver, onCycleComplete });
+    const states: InformationCarouselLifecycleState[] = [];
+    const lifecycle = createInformationCarouselLifecycle({ imageCount: 1, setScreensaver, onStateChange: (state) => states.push(state), onCycleComplete });
 
     lifecycle.start();
     await vi.advanceTimersByTimeAsync(15_000);
 
-    expect(commands).toEqual([false, true]);
+    expect(commands).toEqual([false]);
+    expect(states.at(-1)).toEqual({ phase: 'SAVER', activeIndex: 0 });
     expect(onCycleComplete).toHaveBeenCalledOnce();
 
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(commands).toEqual([false, true]);
+    expect(commands).toEqual([false]);
+    expect(states.at(-1)).toEqual({ phase: 'SAVER', activeIndex: 0 });
 
-    resolveEnable?.();
+    lifecycle.cancel();
     await flushPromises();
+    expect(commands).toEqual([false, true]);
     await vi.advanceTimersByTimeAsync(4_999);
     expect(commands).toEqual([false, true]);
     await vi.advanceTimersByTimeAsync(1);

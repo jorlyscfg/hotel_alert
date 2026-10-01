@@ -280,8 +280,15 @@ h3 { font-size: 1.1rem; line-height: 1.1; }
 .area-status-stack { display: grid; gap: 8px; max-width: min(380px, calc(100vw - 32px)); pointer-events: none; position: fixed; right: 16px; top: 76px; width: 100%; z-index: 25; }
 .area-status-stack .inline-alert { box-shadow: 0 12px 28px rgba(29, 42, 39, 0.16); margin: 0; pointer-events: auto; }
 .information-experience { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; position: relative; }
+.information-experience--screensaver { inset: 0; position: fixed; z-index: 30; }
+.room-screensaver-interaction { inset: 0; position: absolute; z-index: 10; }
 .information-carousel { align-items: center; animation: information-carousel-fade-in 180ms ease both; background: var(--room-bg, #16231f); display: flex; inset: 0; justify-content: center; padding-bottom: clamp(16px, 3vh, 32px); position: absolute; z-index: 10; }
 .information-carousel__image { height: 100%; max-height: 100%; max-width: 100%; object-fit: contain; width: 100%; }
+.room-screensaver { align-items: center; background: linear-gradient(rgba(7, 12, 13, 0.12), rgba(7, 12, 13, 0.28)); color: var(--room-ink, #f4f1e7); display: flex; inset: 0; justify-content: center; position: absolute; text-align: center; z-index: 10; }
+.room-screensaver__content { max-width: calc(100vw - 48px); text-shadow: 0 4px 24px rgba(0, 0, 0, 0.82), 0 1px 4px rgba(0, 0, 0, 0.9); }
+.room-screensaver__time { display: block; font-family: Georgia, "Times New Roman", serif; font-size: clamp(4.5rem, 18vw, 14rem); font-variant-numeric: tabular-nums; font-weight: 500; letter-spacing: -0.055em; line-height: 0.95; white-space: nowrap; }
+.room-screensaver__date { display: block; font-size: clamp(1rem, 2.5vw, 1.8rem); font-weight: 600; letter-spacing: 0.02em; margin-top: clamp(12px, 2.5vh, 24px); }
+.room-screensaver:focus-visible { outline: 2px solid var(--room-amber, #efb665); outline-offset: -6px; }
 .information-carousel--screensaver { background: #000; }
 .information-carousel--screensaver .information-carousel__image { opacity: 0.96; }
 @keyframes information-carousel-fade-in { from { opacity: 0; } to { opacity: 1; } }
