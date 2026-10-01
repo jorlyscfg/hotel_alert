@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
@@ -17,6 +18,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -28,11 +31,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
+import kotlin.math.roundToInt
 import com.hotelalert.notificationreceiver.RoomHomeStatus
 import com.hotelalert.notificationreceiver.RoomLockTaskStatus
 
@@ -86,6 +91,8 @@ internal fun RoomMaintenanceSettingsScreen(
     kioskControlMessage: String?,
     overlayPermissionRequired: Boolean,
     overlayPermissionGranted: Boolean,
+    roomBrightnessManual: Boolean,
+    roomBrightnessPercent: Int,
     onChooseHome: () -> Unit,
     onOpenHomeSelectionSettings: () -> Unit,
     onClearManagedHome: () -> Unit,
@@ -93,6 +100,8 @@ internal fun RoomMaintenanceSettingsScreen(
     onOpenWirelessDebuggingSettings: () -> Unit,
     onManageOverlayPermission: () -> Unit,
     onStrictModeChange: (Boolean) -> Unit,
+    onRoomBrightnessManualChange: (Boolean) -> Unit,
+    onRoomBrightnessPercentChange: (Int) -> Unit,
     onChangePin: (String) -> Unit,
     onSaveAndReturn: () -> Unit
 ) {
@@ -113,6 +122,53 @@ internal fun RoomMaintenanceSettingsScreen(
                     "Esta pantalla nativa es independiente de la plataforma web. La sesión de la habitación permanece activa mientras se realizan ajustes en el dispositivo.",
                     style = MaterialTheme.typography.bodyMedium
                 )
+                Text("Brillo de la pantalla", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "El nivel manual solo afecta la ventana de Hotel Alert; no cambia el brillo general de Android.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().selectable(
+                        selected = !roomBrightnessManual,
+                        role = Role.RadioButton,
+                        onClick = { onRoomBrightnessManualChange(false) }
+                    ),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(selected = !roomBrightnessManual, onClick = null)
+                    Text("Automático de Android", style = MaterialTheme.typography.bodyMedium)
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().selectable(
+                        selected = roomBrightnessManual,
+                        role = Role.RadioButton,
+                        onClick = { onRoomBrightnessManualChange(true) }
+                    ),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(selected = roomBrightnessManual, onClick = null)
+                    Text("Nivel manual", style = MaterialTheme.typography.bodyMedium)
+                }
+                if (roomBrightnessManual) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Slider(
+                            value = roomBrightnessPercent.toFloat(),
+                            onValueChange = { onRoomBrightnessPercentChange(it.roundToInt()) },
+                            valueRange = 1f..100f,
+                            steps = 98,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text("$roomBrightnessPercent%", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Text(
+                        "El control permite elegir del 1 % al 100 % y previsualiza el cambio mientras esta pantalla está abierta.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
                 Text("Dispositivo Android", style = MaterialTheme.typography.titleMedium)
                 Text("Aplicación de inicio: ${homeStatusLabel(homeStatus)}", style = MaterialTheme.typography.bodyMedium)
                 Button(onClick = onChooseHome, modifier = Modifier.fillMaxWidth()) {
