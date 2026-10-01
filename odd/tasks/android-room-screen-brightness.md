@@ -37,7 +37,7 @@ Android adaptive brightness can leave the ROOM panel too dim to read. Operators 
 - [x] Apply the manual override to the Hotel Alert Activity window while foreground, including lifecycle/focus restoration; restore the platform default in automatic mode.
 - [x] Persist on Save/Return, preview while configuring, and discard/revert an unsaved draft when maintenance closes.
 - [x] Add focused JUnit4 policy tests for automatic default and manual level bounds; run the Android runner above.
-- [x] Build the Debug APK and run the Android runner successfully. Direct `adb install -r` returned `Success` for `R9PT70GX3PA` and `192.168.0.243:44999`. The authorized `192.168.0.121:36259` target returned `adb: device '192.168.0.121:36259' not found`; no reconnect or device discovery was attempted.
+- [x] Build the Debug APK and run the Android runner successfully. Direct `adb install -r` returned `Success` for `R9PT70GX3PA` and `192.168.0.243:44999`. The authorized `192.168.0.121:36259` target returned `adb: device '192.168.0.121:36259' not found` on the initial attempt and again after the user reported the setting was not visible; no reconnect or device discovery was attempted.
 - [x] Create an isolated work-unit commit on the existing feature branch and record its identity here if Git metadata permits; preserve unrelated staged content. Commit: `831b91ccf40e70174226d44da1f04a2991b091f6` (`feat(android): add ROOM app brightness control`).
 
 ## Acceptance Criteria
@@ -54,11 +54,12 @@ Android adaptive brightness can leave the ROOM panel too dim to read. Operators 
 - [x] Default behavior decision resolved by user: preserve adaptive brightness until a manual level is configured.
 - [x] BRIGHT-01 implementation, verification, and packaging completed. The full runner passed (78 Gradle tasks; 19 executed), including unit tests, Debug assembly, lint, and check. APK: `apps/android-notification-receiver/app/build/outputs/apk/debug/app-debug.apk`, SHA-256 `d08f9c9279a4fd52575e42298bbdf9093ea0c928916f52ce45e5240900bb9c8d`.
 - [x] Installed with `adb install -r` on `R9PT70GX3PA` and `192.168.0.243:44999` (both returned `Success`). Installation to `192.168.0.121:36259` remains pending because that exact authorized ADB target was not connected.
+- [x] On the user's report that .121 has no brightness control, verified that the committed maintenance Compose screen contains “Brillo de la pantalla,” automatic/manual choices, and the slider; the local APK hash matches the verified build. Retried direct installation only to `192.168.0.121:36259`; ADB again returned `device ... not found`.
 - [x] Isolated work-unit commit created as `831b91ccf40e70174226d44da1f04a2991b091f6` (`feat(android): add ROOM app brightness control`). It contains only brightness implementation/tests and this feature tracker; unrelated staged and unstaged changes were excluded.
 
 ## Next Step
 
-The `.121` installation can be retried only after its previously authorized ADB session is available; do not reconnect or discover devices in this task.
+The `.121` installation is pending. Ask the user to restore the previously authorized ADB session or provide/authorize the current connection endpoint if it has changed; do not reconnect or discover devices.
 
 ## Relevant Files
 
