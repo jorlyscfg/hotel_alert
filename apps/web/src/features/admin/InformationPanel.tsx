@@ -43,7 +43,7 @@ export function InformationImageVariantFields({ files, refs, disabled, onFileCha
         <div className="form-field" key={field}>
           <span className="form-field__label">{languageLabel} · {variantLabel}</span>
           <div className="branding-media-actions">
-            <input ref={(input) => { refs[field] = input; }} className="visually-hidden branding-file-input" id={id} name={field} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => onFileChange(field, event)} disabled={disabled} aria-label={inputLabel} tabIndex={-1} />
+            <input ref={(input) => { refs[field] = input; }} className="visually-hidden branding-file-input" id={id} name={field} type="file" accept="image/*" onChange={(event) => onFileChange(field, event)} disabled={disabled} aria-label={inputLabel} tabIndex={-1} />
             <button className="icon-button branding-upload-button" type="button" onClick={() => refs[field]?.click()} disabled={disabled} aria-label={inputLabel} title={inputLabel}>
               <Upload aria-hidden="true" size={17} strokeWidth={1.9} />
             </button>

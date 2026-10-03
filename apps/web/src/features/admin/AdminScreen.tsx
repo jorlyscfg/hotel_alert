@@ -16,7 +16,7 @@ import type {
   ServiceDTO,
   TokenRotationResult
 } from '@hotel/shared';
-import { api, deleteInformationImage as deleteInformationImageRequest, errorMessage, repairInformationImageVariants as repairInformationImageVariantsRequest, reorderInformationImages as reorderInformationImagesRequest, uploadInformationImage as uploadInformationImageRequest, type InformationImageUploadSet } from '../../api';
+import { api, deleteInformationImage as deleteInformationImageRequest, errorMessage, repairInformationImageVariants as repairInformationImageVariantsRequest, reorderInformationImages as reorderInformationImagesRequest, uploadInformationImage as uploadInformationImageRequest, uploadRoomBackgroundImage as uploadRoomBackgroundImageRequest, type InformationImageUploadSet } from '../../api';
 import { buildDeviceAssignmentPayload, formatElapsedWithAgo, makeMutationKey, mutationSucceeded } from '../../app-model';
 import { ConnectionBadge } from '../../components/ConnectionBadge';
 import { Modal } from '../../components/Modal';
@@ -431,6 +431,11 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
     return mutationSucceeded(result);
   }
 
+  async function uploadRoomBackgroundImage(file: File): Promise<boolean> {
+    const result = await perform('room-background-upload', () => uploadRoomBackgroundImageRequest(file, { headers: adminHeaders('room-background-upload') }), t('feedback.settingsUpdated'));
+    return mutationSucceeded(result);
+  }
+
   async function uploadInformationImage(files: InformationImageUploadSet): Promise<boolean> {
     const result = await perform<InformationImageDTO>('information-image-upload', () => uploadInformationImageRequest(files, { headers: adminHeaders('information-image-upload') }), t('feedback.informationImageUploaded'));
     return mutationSucceeded(result);
@@ -592,7 +597,7 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
 
             {tab === 'overview' && <OverviewTab snapshot={snapshot} clockFormat={clockFormat} onOpenQueue={() => setTab('queue')} onRefresh={onRefresh} />}
             {tab === 'queue' && <QueueTab snapshot={snapshot} onViewHistory={(request) => void openRequestHistory(request)} />}
-            {tab === 'setup' && <SetupTab snapshot={snapshot} busy={mutationBusy} initialInstallationId={installationId} onCreateRoom={createRoom} onCreateArea={createArea} onCreateService={createService} onProvisionDevice={provisionDevice} onToggleDevice={toggleDevice} onRotateToken={rotateToken} onRebindDevice={rebindDevice} onToggleRoom={toggleRoom} onPatchRoom={patchRoom} onToggleArea={toggleArea} onPatchArea={patchArea} onToggleService={toggleService} onPatchService={patchService} onSaveSettings={updateSettings} onUploadInformationImage={uploadInformationImage} onRepairInformationImage={repairInformationImage} onDeleteInformationImage={deleteInformationImage} onReorderInformationImages={reorderInformationImages} onCreateAdmin={createAdmin} onToggleAdmin={toggleAdmin} onRevokeToken={revokeToken} onRetireDevice={retireDevice} onAssignDevice={assignDevice} />}
+            {tab === 'setup' && <SetupTab snapshot={snapshot} busy={mutationBusy} initialInstallationId={installationId} onCreateRoom={createRoom} onCreateArea={createArea} onCreateService={createService} onProvisionDevice={provisionDevice} onToggleDevice={toggleDevice} onRotateToken={rotateToken} onRebindDevice={rebindDevice} onToggleRoom={toggleRoom} onPatchRoom={patchRoom} onToggleArea={toggleArea} onPatchArea={patchArea} onToggleService={toggleService} onPatchService={patchService} onSaveSettings={updateSettings} onUploadRoomBackground={uploadRoomBackgroundImage} onUploadInformationImage={uploadInformationImage} onRepairInformationImage={repairInformationImage} onDeleteInformationImage={deleteInformationImage} onReorderInformationImages={reorderInformationImages} onCreateAdmin={createAdmin} onToggleAdmin={toggleAdmin} onRevokeToken={revokeToken} onRetireDevice={retireDevice} onAssignDevice={assignDevice} />}
             {tab === 'audit' && <AuditTab snapshot={snapshot} clockFormat={clockFormat} />}
             {historyRequest !== null && <RequestHistoryDialog request={historyRequest} history={requestHistory} busy={historyBusy} error={historyError} clockFormat={clockFormat} onClose={closeRequestHistory} />}
           </div>
@@ -859,6 +864,7 @@ interface SetupTabProps {
   onToggleService: (service: ServiceDTO) => Promise<void>;
   onPatchService: (service: ServiceDTO, values: { code: string; displayName: string; displayNameVariants?: ServiceDTO['displayNameVariants']; description: string; descriptionVariants?: ServiceDTO['descriptionVariants']; iconKey: string; areaId: string; displayOrder: number }) => Promise<boolean>;
   onSaveSettings: (changes: Record<string, unknown>) => Promise<boolean | void>;
+  onUploadRoomBackground: (file: File) => Promise<boolean>;
   onUploadInformationImage: (files: InformationImageUploadSet) => Promise<boolean>;
   onRepairInformationImage: (id: string, files: InformationImageUploadSet) => Promise<boolean>;
   onDeleteInformationImage: (id: string) => Promise<boolean>;
@@ -870,7 +876,7 @@ interface SetupTabProps {
   onAssignDevice: (device: AdminSystemSnapshot['devices'][number], values: { assignmentMode: DeviceAssignmentMode; roomId: string; areaId: string; reason: string }) => Promise<boolean>;
 }
 
-export function SetupTab({ snapshot, busy, initialInstallationId, onCreateRoom, onCreateArea, onCreateService, onProvisionDevice, onToggleDevice, onRotateToken, onRebindDevice, onToggleRoom, onPatchRoom, onToggleArea, onPatchArea, onToggleService, onPatchService, onSaveSettings, onUploadInformationImage, onRepairInformationImage, onDeleteInformationImage, onReorderInformationImages, onCreateAdmin, onToggleAdmin, onRevokeToken, onRetireDevice, onAssignDevice }: SetupTabProps) {
+export function SetupTab({ snapshot, busy, initialInstallationId, onCreateRoom, onCreateArea, onCreateService, onProvisionDevice, onToggleDevice, onRotateToken, onRebindDevice, onToggleRoom, onPatchRoom, onToggleArea, onPatchArea, onToggleService, onPatchService, onSaveSettings, onUploadRoomBackground, onUploadInformationImage, onRepairInformationImage, onDeleteInformationImage, onReorderInformationImages, onCreateAdmin, onToggleAdmin, onRevokeToken, onRetireDevice, onAssignDevice }: SetupTabProps) {
   const { locale, t } = useI18n();
   const [section, setSection] = useState<SetupSection>('rooms');
   const resourceCounts: Partial<Record<SetupSection, number>> = {
@@ -890,7 +896,7 @@ export function SetupTab({ snapshot, busy, initialInstallationId, onCreateRoom, 
     if (value === 'services') return <CatalogPanels resource="services" rooms={snapshot.rooms} areas={snapshot.areas} services={snapshot.services} busy={busy} onToggleRoom={onToggleRoom} onPatchRoom={onPatchRoom} onToggleArea={onToggleArea} onPatchArea={onPatchArea} onToggleService={onToggleService} onPatchService={onPatchService} renderCreateRoom={renderCreateRoom} renderCreateArea={renderCreateArea} renderCreateService={renderCreateService} />;
     if (value === 'devices') return <DeviceManagement initialInstallationId={initialInstallationId} onProvision={async (values) => onProvisionDevice(values)} devices={snapshot.devices} rooms={snapshot.rooms} areas={snapshot.areas} busy={busy} onToggle={onToggleDevice} onRotate={onRotateToken} onRebind={onRebindDevice} onRevoke={onRevokeToken} onRetire={onRetireDevice} onAssign={onAssignDevice} />;
     if (value === 'information') return <InformationPanel images={snapshot.informationImages ?? []} settings={snapshot.settings} onSaveSettings={onSaveSettings} busy={busy} onUpload={onUploadInformationImage} onRepair={onRepairInformationImage} onDelete={onDeleteInformationImage} onReorder={onReorderInformationImages} />;
-    if (value === 'settings') return <SettingsPanel settings={snapshot.settings} busy={busy} onSave={onSaveSettings} />;
+    if (value === 'settings') return <SettingsPanel settings={snapshot.settings} busy={busy} onSave={onSaveSettings} onUploadRoomBackground={onUploadRoomBackground} />;
     return <AdminManagement admins={snapshot.admins} busy={busy} onCreate={onCreateAdmin} onToggle={onToggleAdmin} />;
   }
 

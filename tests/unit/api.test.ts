@@ -15,7 +15,8 @@ import {
   repairInformationImageVariants,
   reorderInformationImages,
   startupErrorMessage,
-  uploadInformationImage
+  uploadInformationImage,
+  uploadRoomBackgroundImage
 } from '../../apps/web/src/api';
 
 describe('web API error helpers', () => {
@@ -133,6 +134,44 @@ describe('web API error helpers', () => {
       { path: '/api/v1/information/images/order', method: 'PATCH', contentType: 'application/json', body: JSON.stringify({ ids: ['image-1'] }) },
       { path: '/api/v1/information/images/image-1', method: 'DELETE', contentType: null, body: '' }
     ]);
+  });
+
+  it('sends source background files as multipart instead of a JSON data URL setting', async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: Array<{ path: string; method: string | undefined; contentType: string | null; fileBytes: number; filename: string }> = [];
+    globalThis.fetch = async (input, init) => {
+      const formData = init?.body as FormData;
+      const image = formData.get('image') as File;
+      requests.push({
+        path: String(input),
+        method: init?.method,
+        contentType: new Headers(init?.headers).get('content-type'),
+        fileBytes: image.size,
+        filename: image.name
+      });
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => ({ data: { updated: true }, requestId: 'req-background' })
+      } as Response;
+    };
+
+    try {
+      await uploadRoomBackgroundImage(new Blob([Buffer.alloc(70 * 1024)], { type: 'image/jpeg' }), {
+        headers: { 'X-CSRF-Token': 'csrf', 'Idempotency-Key': 'room-background-save' }
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(requests).toEqual([{
+      path: '/api/v1/settings/room-background',
+      method: 'POST',
+      contentType: null,
+      fileBytes: 70 * 1024,
+      filename: 'room-background'
+    }]);
   });
 
   it('uploads named image variants and requests a selected device variant', async () => {

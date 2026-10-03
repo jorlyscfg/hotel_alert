@@ -179,6 +179,12 @@ export function uploadInformationImage(file: Blob | InformationImageUploadSet, o
   return request<InformationImageDTO>('/information/images', { method: 'POST', body: formData }, options);
 }
 
+export function uploadRoomBackgroundImage(file: Blob, options: RequestOptions = {}): Promise<ApiEnvelope<{ updated: true }>> {
+  const formData = new FormData();
+  formData.append('image', file, 'room-background');
+  return request<{ updated: true }>('/settings/room-background', { method: 'POST', body: formData }, options);
+}
+
 export function repairInformationImageVariants(id: string, files: InformationImageUploadSet, options: RequestOptions = {}): Promise<ApiEnvelope<InformationImageDTO>> {
   const formData = createInformationImageFormData(files);
   return request<InformationImageDTO>(`/information/images/${encodeURIComponent(id)}/variants`, { method: 'POST', body: formData }, options);

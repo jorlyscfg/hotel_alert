@@ -31,13 +31,17 @@ describe('admin request filters', () => {
       children: createElement(SettingsPanel, {
         settings: [{ key: 'roomBackground', value: roomBackgroundVariants, updatedAt: '2026-08-31T09:05:00.000Z', updatedByAdminId: null } as never],
         busy: false,
-        onSave: async () => undefined
+        onSave: async () => undefined,
+        onUploadRoomBackground: async () => true
       })
     }));
 
     expect(markup).toContain('setting-roomBackground');
     expect(markup).toContain('Room background');
     expect(markup).toContain('data:image/webp;base64,SQUARE');
+    expect(markup).toContain('accept="image/*"');
+    expect(markup).toContain('The server prepares square and tablet versions for room displays.');
+    expect(markup).not.toContain('120 KB');
     expect(markup).not.toContain('[object Object]');
   });
 
@@ -84,6 +88,8 @@ describe('admin request filters', () => {
     expect(markup).toContain('name="en-wide"');
     expect(markup).toContain('name="es-square480"');
     expect(markup).toContain('name="es-wide"');
+    expect(markup.match(/accept="image\/\*"/g)).toHaveLength(4);
+    expect(markup).not.toContain('accept="image/png,image/jpeg,image/webp"');
     expect(informationPanelSource.match(/<InformationImageVariantFields/g)).toHaveLength(2);
     expect(informationPanelSource).toContain('data-admin-information-upload-form="true"');
     expect(informationPanelSource).toContain('data-admin-information-repair-form="true"');
@@ -140,7 +146,8 @@ describe('admin request filters', () => {
       children: createElement(SettingsPanel, {
         settings: [...settings],
         busy: false,
-        onSave: async () => undefined
+        onSave: async () => undefined,
+        onUploadRoomBackground: async () => true
       })
     }));
 
@@ -573,7 +580,8 @@ describe('admin request filters', () => {
           { key: 'roomBackground', value: null, updatedAt: '2026-08-31T09:05:00.000Z', updatedByAdminId: null }
         ],
         busy: false,
-        onSave: async () => undefined
+        onSave: async () => undefined,
+        onUploadRoomBackground: async () => true
       })
     }));
 

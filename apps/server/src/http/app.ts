@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import express, { Router, type Application, type ErrorRequestHandler, type NextFunction, type Request, type RequestHandler, type Response } from 'express';
@@ -39,6 +40,9 @@ import { AppError, isAppError, notFound, validationError } from '../errors';
 import { createFreeKioskClient, type FreeKioskBeepResult, type FreeKioskScreensaverResult } from '../integrations/freekiosk-client';
 import { hashJson } from '../security/crypto';
 import { actorForPrincipal, type AdminPrincipal, type Principal } from '../security/principal';
+import { ImageProcessingError, MAX_IMAGE_INPUT_BYTES } from '../images/image-processor';
+import { normalizeInformationImageUploads } from '../images/information-image-normalizer';
+import { normalizeRoomBackgroundImage } from '../images/room-background-normalizer';
 import { createRateLimiter, principalKey, sourceIpKey } from './rate-limit';
 
 const ADMIN_SESSION_COOKIE = 'hotel_admin_session';
@@ -73,6 +77,14 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     type: (req) => {
       const contentTypeHeader = req.headers['content-type'];
       const contentType = Array.isArray(contentTypeHeader) ? contentTypeHeader[0] ?? '' : contentTypeHeader ?? '';
+      return contentType.startsWith('multipart/form-data') || contentType.startsWith('application/octet-stream') || contentType.startsWith('image/');
+    }
+  });
+  const roomBackgroundSourceUpload = express.raw({
+    limit: `${MAX_IMAGE_INPUT_BYTES + 16 * 1024}b`,
+    type: (req) => {
+      const contentTypeHeader = req.headers['content-type'];
+      const contentType = (Array.isArray(contentTypeHeader) ? contentTypeHeader[0] ?? '' : contentTypeHeader ?? '').toLowerCase();
       return contentType.startsWith('multipart/form-data') || contentType.startsWith('application/octet-stream') || contentType.startsWith('image/');
     }
   });
@@ -426,6 +438,38 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     const result = service.runIdempotentMutation(actorForPrincipal(principal), idempotencyKey, 'settings.update', hashJson(input.changes), 'settings', () => service.updateSettings(principal, input.changes, req.requestId));
     sendList(res, result.data, req.requestId, { configurationRevision: service.getConfigurationRevision(), idempotentReplay: result.idempotentReplay });
   }));
+  api.post('/settings/room-background', ...adminSensitiveMutation, roomBackgroundSourceUpload, asyncHandler(async (req, res) => {
+    const idempotencyKey = requireMutationKey(req);
+    const sourceBytes = parseRoomBackgroundSourceUpload(req);
+    const principal = getAdminPrincipal(req);
+    let roomBackground: Awaited<ReturnType<typeof normalizeRoomBackgroundImage>>;
+    try {
+      roomBackground = await normalizeRoomBackgroundImage(sourceBytes);
+    } catch (error) {
+      if (error instanceof ImageProcessingError) {
+        if (error.code === 'IMAGE_PROCESSOR_UNAVAILABLE' || error.code === 'IMAGE_PROCESSING_TIMEOUT') {
+          throw new AppError('INTERNAL_ERROR', error.message, 503, { code: error.code });
+        }
+        throw validationError(error.message, { code: error.code });
+      }
+      throw error;
+    }
+
+    const requestHash = hashJson({ sourceSha256: crypto.createHash('sha256').update(sourceBytes).digest('hex') });
+    const result = service.runIdempotentMutation(
+      actorForPrincipal(principal),
+      idempotencyKey,
+      'settings.room-background.update',
+      requestHash,
+      'settings',
+      () => service.updateSettings(principal, { roomBackground }, req.requestId)
+    );
+    res.set('Cache-Control', 'no-store');
+    sendData(res, 200, { updated: true }, req.requestId, {
+      configurationRevision: service.getConfigurationRevision(),
+      idempotentReplay: result.idempotentReplay
+    });
+  }));
   api.get('/information/images', admin, asyncHandler(async (req, res) => {
     sendList(res, service.listInformationImages(), req.requestId);
   }));
@@ -439,16 +483,20 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
   api.post('/information/images', [admin, requireAdminCsrf(service), principalMutationRateLimit, informationImageUpload], asyncHandler(async (req, res) => {
     const idempotencyKey = requireMutationKey(req);
     const upload = parseInformationImageUpload(req);
+    const requestHash = hashInformationImageUploads(upload);
+    const normalizedUploads = await normalizeInformationUploads(upload, config.informationImageMaxBytes);
     const actor = actorForPrincipal(getAdminPrincipal(req));
-    const result = service.runIdempotentMutation(actor, idempotencyKey, 'information.image.create', hashInformationImageUploads(upload), null, () => service.createInformationImageVariants(upload, actor, req.requestId), 201);
+    const result = service.runIdempotentMutation(actor, idempotencyKey, 'information.image.create', requestHash, null, () => service.createInformationImageVariants(normalizedUploads, actor, req.requestId), 201);
     sendData(res, 201, result.data, req.requestId, { configurationRevision: service.getConfigurationRevision(), idempotentReplay: result.idempotentReplay });
   }));
   api.post('/information/images/:id/variants', [admin, requireAdminCsrf(service), principalMutationRateLimit, informationImageUpload], asyncHandler(async (req, res) => {
     const idempotencyKey = requireMutationKey(req);
     const upload = parseInformationImageUpload(req);
+    const requestHash = hashInformationImageUploads(upload);
+    const normalizedUploads = await normalizeInformationUploads(upload, config.informationImageMaxBytes);
     const imageId = routeParam(req.params['id'], 'id');
     const actor = actorForPrincipal(getAdminPrincipal(req));
-    const result = service.runIdempotentMutation(actor, idempotencyKey, 'information.image.variants.update', hashInformationImageUploads(upload), imageId, () => service.updateInformationImageVariants(imageId, upload, actor, req.requestId));
+    const result = service.runIdempotentMutation(actor, idempotencyKey, 'information.image.variants.update', requestHash, imageId, () => service.updateInformationImageVariants(imageId, normalizedUploads, actor, req.requestId));
     sendData(res, 200, result.data, req.requestId, { configurationRevision: service.getConfigurationRevision(), idempotentReplay: result.idempotentReplay });
   }));
   api.patch('/information/images/order', adminMutation, asyncHandler(async (req, res) => {
@@ -679,6 +727,73 @@ function parseInformationImageUpload(req: Request): ParsedInformationImageUpload
     originalName: req.get('x-image-name') ?? 'image',
     ...(uploadContentType === undefined ? {} : { contentType: uploadContentType })
   }];
+}
+
+async function normalizeInformationUploads(
+  uploads: readonly ParsedInformationImageUpload[],
+  maximumBytes: number
+): Promise<InformationImageUpload[]> {
+  try {
+    return await normalizeInformationImageUploads(uploads, maximumBytes);
+  } catch (error) {
+    if (!(error instanceof ImageProcessingError)) throw error;
+    if (error.code === 'IMAGE_PROCESSOR_UNAVAILABLE' || error.code === 'IMAGE_PROCESSING_TIMEOUT') {
+      throw new AppError('INTERNAL_ERROR', error.message, 503, { code: error.code });
+    }
+    throw validationError(error.message, { code: error.code });
+  }
+}
+
+function parseRoomBackgroundSourceUpload(req: Request): Buffer {
+  if (!Buffer.isBuffer(req.body)) {
+    throw validationError('An image upload is required.');
+  }
+  const contentType = req.get('content-type') ?? '';
+  if (!/^multipart\/form-data(?:\s*;|$)/i.test(contentType)) return req.body;
+
+  const boundaryMatch = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType);
+  const boundary = (boundaryMatch?.[1] ?? boundaryMatch?.[2])?.trim();
+  if (boundary === undefined || boundary.length === 0 || boundary.length > 200) {
+    throw validationError('Multipart image upload is missing a valid boundary.');
+  }
+  const delimiter = Buffer.from(`--${boundary}`, 'ascii');
+  const headerSeparator = Buffer.from('\r\n\r\n', 'ascii');
+  const body = req.body;
+  if (!body.subarray(0, delimiter.length).equals(delimiter) || !hasMultipartBoundarySuffix(body, delimiter.length)) {
+    throw validationError('Multipart image upload has an invalid boundary.');
+  }
+
+  let imageBytes: Buffer | null = null;
+  let cursor = delimiter.length;
+  if (isMultipartClosingBoundary(body, cursor)) throw validationError('An image upload is required.');
+  if (!hasCrLf(body, cursor)) throw validationError('Multipart image upload has an invalid boundary.');
+  cursor += 2;
+
+  while (cursor < body.length) {
+    const headerEnd = body.indexOf(headerSeparator, cursor);
+    if (headerEnd < 0 || headerEnd - cursor > 16 * 1024) {
+      throw validationError('Multipart image upload has invalid headers.');
+    }
+    const contentStart = headerEnd + headerSeparator.length;
+    const nextBoundary = findMultipartBoundary(body, delimiter, contentStart);
+    if (nextBoundary < 0) throw validationError('Multipart image upload has an invalid boundary.');
+    const headers = body.subarray(cursor, headerEnd).toString('latin1');
+    const disposition = /^content-disposition:\s*form-data\s*;([^\r\n]*)$/im.exec(headers)?.[1] ?? '';
+    const fieldName = /(?:^|;)\s*name="([^"]+)"/i.exec(disposition)?.[1];
+    const fileName = /(?:^|;)\s*filename="([^"]*)"/i.exec(disposition)?.[1];
+    if (fieldName !== 'image' || fileName === undefined || imageBytes !== null) {
+      throw validationError('Multipart room background upload must include exactly one image file.');
+    }
+
+    imageBytes = Buffer.from(body.subarray(contentStart, nextBoundary - 2));
+    cursor = nextBoundary + delimiter.length;
+    if (isMultipartClosingBoundary(body, cursor)) break;
+    if (!hasCrLf(body, cursor)) throw validationError('Multipart image upload has an invalid boundary.');
+    cursor += 2;
+  }
+
+  if (imageBytes === null) throw validationError('An image upload is required.');
+  return imageBytes;
 }
 
 function parseMultipartInformationImage(body: Buffer, contentType: string): ParsedInformationImageUpload[] {

@@ -51,26 +51,27 @@ describe('Information image HTTP API', () => {
       .post('/api/v1/information/images')
       .set('X-CSRF-Token', csrfToken)
       .set('Idempotency-Key', 'information-image-1')
-      .attach('image', pngBytes('welcome'), 'welcome.png')
+      .attach('image', pngBytes('welcome'), { filename: 'welcome.gif', contentType: 'image/gif' })
       .expect(201);
     const uploadedRetry = await adminClient
       .post('/api/v1/information/images')
       .set('X-CSRF-Token', csrfToken)
       .set('Idempotency-Key', 'information-image-1')
-      .attach('image', pngBytes('welcome'), 'welcome.png');
+      .attach('image', pngBytes('welcome'), { filename: 'welcome.gif', contentType: 'image/gif' });
     expect(uploadedRetry.status, JSON.stringify(uploadedRetry.body)).toBe(201);
     expect(uploadedRetry.body.idempotentReplay).toBe(true);
     expect(uploadedRetry.body.data).toEqual(uploaded.body.data);
     expect(informationImageRowCount()).toBe(1);
     expect(storedInformationImageFiles()).toHaveLength(1);
 
-    expect(uploaded.body.data).toMatchObject({ originalName: 'welcome.png', mimeType: 'image/png', byteSize: 15, displayOrder: 0 });
+    expect(uploaded.body.data).toMatchObject({ originalName: 'welcome.gif', mimeType: 'image/webp', displayOrder: 0 });
+    expect(uploaded.body.data.byteSize).toBeGreaterThan(0);
 
     await adminClient
       .get(`/api/v1/information/images/${uploaded.body.data.id}/content`)
-      .expect('Content-Type', /image\/png/)
+      .expect('Content-Type', /image\/webp/)
       .expect(200)
-      .then((response) => expect(response.body).toEqual(pngBytes('welcome')));
+      .then((response) => expect(isWebp(response.body as Buffer)).toBe(true));
 
     const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
     const roomDevice = service.bootstrapDevice({ installationId: 'room-101', displayName: 'Room 101 tablet', assignmentMode: 'ROOM', roomId: room.id }, systemActor, 'setup-room-device');
@@ -86,9 +87,9 @@ describe('Information image HTTP API', () => {
     await request(app)
       .get(`/api/v1/device/information/images/${uploaded.body.data.id}/content`)
       .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
-      .expect('Content-Type', /image\/png/)
+      .expect('Content-Type', /image\/webp/)
       .expect(200)
-      .then((response) => expect(response.body).toEqual(pngBytes('welcome')));
+      .then((response) => expect(isWebp(response.body as Buffer)).toBe(true));
 
     const areaImages = await request(app)
       .get('/api/v1/device/information/images')
@@ -125,7 +126,7 @@ describe('Information image HTTP API', () => {
     return fs.readdirSync(config.informationImageDirectory).filter((file) => file.startsWith('information_')).sort();
   }
 
-  it('preserves binary image bytes that contain the multipart boundary text', async () => {
+  it('normalizes a valid image whose binary bytes contain the multipart boundary text', async () => {
     const boundary = 'AaB03x';
     const imageBytes = Buffer.concat([
       pngBytes('prefix'),
@@ -147,12 +148,12 @@ describe('Information image HTTP API', () => {
       .send(multipartBody)
       .expect(201);
 
-    expect(uploaded.body.data.byteSize).toBe(imageBytes.length);
+    expect(uploaded.body.data.mimeType).toBe('image/webp');
     await adminClient
       .get(`/api/v1/information/images/${uploaded.body.data.id}/content`)
-      .expect('Content-Type', /image\/png/)
+      .expect('Content-Type', /image\/webp/)
       .expect(200)
-      .then((response) => expect(response.body).toEqual(imageBytes));
+      .then((response) => expect(isWebp(response.body as Buffer)).toBe(true));
   });
 
   it('lets a ROOM device toggle the FreeKiosk screensaver through the server', async () => {
@@ -226,16 +227,16 @@ describe('Information image HTTP API', () => {
     await request(app)
       .get(`/api/v1/device/information/images/${uploaded.body.data.id}/content?variant=square480`)
       .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
-      .expect('Content-Type', /image\/png/)
+      .expect('Content-Type', /image\/webp/)
       .expect(200)
-      .then((response) => expect(response.body).toEqual(pngBytes('square')));
+      .then((response) => expect(isWebp(response.body as Buffer)).toBe(true));
 
     await request(app)
       .get(`/api/v1/device/information/images/${uploaded.body.data.id}/content?variant=wide`)
       .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
-      .expect('Content-Type', /image\/png/)
+      .expect('Content-Type', /image\/webp/)
       .expect(200)
-      .then((response) => expect(response.body).toEqual(pngBytes('wide')));
+      .then((response) => expect(isWebp(response.body as Buffer)).toBe(true));
 
     const fallback = await adminClient
       .post('/api/v1/information/images')
@@ -247,9 +248,9 @@ describe('Information image HTTP API', () => {
     await request(app)
       .get(`/api/v1/device/information/images/${fallback.body.data.id}/content?variant=square480`)
       .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
-      .expect('Content-Type', /image\/png/)
+      .expect('Content-Type', /image\/webp/)
       .expect(200)
-      .then((response) => expect(response.body).toEqual(pngBytes('fallback')));
+      .then((response) => expect(isWebp(response.body as Buffer)).toBe(true));
   });
 
   it('requires both languages for new slides and serves repaired ROOM artwork by language and size', async () => {
@@ -269,10 +270,10 @@ describe('Information image HTTP API', () => {
       .attach('es-wide', pngBytes('Spanish wide'), 'bienvenida-es.png')
       .expect(201);
 
-    expect(uploaded.body.data.variants).toEqual([
-      { language: 'es', variant: 'wide', originalName: 'bienvenida-es.png', mimeType: 'image/png', byteSize: pngBytes('Spanish wide').length },
-      { language: 'en', variant: 'wide', originalName: 'welcome-en.png', mimeType: 'image/png', byteSize: pngBytes('English wide').length }
-    ]);
+    expect(uploaded.body.data.variants).toEqual(expect.arrayContaining([
+      expect.objectContaining({ language: 'es', variant: 'wide', originalName: 'bienvenida-es.png', mimeType: 'image/webp' }),
+      expect.objectContaining({ language: 'en', variant: 'wide', originalName: 'welcome-en.png', mimeType: 'image/webp' })
+    ]));
 
     const room = service.createRoom({ code: '103', displayName: 'Room 103' }, systemActor, 'setup-room-localized-images');
     const roomDevice = service.bootstrapDevice({ installationId: 'room-103', displayName: 'Room 103 tablet', assignmentMode: 'ROOM', roomId: room.id }, systemActor, 'setup-room-device-localized-images');
@@ -281,14 +282,15 @@ describe('Information image HTTP API', () => {
     await request(app)
       .get(`${contentPath}?language=en&variant=square480`)
       .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
-      .expect('Content-Type', /image\/png/)
+      .expect('Content-Type', /image\/webp/)
       .expect(200)
-      .then((response) => expect(response.body).toEqual(pngBytes('English wide')));
+      .then((response) => expect(isWebp(response.body as Buffer)).toBe(true));
     await request(app)
       .get(`${contentPath}?language=es&variant=wide`)
       .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
+      .expect('Content-Type', /image\/webp/)
       .expect(200)
-      .then((response) => expect(response.body).toEqual(pngBytes('Spanish wide')));
+      .then((response) => expect(isWebp(response.body as Buffer)).toBe(true));
 
     const repaired = await adminClient
       .post(`/api/v1/information/images/${uploaded.body.data.id}/variants`)
@@ -301,15 +303,36 @@ describe('Information image HTTP API', () => {
     await request(app)
       .get(`${contentPath}?language=en&variant=wide`)
       .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
+      .expect('Content-Type', /image\/webp/)
       .expect(200)
-      .then((response) => expect(response.body).toEqual(pngBytes('Fixed English')));
+      .then((response) => expect(isWebp(response.body as Buffer)).toBe(true));
     await request(app)
       .get(`${contentPath}?language=fr&variant=wide`)
       .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
       .expect(422);
   });
+
+  it('rejects corrupt variant bytes without persisting any of the normalized batch', async () => {
+    const rejected = await adminClient
+      .post('/api/v1/information/images')
+      .set('X-CSRF-Token', csrfToken)
+      .set('Idempotency-Key', 'information-image-corrupt-batch')
+      .attach('en-wide', pngBytes('valid first variant'), 'english.png')
+      .attach('es-wide', Buffer.from('not a decodable image'), 'spanish.gif')
+      .expect(422);
+
+    expect(rejected.body.error.code).toBe('VALIDATION_ERROR');
+    expect(rejected.body.error.message).not.toMatch(/ffmpeg|decoder|pipe/i);
+    expect(informationImageRowCount()).toBe(0);
+    expect(storedInformationImageFiles()).toHaveLength(0);
+  });
 });
 
 function pngBytes(label: string): Buffer {
-  return Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.from(label)]);
+  const validPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAEElEQVR4nGP8ywACLGCSAQANEQED1LYyQAAAAABJRU5ErkJggg==', 'base64');
+  return Buffer.concat([validPng, Buffer.from(label)]);
+}
+
+function isWebp(bytes: Buffer): boolean {
+  return bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP';
 }

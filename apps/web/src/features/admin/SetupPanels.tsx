@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, Moon, Pencil, Plus, Power, PowerOff, Upload, X } from 'lucide-react';
 import * as Shared from '@hotel/shared';
-import type { AdminDTO, AreaDTO, LocalizedTextVariants, RoomBackgroundVariants, RoomBackgroundValue, RoomDTO, ServiceDTO, SettingDTO, SettingKey } from '@hotel/shared';
+import type { AdminDTO, AreaDTO, LocalizedTextVariants, RoomBackgroundValue, RoomDTO, ServiceDTO, SettingDTO, SettingKey } from '@hotel/shared';
 import { Modal } from '../../components/Modal';
 import { TouchSelect, type TouchSelectOption } from '../../components/TouchSelect';
 import { ServiceIcon } from '../../components/ServiceIcon';
 import { resolveAreaDescription, resolveAreaDisplayName, resolveServiceDisplayName, useI18n, type MessageKey, formatNumber } from '../../i18n';
 import { filterAdminItems } from './admin-search';
 
-const { isRoomBackgroundValue, MAX_HOTEL_LOGO_LENGTH, MAX_ROOM_BACKGROUND_LENGTH } = Shared;
+const { isRoomBackgroundValue, MAX_HOTEL_LOGO_LENGTH } = Shared;
 
 interface ServiceIconOption {
   value: string;
@@ -185,6 +185,10 @@ interface SettingsPanelProps {
   onSave: (changes: Record<string, unknown>) => Promise<boolean | void>;
 }
 
+interface SettingsPanelWithRoomBackgroundProps extends SettingsPanelProps {
+  onUploadRoomBackground: (file: File) => Promise<boolean>;
+}
+
 const SETTING_LABEL_KEYS: Record<SettingKey, MessageKey> = {
   'heartbeat.intervalMs': 'settings.heartbeatInterval',
   'heartbeat.staleAfterMs': 'settings.staleThreshold',
@@ -232,7 +236,7 @@ function RuntimePolicyPanel({ settings, busy, onSave }: SettingsPanelProps) {
   return <section className="surface-card settings-card settings-runtime-policy" aria-labelledby="runtime-policy-title" data-admin-settings-runtime-policy="true"><div className="panel-card__heading"><div><p className="eyebrow eyebrow--muted">{t('admin.runtimePolicy')}</p><h2 id="runtime-policy-title">{t('admin.runtimePolicy')}</h2></div><span className="section-count">{t('admin.validated')}</span></div><form className="settings-grid" data-admin-settings-controls="runtime-policy" onSubmit={submitSettings}><div className="settings-numeric-grid">{numericSettings.map((setting) => { const value = values[setting.key]; return <div className="form-field" key={setting.key}><label htmlFor={`setting-${setting.key}`}>{t(SETTING_LABEL_KEYS[setting.key])}</label><input id={`setting-${setting.key}`} type="number" value={typeof value === 'number' || typeof value === 'string' ? value : ''} onChange={(event) => setValues((current) => ({ ...current, [setting.key]: event.target.value }))} required /></div>; })}</div><button className="button button--dark" type="submit" disabled={busy}>{t('common.saveChanges')}</button></form></section>;
 }
 
-export function SettingsPanel(props: SettingsPanelProps) {
+export function SettingsPanel(props: SettingsPanelWithRoomBackgroundProps) {
   const { t } = useI18n();
   const [activeOption, setActiveOption] = useState<SettingsOption>('station-identity');
   const stationIdentitySettings = useMemo(() => props.settings.filter((setting) => setting.key === 'hotelName' || setting.key === 'hotelNameEn' || setting.key === 'hotelLogo'), [props.settings]);
@@ -240,7 +244,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
   const numericSettings = useMemo(() => props.settings.filter((setting) => typeof setting.value === 'number' && !isInformationCarouselSetting(setting.key)), [props.settings]);
   const roomBackgroundSetting = useMemo(() => props.settings.find((setting) => setting.key === 'roomBackground'), [props.settings]);
 
-  return <div className="settings-panels" data-admin-settings-panel="true"><div className="setup-accordions" data-admin-settings-carousel="true">{SETTINGS_OPTIONS.map((option) => { const isOpen = activeOption === option; const panelId = `admin-settings-option-${option}`; const triggerId = `admin-settings-accordion-${option}`; return <section className={`setup-accordion${isOpen ? ' setup-accordion--open' : ''}`} data-admin-settings-option={option} key={option}><h3 className="setup-accordion__heading"><button className="setup-accordion__trigger" type="button" id={triggerId} data-admin-settings-accordion={option} aria-expanded={isOpen} aria-controls={panelId} onClick={() => setActiveOption(option)}><span className="setup-accordion__label">{t(SETTINGS_OPTION_LABEL_KEYS[option])}</span><ChevronDown className="setup-accordion__icon" aria-hidden="true" size={18} strokeWidth={1.8} /></button></h3><div className="setup-accordion__panel" id={panelId} aria-labelledby={triggerId} data-admin-settings-option-panel={option} hidden={!isOpen}>{option === 'station-identity' ? <CompactStationIdentityPanel settings={stationIdentitySettings} busy={props.busy} onSave={props.onSave} /> : option === 'clock-format' ? <CompactClockFormatPanel settings={clockFormatSettings} busy={props.busy} onSave={props.onSave} /> : option === 'room-background' ? <CompactRoomBackgroundPanel setting={roomBackgroundSetting} busy={props.busy} onSave={props.onSave} /> : <RuntimePolicyPanel settings={numericSettings} busy={props.busy} onSave={props.onSave} />}</div></section>; })}</div></div>;
+  return <div className="settings-panels" data-admin-settings-panel="true"><div className="setup-accordions" data-admin-settings-carousel="true">{SETTINGS_OPTIONS.map((option) => { const isOpen = activeOption === option; const panelId = `admin-settings-option-${option}`; const triggerId = `admin-settings-accordion-${option}`; return <section className={`setup-accordion${isOpen ? ' setup-accordion--open' : ''}`} data-admin-settings-option={option} key={option}><h3 className="setup-accordion__heading"><button className="setup-accordion__trigger" type="button" id={triggerId} data-admin-settings-accordion={option} aria-expanded={isOpen} aria-controls={panelId} onClick={() => setActiveOption(option)}><span className="setup-accordion__label">{t(SETTINGS_OPTION_LABEL_KEYS[option])}</span><ChevronDown className="setup-accordion__icon" aria-hidden="true" size={18} strokeWidth={1.8} /></button></h3><div className="setup-accordion__panel" id={panelId} aria-labelledby={triggerId} data-admin-settings-option-panel={option} hidden={!isOpen}>{option === 'station-identity' ? <CompactStationIdentityPanel settings={stationIdentitySettings} busy={props.busy} onSave={props.onSave} /> : option === 'clock-format' ? <CompactClockFormatPanel settings={clockFormatSettings} busy={props.busy} onSave={props.onSave} /> : option === 'room-background' ? <CompactRoomBackgroundPanel setting={roomBackgroundSetting} busy={props.busy} onSave={props.onSave} onUploadRoomBackground={props.onUploadRoomBackground} /> : <RuntimePolicyPanel settings={numericSettings} busy={props.busy} onSave={props.onSave} />}</div></section>; })}</div></div>;
 }
 
 const SETTINGS_OPTIONS = ['station-identity', 'clock-format', 'room-background', 'runtime-policy'] as const;
@@ -311,36 +315,48 @@ function CompactClockFormatPanel({ settings, busy, onSave }: SettingsPanelProps)
   return <section className="surface-card settings-card clock-format-settings" aria-labelledby="clock-format-title"><div className="panel-card__heading"><div><p className="eyebrow eyebrow--muted">{t('settings.clockFormat')}</p><h2 id="clock-format-title">{t('settings.clockFormat')}</h2></div><span className="section-count">{t('admin.validated')}</span></div><form className="settings-grid" data-admin-settings-controls="clock-format" onSubmit={submitSettings}><div className="form-field"><label htmlFor="setting-clockFormat">{t(SETTING_LABEL_KEYS.clockFormat)}</label><TouchSelect id="setting-clockFormat" label={t(SETTING_LABEL_KEYS.clockFormat)} value={clockFormat} onChange={(value) => setValues((current) => ({ ...current, clockFormat: value }))} options={[{ value: '12h', label: t('settings.clock12h') }, { value: '24h', label: t('settings.clock24h') }]} /></div><button className="button button--dark" type="submit" disabled={busy}>{t('common.saveChanges')}</button></form></section>;
 }
 
-function CompactRoomBackgroundPanel({ setting, busy, onSave }: RoomBackgroundPanelProps) {
+function CompactRoomBackgroundPanel({ setting, busy, onSave, onUploadRoomBackground }: RoomBackgroundPanelProps) {
   const { t } = useI18n();
   const [roomBackground, setRoomBackground] = useState<RoomBackgroundValue>(() => isRoomBackgroundValue(setting?.value) ? setting.value : null);
+  const [pendingBackgroundFile, setPendingBackgroundFile] = useState<File | null>(null);
+  const [pendingPreviewUrl, setPendingPreviewUrl] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const backgroundInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => setRoomBackground(isRoomBackgroundValue(setting?.value) ? setting.value : null), [setting]);
 
-  async function handleBackgroundChange(file: File | undefined): Promise<void> {
-    if (file === undefined) return;
-    setUploadError(null);
-    try {
-      setRoomBackground(await resizeRoomBackgroundImage(file));
-    } catch {
-      setUploadError(t('settings.roomBackgroundUploadError'));
+  useEffect(() => {
+    if (pendingBackgroundFile === null) {
+      setPendingPreviewUrl(null);
+      return;
     }
-  }
+    const previewUrl = URL.createObjectURL(pendingBackgroundFile);
+    setPendingPreviewUrl(previewUrl);
+    return () => URL.revokeObjectURL(previewUrl);
+  }, [pendingBackgroundFile]);
 
-  function submitBackground(event: React.FormEvent<HTMLFormElement>): void {
+  async function submitBackground(event: React.FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+    if (pendingBackgroundFile !== null) {
+      if (await onUploadRoomBackground(pendingBackgroundFile)) {
+        setPendingBackgroundFile(null);
+        setUploadError(null);
+      } else {
+        setUploadError(t('settings.roomBackgroundUploadError'));
+      }
+      return;
+    }
     void onSave({ roomBackground });
   }
 
-  return <section className="surface-card settings-card room-background-settings" aria-labelledby="room-background-title"><div className="panel-card__heading"><div><p className="eyebrow eyebrow--muted">{t('settings.roomBackground')}</p><h2 id="room-background-title">{t('settings.roomBackgroundTitle')}</h2></div><span className="section-count">{t('admin.validated')}</span></div><form className="settings-grid" data-admin-settings-controls="room-background" onSubmit={submitBackground}><div className="form-field"><span className="form-field__label">{t('settings.roomBackground')}</span><div className="branding-media-actions"><input ref={backgroundInputRef} className="visually-hidden branding-file-input" id="setting-roomBackground" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" onChange={(event) => void handleBackgroundChange(event.target.files?.[0])} aria-label={t('settings.uploadRoomBackground')} tabIndex={-1} /><button className="icon-button branding-upload-button" type="button" onClick={() => backgroundInputRef.current?.click()} disabled={busy} aria-label={t('settings.uploadRoomBackground')} title={t('settings.uploadRoomBackground')}><Upload aria-hidden="true" size={17} strokeWidth={1.9} /></button><RoomBackgroundPreview value={roomBackground} /><button className="icon-button branding-remove-button" type="button" onClick={() => setRoomBackground(null)} disabled={busy || roomBackground === null} aria-label={t('settings.removeRoomBackground')} title={t('settings.removeRoomBackground')}><X aria-hidden="true" size={17} strokeWidth={1.9} /></button></div>{uploadError !== null && <p className="form-error" role="alert">{uploadError}</p>}<p className="field-hint">{t('settings.roomBackgroundCopy')}</p></div><button className="button button--dark" type="submit" disabled={busy}>{t('common.saveChanges')}</button></form></section>;
+  return <section className="surface-card settings-card room-background-settings" aria-labelledby="room-background-title"><div className="panel-card__heading"><div><p className="eyebrow eyebrow--muted">{t('settings.roomBackground')}</p><h2 id="room-background-title">{t('settings.roomBackgroundTitle')}</h2></div><span className="section-count">{t('admin.validated')}</span></div><form className="settings-grid" data-admin-settings-controls="room-background" onSubmit={(event) => void submitBackground(event)}><div className="form-field"><span className="form-field__label">{t('settings.roomBackground')}</span><div className="branding-media-actions"><input ref={backgroundInputRef} className="visually-hidden branding-file-input" id="setting-roomBackground" type="file" accept="image/*" onChange={(event) => { setPendingBackgroundFile(event.currentTarget.files?.[0] ?? null); setUploadError(null); event.currentTarget.value = ''; }} aria-label={t('settings.uploadRoomBackground')} tabIndex={-1} /><button className="icon-button branding-upload-button" type="button" onClick={() => backgroundInputRef.current?.click()} disabled={busy} aria-label={t('settings.uploadRoomBackground')} title={t('settings.uploadRoomBackground')}><Upload aria-hidden="true" size={17} strokeWidth={1.9} /></button><RoomBackgroundPreview value={roomBackground} pendingPreviewUrl={pendingPreviewUrl} /><button className="icon-button branding-remove-button" type="button" onClick={() => { if (pendingBackgroundFile === null) setRoomBackground(null); else setPendingBackgroundFile(null); setUploadError(null); }} disabled={busy || (roomBackground === null && pendingBackgroundFile === null)} aria-label={t('settings.removeRoomBackground')} title={t('settings.removeRoomBackground')}><X aria-hidden="true" size={17} strokeWidth={1.9} /></button></div>{uploadError !== null && <p className="form-error" role="alert">{uploadError}</p>}<p className="field-hint">{t('settings.roomBackgroundCopy')}</p></div><button className="button button--dark" type="submit" disabled={busy}>{t('common.saveChanges')}</button></form></section>;
 }
 
 interface RoomBackgroundPanelProps {
   setting: SettingDTO | undefined;
   busy: boolean;
   onSave: (changes: Record<string, unknown>) => Promise<boolean | void>;
+  onUploadRoomBackground: (file: File) => Promise<boolean>;
 }
 
 async function resizeHotelImage(file: File): Promise<string> {
@@ -348,15 +364,6 @@ async function resizeHotelImage(file: File): Promise<string> {
   const source = await loadImage(await readFileAsDataUrl(file));
   const scale = Math.min(1, 320 / Math.max(source.naturalWidth, source.naturalHeight));
   return encodeWebp(source, Math.max(1, Math.round(source.naturalWidth * scale)), Math.max(1, Math.round(source.naturalHeight * scale)), MAX_HOTEL_LOGO_LENGTH, false);
-}
-
-async function resizeRoomBackgroundImage(file: File): Promise<RoomBackgroundVariants> {
-  if (!SUPPORTED_IMAGE_TYPES.some((type) => type === file.type)) throw new Error('Unsupported room background type.');
-  const source = await loadImage(await readFileAsDataUrl(file));
-  const square480 = encodeWebp(source, 480, 480, MAX_ROOM_BACKGROUND_LENGTH, true);
-  const tablet = encodeWebp(source, 1024, 768, MAX_ROOM_BACKGROUND_LENGTH, true);
-  if (square480.length + tablet.length >= MAX_ROOM_BACKGROUND_LENGTH) throw new Error('Room background is too large.');
-  return { square480, tablet };
 }
 
 const SUPPORTED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml'] as const;
@@ -384,7 +391,8 @@ function encodeWebp(source: HTMLImageElement, width: number, height: number, max
   throw new Error('Image is too large.');
 }
 
-function RoomBackgroundPreview({ value }: { value: RoomBackgroundValue }): ReactNode {
+function RoomBackgroundPreview({ value, pendingPreviewUrl }: { value: RoomBackgroundValue; pendingPreviewUrl: string | null }): ReactNode {
+  if (pendingPreviewUrl !== null) return <div className="branding-background-previews"><img className="branding-background-preview" data-room-background-variant="square480" src={pendingPreviewUrl} alt="" /><img className="branding-background-preview" data-room-background-variant="tablet" src={pendingPreviewUrl} alt="" /></div>;
   if (value === null) return null;
   if (typeof value === 'string') return <img className="branding-background-preview" src={value} alt="" />;
   return <div className="branding-background-previews"><img className="branding-background-preview" data-room-background-variant="square480" src={value.square480} alt="" /><img className="branding-background-preview" data-room-background-variant="tablet" src={value.tablet} alt="" /></div>;
