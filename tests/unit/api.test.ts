@@ -174,7 +174,7 @@ describe('web API error helpers', () => {
     }]);
   });
 
-  it('uploads named image variants and requests a selected device variant', async () => {
+  it('uploads one source image for creation and repair while retaining legacy locale lookup', async () => {
     const originalFetch = globalThis.fetch;
     const requests: Array<{ path: string; fields: string[] }> = [];
     globalThis.fetch = async (input, init) => {
@@ -190,53 +190,19 @@ describe('web API error helpers', () => {
     };
 
     try {
-      await uploadInformationImage({
-        square480: new Blob(['square'], { type: 'image/png' }),
-        wide: new Blob(['wide'], { type: 'image/png' })
-      });
+      await uploadInformationImage(new Blob(['source'], { type: 'image/png' }));
+      await repairInformationImageVariants('image-1', new Blob(['replacement source'], { type: 'image/png' }));
       await fetchDeviceInformationImageContent('image-1', 'device-token', { variant: 'square480' });
+      await fetchDeviceInformationImageContent('image-1', 'device-token', { language: 'en', variant: 'wide' });
     } finally {
       globalThis.fetch = originalFetch;
     }
 
     expect(requests).toEqual([
-      { path: '/api/v1/information/images', fields: ['square480', 'wide'] },
-      { path: '/api/v1/device/information/images/image-1/content?variant=square480', fields: [] }
-    ]);
-  });
-
-  it('uploads language-tagged carousel assets, repairs a missing English asset, and requests locale plus size', async () => {
-    const originalFetch = globalThis.fetch;
-    const requests: Array<{ path: string; method: string | undefined; fields: string[] }> = [];
-    globalThis.fetch = async (input, init) => {
-      const body = init?.body;
-      requests.push({
-        path: String(input),
-        method: init?.method,
-        fields: body instanceof FormData ? Array.from(body.keys()) : []
-      });
-      if (String(input).includes('/content')) {
-        return { ok: true, status: 200, headers: new Headers(), blob: async () => new Blob(['image'], { type: 'image/png' }) } as Response;
-      }
-      return { ok: true, status: 200, headers: new Headers(), json: async () => ({ data: {}, requestId: 'req-localized-images' }) } as Response;
-    };
-
-    try {
-      await uploadInformationImage({
-        'en-square480': new Blob(['en compact'], { type: 'image/png' }),
-        'en-wide': new Blob(['en wide'], { type: 'image/png' }),
-        'es-wide': new Blob(['es wide'], { type: 'image/png' })
-      });
-      await repairInformationImageVariants('image-1', { 'en-wide': new Blob(['fixed en'], { type: 'image/png' }) });
-      await fetchDeviceInformationImageContent('image-1', 'device-token', { language: 'en', variant: 'square480' });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-
-    expect(requests).toEqual([
-      { path: '/api/v1/information/images', method: 'POST', fields: ['en-square480', 'en-wide', 'es-wide'] },
-      { path: '/api/v1/information/images/image-1/variants', method: 'POST', fields: ['en-wide'] },
-      { path: '/api/v1/device/information/images/image-1/content?variant=square480&language=en', method: 'GET', fields: [] }
+      { path: '/api/v1/information/images', fields: ['image'] },
+      { path: '/api/v1/information/images/image-1/variants', fields: ['image'] },
+      { path: '/api/v1/device/information/images/image-1/content?variant=square480', fields: [] },
+      { path: '/api/v1/device/information/images/image-1/content?variant=wide&language=en', fields: [] }
     ]);
   });
 

@@ -1,5 +1,5 @@
 import { createTranslator, type Locale, type MessageKey } from './i18n';
-import { INFORMATION_IMAGE_LANGUAGES, INFORMATION_IMAGE_VARIANTS, type ClaimedTokenResult, type InformationImageDTO, type InformationImageLanguage, type InformationImageVariant } from '@hotel/shared';
+import { type ClaimedTokenResult, type InformationImageDTO, type InformationImageVariant } from '@hotel/shared';
 
 export interface ApiEnvelope<T> {
   data: T;
@@ -171,10 +171,10 @@ export const api = {
   }
 };
 
-export type InformationImageUploadField = InformationImageVariant | `${InformationImageLanguage}-${InformationImageVariant}`;
-export type InformationImageUploadSet = Partial<Record<InformationImageUploadField, Blob>>;
+export type InformationImageUploadField = 'image';
+export type InformationImageUploadSet = Blob;
 
-export function uploadInformationImage(file: Blob | InformationImageUploadSet, options: RequestOptions = {}): Promise<ApiEnvelope<InformationImageDTO>> {
+export function uploadInformationImage(file: Blob, options: RequestOptions = {}): Promise<ApiEnvelope<InformationImageDTO>> {
   const formData = createInformationImageFormData(file);
   return request<InformationImageDTO>('/information/images', { method: 'POST', body: formData }, options);
 }
@@ -185,8 +185,8 @@ export function uploadRoomBackgroundImage(file: Blob, options: RequestOptions = 
   return request<{ updated: true }>('/settings/room-background', { method: 'POST', body: formData }, options);
 }
 
-export function repairInformationImageVariants(id: string, files: InformationImageUploadSet, options: RequestOptions = {}): Promise<ApiEnvelope<InformationImageDTO>> {
-  const formData = createInformationImageFormData(files);
+export function repairInformationImageVariants(id: string, file: Blob, options: RequestOptions = {}): Promise<ApiEnvelope<InformationImageDTO>> {
+  const formData = createInformationImageFormData(file);
   return request<InformationImageDTO>(`/information/images/${encodeURIComponent(id)}/variants`, { method: 'POST', body: formData }, options);
 }
 
@@ -237,25 +237,11 @@ export async function fetchDeviceInformationImageContent(id: string, token: stri
   return response.blob();
 }
 
-function createInformationImageFormData(file: Blob | InformationImageUploadSet): FormData {
+function createInformationImageFormData(file: Blob): FormData {
   const formData = new FormData();
-  if (file instanceof Blob) {
-    const fileName = 'name' in file && typeof file.name === 'string' ? file.name : 'information-image';
-    formData.append('image', file, fileName);
-    return formData;
-  }
-  INFORMATION_IMAGE_VARIANTS.forEach((variant) => appendInformationImageVariant(formData, variant, file[variant]));
-  INFORMATION_IMAGE_LANGUAGES.forEach((language) => INFORMATION_IMAGE_VARIANTS.forEach((variant) => {
-    const field = `${language}-${variant}` as const;
-    appendInformationImageVariant(formData, field, file[field]);
-  }));
+  const fileName = 'name' in file && typeof file.name === 'string' ? file.name : 'information-image';
+  formData.append('image', file, fileName);
   return formData;
-}
-
-function appendInformationImageVariant(formData: FormData, variant: InformationImageUploadField, file: Blob | undefined): void {
-  if (file === undefined) return;
-  const fileName = 'name' in file && typeof file.name === 'string' ? file.name : `information-${variant}`;
-  formData.append(variant, file, fileName);
 }
 
 export async function claimDeviceTokenRotation(rotationId: string, currentToken: string): Promise<ClaimedTokenResult> {

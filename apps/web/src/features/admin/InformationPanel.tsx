@@ -1,6 +1,6 @@
 import { ArrowDown, ArrowUp, Pencil, Settings2, Trash2, Upload } from 'lucide-react';
-import { useEffect, useRef, useState, type ChangeEvent, type Dispatch, type FormEvent, type SetStateAction } from 'react';
-import { DEFAULT_SETTINGS, INFORMATION_IMAGE_LANGUAGES, INFORMATION_IMAGE_VARIANTS, type InformationImageDTO, type InformationImageLanguage, type InformationImageVariant, type SettingDTO } from '@hotel/shared';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type RefObject } from 'react';
+import { DEFAULT_SETTINGS, INFORMATION_IMAGE_VARIANTS, type InformationImageDTO, type InformationImageVariant, type SettingDTO } from '@hotel/shared';
 import type { InformationImageUploadField, InformationImageUploadSet } from '../../api';
 import { Modal } from '../../components/Modal';
 import { useI18n } from '../../i18n';
@@ -8,66 +8,54 @@ import { useI18n } from '../../i18n';
 export interface InformationPanelProps {
   images: InformationImageDTO[];
   busy: boolean;
-  onUpload: (files: InformationImageUploadSet) => Promise<boolean>;
-  onRepair: (id: string, files: InformationImageUploadSet) => Promise<boolean>;
+  onUpload: (file: InformationImageUploadSet) => Promise<boolean>;
+  onRepair: (id: string, file: InformationImageUploadSet) => Promise<boolean>;
   onDelete: (id: string) => Promise<boolean>;
   onReorder: (ids: string[]) => Promise<boolean>;
   settings?: SettingDTO[];
   onSaveSettings?: (changes: Record<string, unknown>) => Promise<boolean | void>;
 }
 
-export const INFORMATION_IMAGE_UPLOAD_FIELDS = INFORMATION_IMAGE_LANGUAGES.flatMap((language) => INFORMATION_IMAGE_VARIANTS.map((variant) => `${language}-${variant}` as const)) as InformationImageUploadField[];
+export const INFORMATION_IMAGE_UPLOAD_FIELDS: InformationImageUploadField[] = ['image'];
 
-export type InformationImageFiles = Partial<Record<InformationImageUploadField, File>>;
-type InformationImageFileSetter = Dispatch<SetStateAction<InformationImageFiles>>;
-export type InformationImageInputRefs = Partial<Record<InformationImageUploadField, HTMLInputElement | null>>;
+export type InformationImageFiles = File | null;
+export type InformationImageInputRefs = HTMLInputElement | null;
 
-interface InformationImageVariantFieldsProps {
+interface InformationImageSourceFieldProps {
   files: InformationImageFiles;
-  refs: InformationImageInputRefs;
+  inputRef: RefObject<HTMLInputElement>;
   disabled: boolean;
-  onFileChange: (field: InformationImageUploadField, event: ChangeEvent<HTMLInputElement>) => void;
+  onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
 }
 
-export function InformationImageVariantFields({ files, refs, disabled, onFileChange }: InformationImageVariantFieldsProps) {
+export function InformationImageSourceField({ files, inputRef, disabled, onFileChange }: InformationImageSourceFieldProps) {
   const { t } = useI18n();
-
-  return <>
-    {INFORMATION_IMAGE_UPLOAD_FIELDS.map((field) => {
-      const [language, variant] = field.split('-') as [InformationImageLanguage, InformationImageVariant];
-      const languageLabel = t(language === 'en' ? 'admin.informationLanguageEnglish' : 'admin.informationLanguageSpanish');
-      const variantLabel = t(variant === 'square480' ? 'admin.informationSquareVariant' : 'admin.informationWideVariant');
-      const inputLabel = t('common.select', { label: `${languageLabel} · ${variantLabel}` });
-      const id = `information-image-${field}`;
-      return (
-        <div className="form-field" key={field}>
-          <span className="form-field__label">{languageLabel} · {variantLabel}</span>
-          <div className="branding-media-actions">
-            <input ref={(input) => { refs[field] = input; }} className="visually-hidden branding-file-input" id={id} name={field} type="file" accept="image/*" onChange={(event) => onFileChange(field, event)} disabled={disabled} aria-label={inputLabel} tabIndex={-1} />
-            <button className="icon-button branding-upload-button" type="button" onClick={() => refs[field]?.click()} disabled={disabled} aria-label={inputLabel} title={inputLabel}>
-              <Upload aria-hidden="true" size={17} strokeWidth={1.9} />
-            </button>
-          </div>
-          <span className="field-hint">{files[field]?.name ?? t('admin.informationNoFileSelected')} · {variantLabel}</span>
-        </div>
-      );
-    })}
-  </>;
+  const inputLabel = t('common.select', { label: t('admin.informationSourceImage') });
+  return <div className="form-field">
+    <span className="form-field__label">{t('admin.informationSourceImage')}</span>
+    <div className="branding-media-actions">
+      <input ref={inputRef} className="visually-hidden branding-file-input" id="information-image-source" name="image" type="file" accept="image/*" onChange={onFileChange} disabled={disabled} aria-label={inputLabel} tabIndex={-1} />
+      <button className="icon-button branding-upload-button" type="button" onClick={() => inputRef.current?.click()} disabled={disabled} aria-label={inputLabel} title={inputLabel}>
+        <Upload aria-hidden="true" size={17} strokeWidth={1.9} />
+      </button>
+    </div>
+    <span className="field-hint">{files?.name ?? t('admin.informationNoFileSelected')}</span>
+  </div>;
 }
 
-export function getMissingInformationImageVariantFields(image: InformationImageDTO): InformationImageUploadField[] {
-  const present = new Set(image.variants?.filter((variant) => variant.language !== undefined).map((variant) => `${variant.language}-${variant.variant}`));
-  return INFORMATION_IMAGE_UPLOAD_FIELDS.filter((field) => !present.has(field));
+export function getMissingInformationImageVariantFields(image: InformationImageDTO): InformationImageVariant[] {
+  const present = new Set(image.variants?.filter((variant) => variant.language === undefined).map((variant) => variant.variant));
+  return INFORMATION_IMAGE_VARIANTS.filter((variant) => !present.has(variant));
 }
 
 export function InformationPanel({ images, busy, onUpload, onRepair, onDelete, onReorder, settings = [], onSaveSettings }: InformationPanelProps) {
   const { t } = useI18n();
-  const uploadInputRefs = useRef<InformationImageInputRefs>({});
-  const repairInputRefs = useRef<InformationImageInputRefs>({});
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const repairInputRef = useRef<HTMLInputElement>(null);
   const [idleTimeoutSeconds, setIdleTimeoutSeconds] = useState(() => String(readTimingSetting(settings, 'information.idleTimeoutSeconds')));
   const [slideIntervalSeconds, setSlideIntervalSeconds] = useState(() => String(readTimingSetting(settings, 'information.slideIntervalSeconds')));
-  const [uploadFiles, setUploadFiles] = useState<InformationImageFiles>({});
-  const [repairFiles, setRepairFiles] = useState<InformationImageFiles>({});
+  const [uploadFile, setUploadFile] = useState<InformationImageFiles>(null);
+  const [repairFile, setRepairFile] = useState<InformationImageFiles>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadSaving, setUploadSaving] = useState(false);
   const [repairImageId, setRepairImageId] = useState<string | null>(null);
@@ -80,36 +68,32 @@ export function InformationPanel({ images, busy, onUpload, onRepair, onDelete, o
     setSlideIntervalSeconds(String(readTimingSetting(settings, 'information.slideIntervalSeconds')));
   }, [settings]);
 
-  function handleFileChange(field: InformationImageUploadField, event: ChangeEvent<HTMLInputElement>, setFiles: InformationImageFileSetter): void {
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>, setFile: (file: File | null) => void): void {
     const file = event.target.files?.[0];
     event.target.value = '';
-    if (file !== undefined) setFiles((current) => ({ ...current, [field]: file }));
+    if (file !== undefined) setFile(file);
   }
 
-  function resetFiles(setFiles: InformationImageFileSetter, refs: InformationImageInputRefs): void {
-    setFiles({});
-    Object.values(refs).forEach((input) => {
-      if (input !== null && input !== undefined) input.value = '';
-    });
+  function resetFile(setFile: (file: File | null) => void, inputRef: { current: HTMLInputElement | null }): void {
+    setFile(null);
+    if (inputRef.current !== null) inputRef.current.value = '';
   }
 
   function closeUpload(): void {
     if (busy || uploadSaving) return;
     setUploadOpen(false);
-    resetFiles(setUploadFiles, uploadInputRefs.current);
+    resetFile(setUploadFile, uploadInputRef);
   }
 
   async function submitUpload(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    const includesSpanish = INFORMATION_IMAGE_LANGUAGES.some((language) => language === 'es' && INFORMATION_IMAGE_VARIANTS.some((variant) => uploadFiles[`${language}-${variant}`] !== undefined));
-    const includesEnglish = INFORMATION_IMAGE_LANGUAGES.some((language) => language === 'en' && INFORMATION_IMAGE_VARIANTS.some((variant) => uploadFiles[`${language}-${variant}`] !== undefined));
-    if (busy || uploadSaving || !includesSpanish || !includesEnglish) return;
+    if (busy || uploadSaving || uploadFile === null) return;
     setUploadSaving(true);
     try {
-      const succeeded = await onUpload(uploadFiles);
+      const succeeded = await onUpload(uploadFile);
       if (succeeded) {
         setUploadOpen(false);
-        resetFiles(setUploadFiles, uploadInputRefs.current);
+        resetFile(setUploadFile, uploadInputRef);
       }
     } finally {
       setUploadSaving(false);
@@ -117,22 +101,22 @@ export function InformationPanel({ images, busy, onUpload, onRepair, onDelete, o
   }
 
   function openRepair(imageId: string): void {
-    resetFiles(setRepairFiles, repairInputRefs.current);
+    resetFile(setRepairFile, repairInputRef);
     setRepairImageId(imageId);
   }
 
   function closeRepair(): void {
     if (busy || repairSaving) return;
     setRepairImageId(null);
-    resetFiles(setRepairFiles, repairInputRefs.current);
+    resetFile(setRepairFile, repairInputRef);
   }
 
   async function submitRepair(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (repairImageId === null || busy || repairSaving || Object.keys(repairFiles).length === 0) return;
+    if (repairImageId === null || busy || repairSaving || repairFile === null) return;
     setRepairSaving(true);
     try {
-      const succeeded = await onRepair(repairImageId, repairFiles);
+      const succeeded = await onRepair(repairImageId, repairFile);
       if (succeeded) closeRepair();
     } finally {
       setRepairSaving(false);
@@ -170,9 +154,6 @@ export function InformationPanel({ images, busy, onUpload, onRepair, onDelete, o
   }
 
   const repairImage = images.find((image) => image.id === repairImageId);
-  const uploadHasSpanish = INFORMATION_IMAGE_VARIANTS.some((variant) => uploadFiles[`es-${variant}`] !== undefined);
-  const uploadHasEnglish = INFORMATION_IMAGE_VARIANTS.some((variant) => uploadFiles[`en-${variant}`] !== undefined);
-
   return (
     <>
       <section className="surface-card information-panel" aria-labelledby="information-panel-title" data-admin-information-panel="true">
@@ -198,9 +179,8 @@ export function InformationPanel({ images, busy, onUpload, onRepair, onDelete, o
           <ol className="information-image-list">
             {images.map((image, index) => {
               const missingFields = getMissingInformationImageVariantFields(image);
-              const missingLabels = missingFields.map((field) => {
-                const [language, variant] = field.split('-') as [InformationImageLanguage, InformationImageVariant];
-                return `${t(language === 'en' ? 'admin.informationLanguageEnglish' : 'admin.informationLanguageSpanish')} · ${t(variant === 'square480' ? 'admin.informationSquareVariant' : 'admin.informationWideVariant')}`;
+              const missingLabels = missingFields.map((variant) => {
+                return t(variant === 'square480' ? 'admin.informationSquareVariant' : 'admin.informationWideVariant');
               }).join(', ');
               return (
                 <li className="information-image-item" key={image.id}>
@@ -233,25 +213,25 @@ export function InformationPanel({ images, busy, onUpload, onRepair, onDelete, o
       <Modal open={uploadOpen} title={t('admin.informationUploadTitle')} onClose={closeUpload} closeLabel={t('common.closeDialog')} className="information-upload-modal">
         <form className="information-upload" data-admin-information-upload-form="true" onSubmit={(event) => void submitUpload(event)}>
           <p className="panel-card__copy">{t('admin.informationUploadCopy')}</p>
-          <div className="information-upload__grid information-upload__grid--localized">
-            <InformationImageVariantFields files={uploadFiles} refs={uploadInputRefs.current} disabled={busy || uploadSaving} onFileChange={(field, event) => handleFileChange(field, event, setUploadFiles)} />
+          <div className="information-upload__grid">
+            <InformationImageSourceField files={uploadFile} inputRef={uploadInputRef} disabled={busy || uploadSaving} onFileChange={(event) => handleFileChange(event, setUploadFile)} />
           </div>
-          {(!uploadHasSpanish || !uploadHasEnglish) && <p className="field-hint" role="status">{t('admin.informationUploadLanguagesRequired')}</p>}
+          {uploadFile === null && <p className="field-hint" role="status">{t('admin.informationImageSourceRequired')}</p>}
           <div className="form-actions">
             <button className="button button--ghost" type="button" onClick={closeUpload} disabled={busy || uploadSaving}>{t('common.cancel')}</button>
-            <button className="button button--dark" type="submit" disabled={busy || uploadSaving || !uploadHasSpanish || !uploadHasEnglish}>{t('admin.uploadInformationImage')}</button>
+            <button className="button button--dark" type="submit" disabled={busy || uploadSaving || uploadFile === null}>{t('admin.uploadInformationImage')}</button>
           </div>
         </form>
       </Modal>
       <Modal open={repairImage !== undefined} title={t('admin.informationRepairTitle')} onClose={closeRepair} closeLabel={t('common.closeDialog')} className="information-upload-modal">
         {repairImage !== undefined && <form className="information-upload" data-admin-information-repair-form="true" onSubmit={(event) => void submitRepair(event)}>
           <p className="panel-card__copy">{t('admin.informationRepairCopy')}</p>
-          <div className="information-upload__grid information-upload__grid--localized">
-            <InformationImageVariantFields files={repairFiles} refs={repairInputRefs.current} disabled={busy || repairSaving} onFileChange={(field, event) => handleFileChange(field, event, setRepairFiles)} />
+          <div className="information-upload__grid">
+            <InformationImageSourceField files={repairFile} inputRef={repairInputRef} disabled={busy || repairSaving} onFileChange={(event) => handleFileChange(event, setRepairFile)} />
           </div>
           <div className="form-actions">
             <button className="button button--ghost" type="button" onClick={closeRepair} disabled={busy || repairSaving}>{t('common.cancel')}</button>
-            <button className="button button--dark" type="submit" disabled={busy || repairSaving || Object.keys(repairFiles).length === 0}>{t('admin.repairInformationImage')}</button>
+            <button className="button button--dark" type="submit" disabled={busy || repairSaving || repairFile === null}>{t('admin.repairInformationImage')}</button>
           </div>
         </form>}
       </Modal>

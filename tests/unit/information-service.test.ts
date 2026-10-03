@@ -97,6 +97,59 @@ describe('HotelService information images', () => {
     expect(service.getInformationImageContent(image.id, 'wide', 'es')?.bytes).toEqual(pngBytes('spanish wide'));
   });
 
+  it('replaces localized legacy artwork with exactly two shared variants and removes old locale assets', () => {
+    const image = service.createInformationImageVariants([
+      { bytes: pngBytes('legacy English'), originalName: 'welcome-en.png', language: 'en', variant: 'wide' },
+      { bytes: pngBytes('legacy Spanish'), originalName: 'welcome-es.png', language: 'es', variant: 'wide' }
+    ], systemActor, 'image-localized-shared-repair-seed');
+    const previousFiles = informationImageFiles();
+    expect(previousFiles).toHaveLength(2);
+
+    const repaired = service.updateInformationImageVariants(image.id, [
+      { bytes: pngBytes('shared square'), originalName: 'welcome-shared.png', variant: 'square480' },
+      { bytes: pngBytes('shared wide'), originalName: 'welcome-shared.png', variant: 'wide' }
+    ], systemActor, 'image-localized-shared-repair');
+
+    expect(repaired.displayOrder).toBe(image.displayOrder);
+    expect(repaired.variants).toEqual([
+      { variant: 'wide', originalName: 'welcome-shared.png', mimeType: 'image/png', byteSize: pngBytes('shared wide').length },
+      { variant: 'square480', originalName: 'welcome-shared.png', mimeType: 'image/png', byteSize: pngBytes('shared square').length }
+    ]);
+    expect(database.prepare('SELECT COUNT(*) AS count FROM information_image_localized_variants WHERE information_image_id = ?').get(image.id)).toMatchObject({ count: 0 });
+    expect(database.prepare('SELECT COUNT(*) AS count FROM information_image_variants WHERE information_image_id = ?').get(image.id)).toMatchObject({ count: 2 });
+    expect(informationImageFiles()).toHaveLength(2);
+    expect(informationImageFiles()).not.toEqual(previousFiles);
+    expect(service.getInformationImageContent(image.id, 'square480', 'en')?.bytes).toEqual(pngBytes('shared square'));
+    expect(service.getInformationImageContent(image.id, 'square480', 'es')?.bytes).toEqual(pngBytes('shared square'));
+    expect(service.getInformationImageContent(image.id, 'wide', 'en')?.bytes).toEqual(pngBytes('shared wide'));
+    expect(service.getInformationImageContent(image.id, 'wide', 'es')?.bytes).toEqual(pngBytes('shared wide'));
+  });
+
+  it('restores localized assets and metadata when shared repair fails inside the database transaction', () => {
+    const image = service.createInformationImageVariants([
+      { bytes: pngBytes('legacy English'), originalName: 'welcome-en.png', language: 'en', variant: 'wide' },
+      { bytes: pngBytes('legacy Spanish'), originalName: 'welcome-es.png', language: 'es', variant: 'wide' }
+    ], systemActor, 'image-shared-repair-rollback-seed');
+    const previousFiles = informationImageFiles();
+    const previousImage = service.getInformationImage(image.id);
+    database.exec(`
+      CREATE TRIGGER information_image_shared_repair_failure
+      BEFORE DELETE ON information_image_localized_variants
+      BEGIN
+        SELECT RAISE(ABORT, 'information localized image cleanup blocked');
+      END;
+    `);
+
+    expect(() => service.updateInformationImageVariants(image.id, [
+      { bytes: pngBytes('new square'), originalName: 'replacement.png', variant: 'square480' },
+      { bytes: pngBytes('new wide'), originalName: 'replacement.png', variant: 'wide' }
+    ], systemActor, 'image-shared-repair-rollback')).toThrow(/information localized image cleanup blocked/);
+
+    expect(service.getInformationImage(image.id)).toEqual(previousImage);
+    expect(informationImageFiles()).toEqual(previousFiles);
+    expect(database.prepare('SELECT COUNT(*) AS count FROM information_image_localized_variants WHERE information_image_id = ?').get(image.id)).toMatchObject({ count: 2 });
+  });
+
   it('keeps the Spanish canonical hotel name and adds a configured English ROOM variant', () => {
     const admin = service.createAdmin({ username: 'settings-admin', password: 'correct-horse-battery-staple' }, systemActor, 'setup-settings-admin');
     database.prepare('UPDATE system_settings SET value_json = ?, updated_by_admin_id = ? WHERE key = ?').run(JSON.stringify('Aurora Hotel'), admin.id, 'hotelNameEn');

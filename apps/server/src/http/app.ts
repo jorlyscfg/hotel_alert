@@ -809,7 +809,6 @@ function parseMultipartInformationImage(body: Buffer, contentType: string): Pars
   }
 
   const uploads: ParsedInformationImageUpload[] = [];
-  const fields = new Set<string>();
   let cursor = delimiter.length;
   if (isMultipartClosingBoundary(body, cursor)) return uploads;
   if (!hasCrLf(body, cursor)) {
@@ -825,21 +824,16 @@ function parseMultipartInformationImage(body: Buffer, contentType: string): Pars
     if (nextBoundary < 0) break;
     const contentEnd = nextBoundary - 2;
     const headers = body.subarray(cursor, headerEnd).toString('latin1');
-    const disposition = /content-disposition:[^\r\n]*\bname="(image|square480|wide|(?:en|es)[.-](?:square480|wide))"[^\r\n]*\bfilename="([^"]*)"/i.exec(headers);
+    const disposition = /content-disposition:[^\r\n]*\bname="([^"]+)"[^\r\n]*\bfilename="([^"]*)"/i.exec(headers);
     if (disposition !== null) {
-      const field = disposition[1] ?? 'image';
+      const field = disposition[1]?.toLowerCase() ?? '';
+      if (field !== 'image') throw validationError('Information image upload must include exactly one source image file.');
+      if (uploads.length > 0) throw validationError('Information image upload must include exactly one source image file.');
       const partContentType = normalizeInformationImageContentType(/^content-type:\s*([^\r\n]*)$/im.exec(headers)?.[1]);
-      if (fields.has(field)) throw validationError(`Multipart image upload contains duplicate ${field} fields.`);
-      fields.add(field);
-      const normalizedField = field.toLowerCase();
-      const localizedField = /^(en|es)[.-](square480|wide)$/.exec(normalizedField);
-      const variant = localizedField?.[2] ?? (normalizedField === 'square480' || normalizedField === 'wide' ? normalizedField : undefined);
       uploads.push({
         bytes: Buffer.from(body.subarray(contentStart, contentEnd)),
         originalName: disposition[2] ?? 'image',
-        ...(partContentType === undefined ? {} : { contentType: partContentType }),
-        ...(variant === undefined ? {} : { variant: variant as InformationImageVariant }),
-        ...(localizedField === null ? {} : { language: localizedField[1] as InformationImageLanguage })
+        ...(partContentType === undefined ? {} : { contentType: partContentType })
       });
     }
 
@@ -850,7 +844,7 @@ function parseMultipartInformationImage(body: Buffer, contentType: string): Pars
     }
     cursor += 2;
   }
-  if (uploads.length === 0) throw validationError('Multipart image upload must include an image field.');
+  if (uploads.length !== 1) throw validationError('Multipart image upload must include exactly one source image file.');
   return uploads;
 }
 

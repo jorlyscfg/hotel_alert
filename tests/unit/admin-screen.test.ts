@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { AdminSystemSnapshot, InformationImageDTO, RequestDTO } from '@hotel/shared';
 import { AdminConfirmationDialog, AdminScreen, DeviceManagement, filterAdminRequests, type AdminRequestFilters } from '../../apps/web/src/features/admin/AdminScreen';
-import { getMissingInformationImageVariantFields, INFORMATION_IMAGE_UPLOAD_FIELDS, InformationImageVariantFields, InformationPanel } from '../../apps/web/src/features/admin/InformationPanel';
+import { getMissingInformationImageVariantFields, INFORMATION_IMAGE_UPLOAD_FIELDS, InformationImageSourceField, InformationPanel } from '../../apps/web/src/features/admin/InformationPanel';
 import { AdminManagement, buildSettingsChanges, CatalogPanels, SettingsPanel } from '../../apps/web/src/features/admin/SetupPanels';
 import { filterAdminItems } from '../../apps/web/src/features/admin/admin-search';
 import { I18nProvider, SpanishI18nProvider } from '../../apps/web/src/i18n';
@@ -76,30 +76,32 @@ describe('admin request filters', () => {
     expect(markup).toContain('title="Delete image"');
   });
 
-  it('renders English and Spanish fields for both new information and legacy-image repair', () => {
-    expect(INFORMATION_IMAGE_UPLOAD_FIELDS).toEqual(['en-square480', 'en-wide', 'es-square480', 'es-wide']);
+  it('renders one source image field for both new information and legacy-image repair', () => {
+    expect(INFORMATION_IMAGE_UPLOAD_FIELDS).toEqual(['image']);
     const markup = renderToStaticMarkup(createElement(I18nProvider, {
-      children: createElement(InformationImageVariantFields, {
-        files: {}, refs: {}, disabled: false, onFileChange: () => undefined
+      children: createElement(InformationImageSourceField, {
+        files: null, inputRef: { current: null }, disabled: false, onFileChange: () => undefined
       })
     }));
 
-    expect(markup).toContain('name="en-square480"');
-    expect(markup).toContain('name="en-wide"');
-    expect(markup).toContain('name="es-square480"');
-    expect(markup).toContain('name="es-wide"');
-    expect(markup.match(/accept="image\/\*"/g)).toHaveLength(4);
+    expect(markup).toContain('name="image"');
+    expect(markup).toContain('Source image');
+    expect(markup.match(/type="file"/g)).toHaveLength(1);
+    expect(markup.match(/accept="image\/\*"/g)).toHaveLength(1);
     expect(markup).not.toContain('accept="image/png,image/jpeg,image/webp"');
-    expect(informationPanelSource.match(/<InformationImageVariantFields/g)).toHaveLength(2);
+    expect(informationPanelSource.match(/<InformationImageSourceField/g)).toHaveLength(2);
     expect(informationPanelSource).toContain('data-admin-information-upload-form="true"');
     expect(informationPanelSource).toContain('data-admin-information-repair-form="true"');
   });
 
-  it('shows a visible manual-completion warning for legacy images without English assets', () => {
+  it('shows a visible warning when localized legacy artwork has not been converted to shared variants', () => {
     const legacyImage: InformationImageDTO = {
       id: 'legacy-information-image', originalName: 'welcome.png', mimeType: 'image/png', byteSize: 128, displayOrder: 0,
       createdAt: '2026-09-11T09:00:00.000Z', updatedAt: '2026-09-11T09:00:00.000Z',
-      variants: [{ variant: 'wide', originalName: 'welcome-wide.png', mimeType: 'image/png', byteSize: 128 }]
+      variants: [
+        { language: 'en', variant: 'wide', originalName: 'welcome-en-wide.png', mimeType: 'image/png', byteSize: 128 },
+        { language: 'es', variant: 'wide', originalName: 'welcome-es-wide.png', mimeType: 'image/png', byteSize: 128 }
+      ]
     };
     const markup = renderToStaticMarkup(createElement(I18nProvider, {
       children: createElement(InformationPanel, {
@@ -108,20 +110,21 @@ describe('admin request filters', () => {
       })
     }));
 
-    expect(getMissingInformationImageVariantFields(legacyImage)).toEqual(['en-square480', 'en-wide', 'es-square480', 'es-wide']);
+    expect(getMissingInformationImageVariantFields(legacyImage)).toEqual(['square480', 'wide']);
     expect(markup).toContain('role="status"');
-    expect(markup).toContain('Missing manual artwork:');
-    expect(markup).toContain('English · Compact image (square480)');
-    expect(markup).toContain('English · Wide image');
+    expect(markup).toContain('Missing shared image sizes:');
+    expect(markup).toContain('Compact image (square480)');
+    expect(markup).toContain('Wide image');
     expect(markup).toContain('current image remains available as a fallback');
   });
 
-  it('uses hidden localized variant inputs with accessible upload controls', () => {
+  it('uses one hidden source input with an accessible upload control', () => {
     expect(informationPanelSource.match(/className="visually-hidden branding-file-input"/g)).toHaveLength(1);
     expect(informationPanelSource.match(/className="icon-button branding-upload-button"/g)).toHaveLength(1);
-    expect(informationPanelSource).toContain('name={field}');
-    expect(informationPanelSource).toContain('refs[field]?.click()');
-    expect(informationPanelSource).toContain("t(language === 'en' ? 'admin.informationLanguageEnglish' : 'admin.informationLanguageSpanish')");
+    expect(informationPanelSource).toContain('name="image"');
+    expect(informationPanelSource).toContain('inputRef.current?.click()');
+    expect(informationPanelSource).not.toContain('informationLanguageEnglish');
+    expect(informationPanelSource).not.toContain('informationLanguageSpanish');
     expect(stylesSource).not.toContain('.information-upload__grid input[type="file"]');
   });
 

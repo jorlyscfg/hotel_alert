@@ -488,6 +488,9 @@ export class HotelService {
   }
 
   public updateInformationImageVariants(id: string, uploads: readonly InformationImageUpload[], actor: Actor, requestId: string): InformationImageDTO {
+    if (uploads.every((upload) => upload.language === undefined)) {
+      return this.replaceInformationImageWithSharedVariants(id, uploads, actor, requestId);
+    }
     validateInformationImageUploads(uploads, { localizedOnly: true, requireBothLanguages: false });
     const row = this.getInformationImageRow(id);
     if (row === undefined) throw notFound('Information image');
@@ -544,6 +547,81 @@ export class HotelService {
         });
       } catch (error) {
         const committed = storedUploads.every(({ upload, stored }) => this.db.prepare('SELECT 1 FROM information_image_localized_variants WHERE information_image_id = ? AND language = ? AND variant = ? AND storage_name = ?').get(id, upload.language, upload.variant, stored.storageName) !== undefined);
+        metadataCommitted = committed;
+        if (committed) this.informationImageStore.finalizeStagedDeletes(stagedDeletes);
+        else this.informationImageStore.restoreStagedDeletes(stagedDeletes);
+        throw error;
+      }
+      metadataCommitted = true;
+      this.informationImageStore.finalizeStagedDeletes(stagedDeletes);
+      return updated;
+    } catch (error) {
+      if (!metadataCommitted) storedUploads.forEach(({ stored }) => this.informationImageStore.delete(stored.storageName));
+      throw error;
+    }
+  }
+
+  private replaceInformationImageWithSharedVariants(id: string, uploads: readonly InformationImageUpload[], actor: Actor, requestId: string): InformationImageDTO {
+    validateSharedInformationImageUploads(uploads);
+    const row = this.getInformationImageRow(id);
+    if (row === undefined) throw notFound('Information image');
+    const previousVariants = this.getInformationImageVariants(id);
+    const previousLocalizedVariants = this.getLocalizedInformationImageVariants(id);
+    const storedUploads: Array<{ upload: InformationImageUpload; stored: ReturnType<InformationImageStore['write']> }> = [];
+    const now = new Date().toISOString();
+    let metadataCommitted = false;
+
+    try {
+      for (const upload of uploads) {
+        let stored: ReturnType<InformationImageStore['write']>;
+        try {
+          stored = this.informationImageStore.write(upload.bytes, upload.originalName);
+        } catch (error) {
+          if (error instanceof InformationImageStoreError) throw validationError(error.message, { code: error.code });
+          throw error;
+        }
+        storedUploads.push({ upload, stored });
+      }
+
+      const primary = storedUploads.find(({ upload }) => upload.variant === 'wide');
+      if (primary === undefined) throw validationError('A wide information image variant is required.');
+      const stagedDeletes = this.informationImageStore.stageDelete([
+        row.storage_name,
+        ...previousVariants.map((variant) => variant.storage_name),
+        ...previousLocalizedVariants.map((variant) => variant.storage_name)
+      ]);
+      let updated: InformationImageDTO;
+      try {
+        updated = this.mutate(() => {
+          this.db.prepare('UPDATE information_images SET original_name = ?, mime_type = ?, byte_size = ?, storage_name = ?, updated_at = ? WHERE id = ?').run(
+            normalizeInformationImageName(primary.upload.originalName),
+            primary.stored.mimeType,
+            primary.stored.byteSize,
+            primary.stored.storageName,
+            now,
+            id
+          );
+          this.db.prepare('DELETE FROM information_image_variants WHERE information_image_id = ?').run(id);
+          this.db.prepare('DELETE FROM information_image_localized_variants WHERE information_image_id = ?').run(id);
+          const insertVariant = this.db.prepare('INSERT INTO information_image_variants(information_image_id, variant, original_name, mime_type, byte_size, storage_name) VALUES (?, ?, ?, ?, ?, ?)');
+          for (const { upload, stored } of storedUploads) {
+            if (upload.variant === undefined) throw validationError('Shared information image uploads require a size variant.');
+            insertVariant.run(id, upload.variant, normalizeInformationImageName(upload.originalName), stored.mimeType, stored.byteSize, stored.storageName);
+          }
+          this.bumpConfiguration();
+          this.audit(actor, 'INFORMATION_IMAGE_VARIANTS_UPDATED', 'INFORMATION_IMAGE', id, requestId, {
+            variants: storedUploads.map(({ upload }) => upload.variant)
+          });
+          this.appendOutbox('system.maintenance', 'SYSTEM', 'information-images', null, { message: 'Information images changed.', severity: 'INFO' });
+          return this.getInformationImage(id) ?? this.assertImpossible('Updated information image disappeared.');
+        });
+      } catch (error) {
+        const sharedVariantCount = (this.db.prepare('SELECT COUNT(*) AS count FROM information_image_variants WHERE information_image_id = ?').get(id) as { count: number }).count;
+        const localizedVariantCount = (this.db.prepare('SELECT COUNT(*) AS count FROM information_image_localized_variants WHERE information_image_id = ?').get(id) as { count: number }).count;
+        const committed = sharedVariantCount === storedUploads.length
+          && localizedVariantCount === 0
+          && this.getInformationImageRow(id)?.storage_name === primary.stored.storageName
+          && storedUploads.every(({ upload, stored }) => this.db.prepare('SELECT 1 FROM information_image_variants WHERE information_image_id = ? AND variant = ? AND storage_name = ?').get(id, upload.variant, stored.storageName) !== undefined);
         metadataCommitted = committed;
         if (committed) this.informationImageStore.finalizeStagedDeletes(stagedDeletes);
         else this.informationImageStore.restoreStagedDeletes(stagedDeletes);
@@ -2481,6 +2559,16 @@ function validateInformationImageUploads(
   if (hasLegacyUpload && uploads.length > 1) throw validationError('A legacy image upload cannot be combined with image variants.');
   const variants = uploads.flatMap((upload) => upload.variant === undefined ? [] : [upload.variant]);
   if (new Set(variants).size !== variants.length) throw validationError('Each information image variant may be uploaded only once.');
+}
+
+function validateSharedInformationImageUploads(uploads: readonly InformationImageUpload[]): void {
+  if (uploads.length !== 2
+    || uploads.some((upload) => upload.language !== undefined || upload.variant === undefined)
+    || new Set(uploads.map((upload) => upload.variant)).size !== 2
+    || !uploads.some((upload) => upload.variant === 'square480')
+    || !uploads.some((upload) => upload.variant === 'wide')) {
+    throw validationError('An information image requires one source image with square and wide variants.');
+  }
 }
 
 function selectInformationImageVariant(variants: InformationImageVariantRow[], requestedVariant?: InformationImageVariant): InformationImageVariantRow | undefined {

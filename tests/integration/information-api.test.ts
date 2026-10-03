@@ -62,9 +62,15 @@ describe('Information image HTTP API', () => {
     expect(uploadedRetry.body.idempotentReplay).toBe(true);
     expect(uploadedRetry.body.data).toEqual(uploaded.body.data);
     expect(informationImageRowCount()).toBe(1);
-    expect(storedInformationImageFiles()).toHaveLength(1);
+    expect(storedInformationImageFiles()).toHaveLength(2);
 
-    expect(uploaded.body.data).toMatchObject({ originalName: 'welcome.gif', mimeType: 'image/webp', displayOrder: 0 });
+    expect(uploaded.body.data).toMatchObject({
+      originalName: 'welcome.gif', mimeType: 'image/webp', displayOrder: 0,
+      variants: [
+        { variant: 'wide', originalName: 'welcome.gif', mimeType: 'image/webp' },
+        { variant: 'square480', originalName: 'welcome.gif', mimeType: 'image/webp' }
+      ]
+    });
     expect(uploaded.body.data.byteSize).toBeGreaterThan(0);
 
     await adminClient
@@ -115,7 +121,7 @@ describe('Information image HTTP API', () => {
 
     expect(conflict.body.error.code).toBe('IDEMPOTENCY_KEY_REUSE_MISMATCH');
     expect(informationImageRowCount()).toBe(1);
-    expect(storedInformationImageFiles()).toHaveLength(1);
+    expect(storedInformationImageFiles()).toHaveLength(2);
   });
 
   function informationImageRowCount(): number {
@@ -207,118 +213,93 @@ describe('Information image HTTP API', () => {
     expect(fetchMock).toHaveBeenCalledTimes(120);
   });
 
-  it('stores compact and wide variants and serves the requested variant with fallback', async () => {
+  it('creates square and horizontal assets from one source and serves the same artwork for both languages', async () => {
     const uploaded = await adminClient
       .post('/api/v1/information/images')
       .set('X-CSRF-Token', csrfToken)
-      .set('Idempotency-Key', 'information-image-variants')
-      .attach('square480', pngBytes('square'), 'compact.png')
-      .attach('wide', pngBytes('wide'), 'wide.png')
+      .set('Idempotency-Key', 'information-image-shared')
+      .attach('image', pngBytes('single shared source'), 'welcome.png')
       .expect(201);
 
-    expect(uploaded.body.data).toMatchObject({ originalName: 'wide.png', variants: [
-      { variant: 'wide', originalName: 'wide.png' },
-      { variant: 'square480', originalName: 'compact.png' }
+    expect(uploaded.body.data).toMatchObject({ originalName: 'welcome.png', variants: [
+      { variant: 'wide', originalName: 'welcome.png' },
+      { variant: 'square480', originalName: 'welcome.png' }
     ] });
+    expect(uploaded.body.data.variants).toHaveLength(2);
 
     const room = service.createRoom({ code: '102', displayName: 'Room 102' }, systemActor, 'setup-room-variants');
     const roomDevice = service.bootstrapDevice({ installationId: 'room-102', displayName: 'Room 102 tablet', assignmentMode: 'ROOM', roomId: room.id }, systemActor, 'setup-room-device-variants');
 
-    await request(app)
-      .get(`/api/v1/device/information/images/${uploaded.body.data.id}/content?variant=square480`)
-      .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
-      .expect('Content-Type', /image\/webp/)
-      .expect(200)
-      .then((response) => expect(isWebp(response.body as Buffer)).toBe(true));
-
-    await request(app)
-      .get(`/api/v1/device/information/images/${uploaded.body.data.id}/content?variant=wide`)
-      .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
-      .expect('Content-Type', /image\/webp/)
-      .expect(200)
-      .then((response) => expect(isWebp(response.body as Buffer)).toBe(true));
-
-    const fallback = await adminClient
-      .post('/api/v1/information/images')
-      .set('X-CSRF-Token', csrfToken)
-      .set('Idempotency-Key', 'information-image-wide-only')
-      .attach('wide', pngBytes('fallback'), 'fallback.png')
-      .expect(201);
-
-    await request(app)
-      .get(`/api/v1/device/information/images/${fallback.body.data.id}/content?variant=square480`)
-      .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
-      .expect('Content-Type', /image\/webp/)
-      .expect(200)
-      .then((response) => expect(isWebp(response.body as Buffer)).toBe(true));
+    for (const [variant, dimensions] of [['square480', [480, 480]], ['wide', [1280, 720]]] as const) {
+      const contents = await Promise.all((['en', 'es'] as const).map((language) => request(app)
+        .get(`/api/v1/device/information/images/${uploaded.body.data.id}/content?variant=${variant}&language=${language}`)
+        .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
+        .expect('Content-Type', /image\/webp/)
+        .expect(200)));
+      const english = contents[0]?.body as Buffer;
+      const spanish = contents[1]?.body as Buffer;
+      expect(isWebp(english)).toBe(true);
+      expect(english).toEqual(spanish);
+      expect(readWebpDimensions(english)).toEqual({ width: dimensions[0], height: dimensions[1] });
+    }
   });
 
-  it('requires both languages for new slides and serves repaired ROOM artwork by language and size', async () => {
-    const incomplete = await adminClient
-      .post('/api/v1/information/images')
-      .set('X-CSRF-Token', csrfToken)
-      .set('Idempotency-Key', 'information-image-only-english')
-      .attach('en-wide', pngBytes('English only'), 'welcome-en.png')
-      .expect(422);
-    expect(incomplete.body.error.code).toBe('VALIDATION_ERROR');
-
-    const uploaded = await adminClient
-      .post('/api/v1/information/images')
-      .set('X-CSRF-Token', csrfToken)
-      .set('Idempotency-Key', 'information-image-bilingual')
-      .attach('en-wide', pngBytes('English wide'), 'welcome-en.png')
-      .attach('es-wide', pngBytes('Spanish wide'), 'bienvenida-es.png')
-      .expect(201);
-
-    expect(uploaded.body.data.variants).toEqual(expect.arrayContaining([
-      expect.objectContaining({ language: 'es', variant: 'wide', originalName: 'bienvenida-es.png', mimeType: 'image/webp' }),
-      expect.objectContaining({ language: 'en', variant: 'wide', originalName: 'welcome-en.png', mimeType: 'image/webp' })
-    ]));
-
+  it('repairs a legacy localized slide into one shared square and wide pair for every locale', async () => {
+    const legacy = service.createInformationImageVariants([
+      { bytes: pngBytes('legacy English'), originalName: 'welcome-en.png', language: 'en', variant: 'wide' },
+      { bytes: pngBytes('legacy Spanish'), originalName: 'bienvenida-es.png', language: 'es', variant: 'wide' }
+    ], systemActor, 'setup-legacy-localized-image');
     const room = service.createRoom({ code: '103', displayName: 'Room 103' }, systemActor, 'setup-room-localized-images');
     const roomDevice = service.bootstrapDevice({ installationId: 'room-103', displayName: 'Room 103 tablet', assignmentMode: 'ROOM', roomId: room.id }, systemActor, 'setup-room-device-localized-images');
-    const contentPath = `/api/v1/device/information/images/${uploaded.body.data.id}/content`;
-
-    await request(app)
-      .get(`${contentPath}?language=en&variant=square480`)
-      .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
-      .expect('Content-Type', /image\/webp/)
-      .expect(200)
-      .then((response) => expect(isWebp(response.body as Buffer)).toBe(true));
-    await request(app)
-      .get(`${contentPath}?language=es&variant=wide`)
-      .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
-      .expect('Content-Type', /image\/webp/)
-      .expect(200)
-      .then((response) => expect(isWebp(response.body as Buffer)).toBe(true));
 
     const repaired = await adminClient
-      .post(`/api/v1/information/images/${uploaded.body.data.id}/variants`)
+      .post(`/api/v1/information/images/${legacy.id}/variants`)
       .set('X-CSRF-Token', csrfToken)
-      .set('Idempotency-Key', 'information-image-bilingual-repair')
-      .attach('en-wide', pngBytes('Fixed English'), 'welcome-en-fixed.png')
+      .set('Idempotency-Key', 'information-image-shared-repair')
+      .attach('image', pngBytes('new shared source'), 'welcome-shared.png')
       .expect(200);
-    expect(repaired.body.data.variants.find((variant: { language?: string; originalName: string }) => variant.language === 'en')?.originalName).toBe('welcome-en-fixed.png');
 
-    await request(app)
-      .get(`${contentPath}?language=en&variant=wide`)
-      .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
-      .expect('Content-Type', /image\/webp/)
-      .expect(200)
-      .then((response) => expect(isWebp(response.body as Buffer)).toBe(true));
-    await request(app)
-      .get(`${contentPath}?language=fr&variant=wide`)
-      .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
-      .expect(422);
+    expect(repaired.body.data).toMatchObject({ originalName: 'welcome-shared.png', variants: [
+      { variant: 'wide', originalName: 'welcome-shared.png', mimeType: 'image/webp' },
+      { variant: 'square480', originalName: 'welcome-shared.png', mimeType: 'image/webp' }
+    ] });
+    expect(database.prepare('SELECT COUNT(*) AS count FROM information_image_localized_variants WHERE information_image_id = ?').get(legacy.id)).toMatchObject({ count: 0 });
+    expect(database.prepare('SELECT COUNT(*) AS count FROM information_image_variants WHERE information_image_id = ?').get(legacy.id)).toMatchObject({ count: 2 });
+    expect(storedInformationImageFiles()).toHaveLength(2);
+
+    for (const [variant, dimensions] of [['square480', [480, 480]], ['wide', [1280, 720]]] as const) {
+      const contents = await Promise.all((['en', 'es'] as const).map((language) => request(app)
+        .get(`/api/v1/device/information/images/${legacy.id}/content?variant=${variant}&language=${language}`)
+        .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
+        .expect('Content-Type', /image\/webp/)
+        .expect(200)));
+      const english = contents[0]?.body as Buffer;
+      const spanish = contents[1]?.body as Buffer;
+      expect(english).toEqual(spanish);
+      expect(readWebpDimensions(english)).toEqual({ width: dimensions[0], height: dimensions[1] });
+    }
   });
 
-  it('rejects corrupt variant bytes without persisting any of the normalized batch', async () => {
+  it('rejects multiple prebuilt image files and leaves no partial database or file writes', async () => {
     const rejected = await adminClient
       .post('/api/v1/information/images')
       .set('X-CSRF-Token', csrfToken)
-      .set('Idempotency-Key', 'information-image-corrupt-batch')
-      .attach('en-wide', pngBytes('valid first variant'), 'english.png')
-      .attach('es-wide', Buffer.from('not a decodable image'), 'spanish.gif')
+      .set('Idempotency-Key', 'information-image-multiple-sources')
+      .attach('image', pngBytes('source one'), 'one.png')
+      .attach('wide', pngBytes('source two'), 'two.png')
+      .expect(422);
+
+    expect(rejected.body.error.code).toBe('VALIDATION_ERROR');
+    expect(informationImageRowCount()).toBe(0);
+    expect(storedInformationImageFiles()).toHaveLength(0);
+  });
+
+  it('rejects a corrupt source image without persisting any files', async () => {
+    const rejected = await adminClient
+      .post('/api/v1/information/images')
+      .set('X-CSRF-Token', csrfToken)
+      .set('Idempotency-Key', 'information-image-corrupt-source')
+      .attach('image', Buffer.from('not a decodable image'), 'broken.gif')
       .expect(422);
 
     expect(rejected.body.error.code).toBe('VALIDATION_ERROR');
@@ -335,4 +316,16 @@ function pngBytes(label: string): Buffer {
 
 function isWebp(bytes: Buffer): boolean {
   return bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP';
+}
+
+function readWebpDimensions(bytes: Buffer): { width: number; height: number } {
+  const chunk = bytes.toString('ascii', 12, 16);
+  if (chunk === 'VP8 ') {
+    return { width: bytes.readUInt16LE(26) & 0x3fff, height: bytes.readUInt16LE(28) & 0x3fff };
+  }
+  if (chunk === 'VP8X') {
+    const readUInt24LE = (offset: number): number => (bytes[offset] ?? 0) | ((bytes[offset + 1] ?? 0) << 8) | ((bytes[offset + 2] ?? 0) << 16);
+    return { width: readUInt24LE(24) + 1, height: readUInt24LE(27) + 1 };
+  }
+  throw new Error(`Unsupported normalized WebP chunk: ${chunk}`);
 }
