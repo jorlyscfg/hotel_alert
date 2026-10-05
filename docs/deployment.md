@@ -37,6 +37,12 @@ TOKEN_PEPPER=<different-random-secret>
 
 Use the documented heartbeat, replay, retention, and rate-limit bounds. `SESSION_SECRET` and `TOKEN_PEPPER` must not be reused, committed, or printed. Changing either invalidates the corresponding stored credentials and requires a controlled recovery plan.
 
+## Initial administrator setup
+
+A new installation with no administrator account is initialized with the temporary credentials `admin` / `admin`. On the first Admin login, the application requires the operator to choose a new password before opening the Admin view. After saving it, sign in again with the new password; the initial session is revoked as part of the change.
+
+Keep installation and configuration restricted to authorized operators on the trusted hotel LAN. Do not begin hotel use or allow ordinary users access until the operator has replaced the default password and completed the installation configuration. Never retain or reuse the default credentials after handoff.
+
 ## First LAN connection
 
 Find the deployment host's private address before configuring tablets:
@@ -69,7 +75,7 @@ Then open `http://192.168.1.20:3000`. Replace `192.168.1.20` with the actual pri
 
 `HOST=0.0.0.0` listens on every host interface. Configure the host firewall to allow only the required TCP port from the trusted hotel-LAN subnet: `4173` and `3001` for development, or `3000` for the compiled server. Do not port-forward these ports to the public internet. If the host has multiple networks, restrict the firewall rule to the hotel-LAN interface/subnet.
 
-Keep `APP_ORIGIN` as one exact browser origin, including scheme and port, because it is used for Socket.IO origin validation. The normal production shape is same-origin and does not need broad CORS. Create an administrator with `corepack pnpm admin:create`; there are no default credentials. Use independent production secrets, and never place `.env`, database files, backups, tokens, or generated credentials in source control.
+Keep `APP_ORIGIN` as one exact browser origin, including scheme and port, because it is used for Socket.IO origin validation. The normal production shape is same-origin and does not need broad CORS. On a new database, use the initial administrator setup above; `corepack pnpm admin:create` remains available for explicitly creating an administrator when needed. Use independent production secrets, and never place `.env`, database files, backups, tokens, or generated credentials in source control.
 
 From another LAN device, verify readiness with `http://<lan-address>:<port>/api/v1/system/health`. A failed connection usually means the process is not listening on the LAN address, the firewall is blocking the port, the browser URL does not match `APP_ORIGIN`, or the device is on a different network.
 

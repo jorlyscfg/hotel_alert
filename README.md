@@ -15,7 +15,7 @@ Hotel Local App is a LAN-first request and alert workflow for hotel rooms and se
 corepack pnpm install
 cp .env.example .env
 corepack pnpm db:migrate
-ADMIN_USERNAME=admin ADMIN_PASSWORD='replace-this-locally' corepack pnpm admin:create
+# Fresh databases start with admin / admin; choose a new password at first Admin login.
 corepack pnpm dev
 ```
 
