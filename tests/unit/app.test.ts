@@ -23,11 +23,12 @@ interface AdminScreenPropsForTest {
   installationId?: string | null;
   connectionStatus?: ConnectionStatus;
   onUseDeviceToken?: (pairing: { deviceId: string; deviceToken: string; assignmentMode: 'ROOM' | 'AREA' }) => Promise<void>;
+  onChangePassword?: (currentPassword: string, newPassword: string) => Promise<void>;
 }
 
 interface BootstrapScreenPropsForTest {
   onRetry?: () => void;
-  onAdminLogin?: (result: { admin: { id: string; username: string; expiresAt: string }; csrfToken: string }, role: 'ADMIN' | 'ROOM' | 'AREA') => Promise<void>;
+  onAdminLogin?: (result: { admin: { id: string; username: string; expiresAt: string; mustChangePassword?: boolean }; csrfToken: string }, role: 'ADMIN' | 'ROOM' | 'AREA') => Promise<void>;
 }
 
 interface AssignmentScreenPropsForTest {
@@ -48,6 +49,8 @@ interface TestElement {
     installationId?: string | null;
     connectionStatus?: ConnectionStatus;
     onRetry?: () => void;
+    onChangePassword?: (currentPassword: string, newPassword: string) => Promise<void>;
+    error?: string | null;
   };
 }
 
@@ -76,9 +79,9 @@ const apiMocks = vi.hoisted(() => ({
   patch: vi.fn()
 }));
 
-const errorMessageMock = vi.hoisted(() => vi.fn((error: unknown, fallback: string, locale?: string) =>
-  locale === 'es' ? fallback : `English fallback: ${fallback}`
-));
+const appLocale = vi.hoisted(() => ({ value: 'es' as 'en' | 'es' }));
+
+const errorMessageMock = vi.hoisted(() => vi.fn((_error: unknown, fallback: string) => fallback));
 
 const nativeBridgeMocks = vi.hoisted(() => ({
   getNativeWebViewBridge: vi.fn(() => null),
@@ -213,13 +216,16 @@ vi.mock('../../apps/web/src/app-model', () => ({
 }));
 
 vi.mock('../../apps/web/src/i18n', () => ({
-  useI18n: () => ({ locale: 'en', t: (key: string) => key }),
+  useI18n: () => ({ locale: appLocale.value, t: (key: string) => key }),
   createTranslator: (locale: string) => (key: string) => locale === 'es'
     ? ({
       'errors.serviceUnavailable': 'El servicio local no está disponible. El reintento automático continuará con una espera limitada.',
-      'errors.deviceProvisionFailed': 'No se pudo registrar la estación. Revisa el destino seleccionado e inténtalo de nuevo.'
+      'errors.deviceProvisionFailed': 'No se pudo registrar la estación. Revisa el destino seleccionado e inténtalo de nuevo.',
+      'errors.internal': 'Algo salió mal. Inténtalo de nuevo.'
     } as Record<string, string>)[key] ?? key
-    : key,
+    : ({
+      'errors.internal': 'Something went wrong. Try again.'
+    } as Record<string, string>)[key] ?? key,
   SpanishI18nProvider: ({ children }: { children: React.ReactNode }) => children
 }));
 
@@ -251,7 +257,10 @@ vi.mock('../../apps/web/src/native-room-bridge', () => ({
 vi.mock('../../apps/web/src/components/LanguageSelector', () => ({ LanguageSelector: 'language-selector' }));
 vi.mock('../../apps/web/src/components/Modal', () => ({ Modal: 'modal' }));
 vi.mock('../../apps/web/src/features/auth/AdminLoginForm', () => ({ AdminLoginForm: 'admin-login-form' }));
-vi.mock('../../apps/web/src/features/admin/AdminScreen', () => ({ AdminScreen: 'admin-screen' }));
+vi.mock('../../apps/web/src/features/admin/AdminScreen', () => ({
+  AdminPasswordChangeScreen: 'admin-password-change-screen',
+  AdminScreen: 'admin-screen'
+}));
 vi.mock('../../apps/web/src/features/bootstrap/BootstrapScreen', () => ({ BootstrapScreen: 'bootstrap-screen' }));
 vi.mock('../../apps/web/src/features/bootstrap/DeviceRoleAssignmentScreen', () => ({
   DeviceRoleAssignmentScreen: 'device-role-assignment-screen',
@@ -270,6 +279,7 @@ const { App } = await import('../../apps/web/src/App');
 describe('App room request notification lifecycle', () => {
   beforeEach(() => {
     hookHarness.reset();
+    appLocale.value = 'es';
     errorMessageMock.mockClear();
     const audioContext = createFakeAudioContext();
     roomAudioMocks.constructor.mockImplementation(() => audioContext);
@@ -369,6 +379,119 @@ describe('App room request notification lifecycle', () => {
     const admin = getAdminScreenProps(renderApp());
     expect(admin).toMatchObject({ csrfToken: 'csrf-token', installationId: 'installation-1' });
     expect(apiMocks.get.mock.calls.map(([path]) => path)).toEqual(['/auth/admin/me', '/system/snapshot']);
+  });
+
+  it('does not load the admin snapshot after an admin login that requires a password change', async () => {
+    const rendered = await completeFreshAdminLogin(true);
+
+    expect(apiMocks.get.mock.calls.filter(([path]) => path === '/system/snapshot')).toHaveLength(0);
+    expect(() => getAdminScreenProps(rendered)).toThrow('The AdminScreen was not rendered.');
+  });
+
+  it('renders an actionable password-change screen after a pending admin login', async () => {
+    const rendered = await completeFreshAdminLogin(true);
+
+    expect(getPasswordChangeHandler(rendered)).toBeTypeOf('function');
+  });
+
+  it('submits a forced password change securely and returns to fresh login after session revocation', async () => {
+    apiMocks.post.mockResolvedValue({ data: {}, requestId: 'request-password-change' });
+    const rendered = await completeFreshAdminLogin(true);
+    const changePassword = getPasswordChangeHandler(rendered);
+
+    await changePassword('admin', 'new-secret-passphrase');
+
+    expect(apiMocks.post).toHaveBeenCalledWith('/auth/admin/change-password', {
+      currentPassword: 'admin',
+      newPassword: 'new-secret-passphrase'
+    }, {
+      headers: {
+        'x-csrf-token': 'csrf-token',
+        'Idempotency-Key': expect.any(String)
+      }
+    });
+    expect(sessionValues.has('hotel-local-admin-session')).toBe(false);
+    expect(getBootstrapScreenProps(renderApp())).toBeDefined();
+    expect(apiMocks.get.mock.calls.filter(([path]) => path === '/system/snapshot')).toHaveLength(0);
+  });
+
+  it.each([
+    ['es', 'Algo salió mal. Inténtalo de nuevo.'],
+    ['en', 'Something went wrong. Try again.']
+  ] as const)('shows forced password-change API errors in the selected %s locale', async (locale, expectedMessage) => {
+    appLocale.value = locale;
+    apiMocks.post.mockRejectedValue(new Error('password update unavailable'));
+    const rendered = await completeFreshAdminLogin(true);
+    const changePassword = getPasswordChangeHandler(rendered);
+
+    await changePassword('admin', 'replacement-password');
+
+    expect(sessionValues.has('hotel-local-admin-session')).toBe(true);
+    expect(getPasswordChangeError(renderApp())).toBe(expectedMessage);
+    expect(errorMessageMock).toHaveBeenCalledWith(expect.any(Error), expectedMessage, locale);
+    expect(apiMocks.get.mock.calls.filter(([path]) => path === '/system/snapshot')).toHaveLength(0);
+  });
+
+  it('restores a pending admin session without fetching the admin snapshot', async () => {
+    clearBrowserDeviceCredentials();
+    sessionValues.set('hotel-local-admin-session', JSON.stringify({
+      result: {
+        admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+        csrfToken: 'csrf-token'
+      },
+      installationId: 'installation-1'
+    }));
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/auth/admin/me') return { data: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z', mustChangePassword: true }, requestId: 'request-admin-me' };
+      if (path === '/system/snapshot') return { data: {}, requestId: 'request-admin-snapshot' };
+      if (path.startsWith('/devices/bootstrap-state')) return { data: { installationId: 'installation-1', configured: false, displayHint: null }, requestId: 'request-bootstrap-state' };
+      return { data: createRoomSnapshot(), requestId: 'request-device' };
+    });
+
+    renderApp();
+    await flushPromises();
+    const rendered = renderApp();
+
+    expect(apiMocks.get.mock.calls.filter(([path]) => path === '/system/snapshot')).toHaveLength(0);
+    expect(() => getAdminScreenProps(rendered)).toThrow('The AdminScreen was not rendered.');
+  });
+
+  it('exposes the password-change action to a restored non-pending admin and requires a fresh login after success', async () => {
+    clearBrowserDeviceCredentials();
+    sessionValues.set('hotel-local-admin-session', JSON.stringify({
+      result: {
+        admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z' },
+        csrfToken: 'csrf-token'
+      },
+      installationId: 'installation-1'
+    }));
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/auth/admin/me') return { data: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z', mustChangePassword: false }, requestId: 'request-admin-me' };
+      if (path === '/system/snapshot') return { data: {}, requestId: 'request-admin-snapshot' };
+      if (path.startsWith('/devices/bootstrap-state')) return { data: { installationId: 'installation-1', configured: false, displayHint: null }, requestId: 'request-bootstrap-state' };
+      return { data: createRoomSnapshot(), requestId: 'request-device' };
+    });
+    apiMocks.post.mockResolvedValue({ data: {}, requestId: 'request-password-change' });
+
+    renderApp();
+    await flushPromises();
+    const admin = getAdminScreenProps(renderApp());
+    const snapshotRequestCount = apiMocks.get.mock.calls.filter(([path]) => path === '/system/snapshot').length;
+
+    await admin.onChangePassword?.('current-secret', 'replacement-secret');
+
+    expect(apiMocks.post).toHaveBeenCalledWith('/auth/admin/change-password', {
+      currentPassword: 'current-secret',
+      newPassword: 'replacement-secret'
+    }, {
+      headers: {
+        'x-csrf-token': 'csrf-token',
+        'Idempotency-Key': expect.any(String)
+      }
+    });
+    expect(sessionValues.has('hotel-local-admin-session')).toBe(false);
+    expect(getBootstrapScreenProps(renderApp())).toBeDefined();
+    expect(apiMocks.get.mock.calls.filter(([path]) => path === '/system/snapshot')).toHaveLength(snapshotRequestCount);
   });
 
   it('keeps admin realtime browser-owned while native device realtime stays disabled', async () => {
@@ -1280,6 +1403,25 @@ function renderApp(): unknown {
   return App();
 }
 
+async function completeFreshAdminLogin(mustChangePassword: boolean): Promise<unknown> {
+  clearBrowserDeviceCredentials();
+  apiMocks.get.mockImplementation(async (path: string) => {
+    if (path.startsWith('/devices/bootstrap-state')) return { data: { installationId: 'installation-1', configured: false, displayHint: null }, requestId: 'request-bootstrap-state' };
+    if (path === '/system/snapshot') return { data: {}, requestId: 'request-admin-snapshot' };
+    return { data: createRoomSnapshot(), requestId: 'request-device' };
+  });
+
+  renderApp();
+  await flushPromises();
+  await flushPromises();
+  await getBootstrapScreenProps(renderApp()).onAdminLogin?.({
+    admin: { id: 'admin-1', username: 'admin', expiresAt: '2026-09-01T00:00:00.000Z', mustChangePassword },
+    csrfToken: 'csrf-token'
+  }, 'ADMIN');
+
+  return renderApp();
+}
+
 function getRealtimeOptions(): RealtimeOptionsForTest {
   if (hookHarness.realtimeOptions === undefined) throw new Error('Realtime options were not captured.');
   return hookHarness.realtimeOptions as RealtimeOptionsForTest;
@@ -1316,6 +1458,34 @@ function getBootstrapScreenProps(rendered: unknown): BootstrapScreenPropsForTest
   });
   if (bootstrap === undefined) throw new Error('The BootstrapScreen was not rendered.');
   return bootstrap.props;
+}
+
+function getPasswordChangeHandler(rendered: unknown): (currentPassword: string, newPassword: string) => Promise<void> {
+  const pending: unknown[] = Array.isArray(rendered) ? [...rendered] : [rendered];
+  while (pending.length > 0) {
+    const current = pending.shift();
+    if (typeof current !== 'object' || current === null) continue;
+    const element = current as TestElement;
+    if (typeof element.props?.onChangePassword === 'function') return element.props.onChangePassword;
+    const children = element.props?.children;
+    if (Array.isArray(children)) pending.push(...children);
+    else if (children !== undefined) pending.push(children);
+  }
+  throw new Error('The password-change screen was not rendered.');
+}
+
+function getPasswordChangeError(rendered: unknown): string | null {
+  const pending: unknown[] = Array.isArray(rendered) ? [...rendered] : [rendered];
+  while (pending.length > 0) {
+    const current = pending.shift();
+    if (typeof current !== 'object' || current === null) continue;
+    const element = current as TestElement;
+    if (typeof element.props?.onChangePassword === 'function') return element.props.error ?? null;
+    const children = element.props?.children;
+    if (Array.isArray(children)) pending.push(...children);
+    else if (children !== undefined) pending.push(children);
+  }
+  throw new Error('The password-change screen was not rendered.');
 }
 
 function sameDependencies(left: readonly unknown[], right: readonly unknown[]): boolean {

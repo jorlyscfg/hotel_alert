@@ -33,7 +33,7 @@ import {
   shouldRetryStartup
 } from './app-model';
 import { AdminLoginForm, type AdminLoginRole } from './features/auth/AdminLoginForm';
-import { AdminScreen } from './features/admin/AdminScreen';
+import { AdminPasswordChangeScreen, AdminScreen } from './features/admin/AdminScreen';
 import { BootstrapScreen } from './features/bootstrap/BootstrapScreen';
 import { buildDeviceBootstrapInput, DeviceRoleAssignmentScreen, type DeviceRoleAssignmentTarget } from './features/bootstrap/DeviceRoleAssignmentScreen';
 import { DeviceScreen } from './features/device/DeviceScreen';
@@ -68,6 +68,7 @@ type ViewState =
   | { kind: 'bootstrap'; installationId: string; bootstrapState: BootstrapState | null; error: string | null }
   | { kind: 'assignment'; role: Exclude<AdminLoginRole, 'ADMIN'>; snapshot: AdminSystemSnapshot; session: AdminLoginResult; installationId: string; error: string | null; busy: boolean }
   | { kind: 'device'; snapshot: DeviceSyncSnapshot }
+  | { kind: 'password-change'; session: AdminLoginResult; installationId: string | null }
   | { kind: 'admin'; snapshot: AdminSystemSnapshot; session: AdminLoginResult; installationId: string | null };
 
 const TOKEN_ROTATION_RETRY_INTERVAL_MS = 5_000;
@@ -135,6 +136,7 @@ async function waitForNativeSnapshot(bridge: NativeStationBridge): Promise<Devic
 export function App() {
   const [installationId, setInstallationId] = useState(getOrCreateInstallationId);
   const [view, setView] = useState<ViewState>({ kind: 'loading' });
+  const [passwordChangeError, setPasswordChangeError] = useState<string | null>(null);
   const { locale: roomLocale } = useI18n();
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [adminLoginOpen, setAdminLoginOpen] = useState(false);
@@ -152,7 +154,7 @@ export function App() {
     seenEventIds: new Set<string>()
   });
   viewRef.current = view;
-  const route = view.kind === 'device' ? view.snapshot.config.mode === 'ROOM' ? 'room' : 'area' : view.kind === 'assignment' ? 'bootstrap' : view.kind;
+  const route = view.kind === 'device' ? view.snapshot.config.mode === 'ROOM' ? 'room' : 'area' : view.kind === 'assignment' || view.kind === 'password-change' ? 'bootstrap' : view.kind;
   const nativeStationBridgeAvailable = getNativeStationBridge() !== null;
   const roomAudioUnlockScope = view.kind === 'device' && view.snapshot.config.mode === 'ROOM'
     ? `${view.snapshot.device.id}:${view.snapshot.config.room?.id ?? ''}`
@@ -226,6 +228,13 @@ export function App() {
     if (storedSession === null) return false;
     try {
       const session = await api.get<AdminMe>('/auth/admin/me');
+      if (session.data.mustChangePassword === true) {
+        cancelStartupRetry();
+        const pendingSession = { admin: session.data, csrfToken: storedSession.result.csrfToken };
+        setPasswordChangeError(null);
+        setView({ kind: 'password-change', session: pendingSession, installationId: storedSession.installationId ?? null });
+        return true;
+      }
       const snapshot = await api.get<AdminSystemSnapshot>('/system/snapshot', { cache: 'no-store' });
       cancelStartupRetry();
       if (storedSession.pendingStationRole !== undefined) {
@@ -417,6 +426,29 @@ export function App() {
       scheduleStartupRetry(() => { void initialize(true); });
     }
   }, [cancelStartupRetry, installationId, loadBootstrapState, restoreAdminSession, restoreStoredRoomSession, scheduleStartupRetry]);
+
+  async function submitAdminPasswordChange(currentPassword: string, newPassword: string): Promise<void> {
+    const activeView = viewRef.current;
+    const session = activeView.kind === 'admin' || activeView.kind === 'password-change' ? activeView.session : null;
+    if (session === null) return;
+
+    setPasswordChangeError(null);
+    try {
+      await api.post('/auth/admin/change-password', { currentPassword, newPassword }, {
+        headers: {
+          'x-csrf-token': session.csrfToken,
+          'Idempotency-Key': makeMutationKey('admin-password-change')
+        }
+      });
+      clearPersistedAdminSession();
+      cancelStartupRetry();
+      setPasswordChangeError(null);
+      await initialize();
+    } catch (error) {
+      const passwordChangeTranslator = createTranslator(roomLocale);
+      setPasswordChangeError(errorMessage(error, passwordChangeTranslator('errors.internal'), roomLocale));
+    }
+  }
 
   const handleAuthFailure = useCallback((error?: unknown, forceInvalidate = false) => {
     cancelStartupRetry();
@@ -637,6 +669,14 @@ export function App() {
   async function completeAdminLogin(result: AdminLoginResult, role: AdminLoginRole = 'ADMIN') {
     cancelStartupRetry();
     const source = viewRef.current.kind;
+    const sessionInstallationId = source === 'bootstrap' ? installationId : null;
+    if (result.admin.mustChangePassword === true) {
+      persistAdminSession({ result, installationId: sessionInstallationId });
+      setPasswordChangeError(null);
+      setAdminLoginOpen(false);
+      setView({ kind: 'password-change', session: result, installationId: sessionInstallationId });
+      return;
+    }
     const snapshot = await api.get<AdminSystemSnapshot>('/system/snapshot', { cache: 'no-store' });
     let assignmentSnapshot = snapshot.data;
     let assignmentError: string | null = null;
@@ -650,13 +690,13 @@ export function App() {
     }
     persistAdminSession({
       result,
-      installationId: source === 'bootstrap' ? installationId : null,
+      installationId: sessionInstallationId,
       ...(source === 'bootstrap' && role !== 'ADMIN' ? { pendingStationRole: role } : {})
     });
     setAdminLoginOpen(false);
     setView(source === 'bootstrap' && role !== 'ADMIN'
       ? { kind: 'assignment', role, snapshot: assignmentSnapshot, session: result, installationId, error: assignmentError, busy: false }
-      : { kind: 'admin', snapshot: snapshot.data, session: result, installationId: source === 'bootstrap' ? installationId : null });
+      : { kind: 'admin', snapshot: snapshot.data, session: result, installationId: sessionInstallationId });
   }
 
   async function retryBootstrap() {
@@ -767,6 +807,7 @@ export function App() {
   if (view.kind === 'loading') return <SpanishI18nProvider><LoadingScreen /></SpanishI18nProvider>;
   if (view.kind === 'bootstrap') return <SpanishI18nProvider><BootstrapScreen installationId={installationId} bootstrapState={view.bootstrapState} error={view.error} onRetry={() => void retryBootstrap()} onAdminLogin={completeAdminLogin} /></SpanishI18nProvider>;
   if (view.kind === 'assignment') return <SpanishI18nProvider><DeviceRoleAssignmentScreen role={view.role} snapshot={view.snapshot} busy={view.busy} error={view.error} onSelect={(target) => void provisionSelectedTarget(target)} onAdmin={() => { persistAdminSession({ result: view.session, installationId: view.installationId }); setView({ kind: 'admin', snapshot: view.snapshot, session: view.session, installationId: view.installationId }); }} /></SpanishI18nProvider>;
+  if (view.kind === 'password-change') return <SpanishI18nProvider><AdminPasswordChangeScreen error={passwordChangeError} onChangePassword={submitAdminPasswordChange} /></SpanishI18nProvider>;
   if (view.kind === 'device') {
     const isAreaDevice = view.snapshot.config.mode === 'AREA';
     const nativeBridge: NativeWebViewBridge | null = isAreaDevice && nativeStationBridgeAvailable
@@ -780,7 +821,7 @@ export function App() {
     if (view.snapshot.config.mode === 'ROOM') return <>{deviceScreen}<SpanishI18nProvider>{adminLoginDialog}</SpanishI18nProvider></>;
     return <SpanishI18nProvider>{deviceScreen}{adminLoginDialog}</SpanishI18nProvider>;
   }
-  return <SpanishI18nProvider><AdminScreen snapshot={view.snapshot} csrfToken={view.session.csrfToken} installationId={view.installationId} connectionStatus={connectionStatus} onRefresh={refreshAdmin} onLogout={logoutAdmin} onUseDeviceToken={useDeviceToken} /></SpanishI18nProvider>;
+  return <SpanishI18nProvider><AdminScreen snapshot={view.snapshot} csrfToken={view.session.csrfToken} installationId={view.installationId} connectionStatus={connectionStatus} onRefresh={refreshAdmin} onLogout={logoutAdmin} onUseDeviceToken={useDeviceToken} onChangePassword={submitAdminPasswordChange} passwordChangeError={passwordChangeError} /></SpanishI18nProvider>;
 }
 
 function getAdminSessionStorage(): Storage | null {

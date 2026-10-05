@@ -9,12 +9,30 @@ import { filterAdminItems } from '../../apps/web/src/features/admin/admin-search
 import { I18nProvider, SpanishI18nProvider } from '../../apps/web/src/i18n';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import * as adminScreenModule from '../../apps/web/src/features/admin/AdminScreen';
+
+const validateAdminPasswordChangeInput = (adminScreenModule as unknown as {
+  validateAdminPasswordChangeInput?: (currentPassword: string, newPassword: string, confirmation: string) => string | null;
+}).validateAdminPasswordChangeInput;
 
 const informationPanelSource = readFileSync(fileURLToPath(new URL('../../apps/web/src/features/admin/InformationPanel.tsx', import.meta.url)), 'utf8');
 const adminScreenSource = readFileSync(fileURLToPath(new URL('../../apps/web/src/features/admin/AdminScreen.tsx', import.meta.url)), 'utf8');
 const stylesSource = readFileSync(fileURLToPath(new URL('../../apps/web/src/styles.css', import.meta.url)), 'utf8');
 
 describe('admin request filters', () => {
+  it.each([
+    ['', 'replacement-password', 'replacement-password', 'currentPasswordRequired'],
+    ['current-password', 'short', 'short', 'passwordTooShort'],
+    ['current-password', 'replacement-password', 'different-password', 'passwordConfirmationMismatch']
+  ])('validates administrator password changes before submission', (currentPassword, newPassword, confirmation, expectedError) => {
+    expect(validateAdminPasswordChangeInput?.(currentPassword, newPassword, confirmation)).toBe(expectedError);
+  });
+
+  it('accepts matching administrator passwords that satisfy the server length limits', () => {
+    expect(validateAdminPasswordChangeInput?.('admin', 'replacement-password', 'replacement-password')).toBeNull();
+    expect(validateAdminPasswordChangeInput?.('current-password', 'x'.repeat(256), 'x'.repeat(256))).toBeNull();
+  });
+
   it('serializes cleared branding images as null settings', () => {
     expect(buildSettingsChanges([
       { key: 'hotelLogo', value: 'data:image/png;base64,AAAA', updatedAt: '2026-08-31T09:05:00.000Z', updatedByAdminId: null },
@@ -615,6 +633,31 @@ describe('admin request filters', () => {
     expect(markup).toContain('admin-command-header');
     expect(markup).toContain('admin-main__canvas');
     expect(markup).toContain('admin-sidebar__footer');
+  });
+
+  it('renders the accessible self-service password action in English and Spanish', () => {
+    const onChangePassword = async (): Promise<void> => undefined;
+    const props = {
+      snapshot: createAdminSnapshot(),
+      csrfToken: 'csrf-token',
+      installationId: null,
+      connectionStatus: 'online' as const,
+      onRefresh: async () => undefined,
+      onLogout: async () => undefined,
+      onUseDeviceToken: async () => undefined,
+      onChangePassword
+    } as Parameters<typeof AdminScreen>[0] & { onChangePassword: typeof onChangePassword };
+    const englishMarkup = renderToStaticMarkup(createElement(I18nProvider, {
+      children: createElement(AdminScreen, props)
+    }));
+    const spanishMarkup = renderToStaticMarkup(createElement(SpanishI18nProvider, {
+      children: createElement(AdminScreen, props)
+    }));
+
+    expect(englishMarkup).toContain('Change password');
+    expect(englishMarkup).toContain('aria-label="Change password"');
+    expect(spanishMarkup).toContain('Cambiar contraseña');
+    expect(spanishMarkup).toContain('aria-label="Cambiar contraseña"');
   });
 
   it('propagates the assignment mode with a provisioned one-time credential', () => {

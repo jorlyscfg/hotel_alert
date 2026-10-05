@@ -1,5 +1,5 @@
-import { useId, useMemo, useRef, useState, type FocusEvent, type ReactNode } from 'react';
-import { ArchiveX, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Circle, CircleAlert, House, LayoutDashboard, Link2Off, List, LogOut, PanelsTopLeft, Plus, Power, PowerOff, RefreshCw, ScrollText, ShieldOff, UserRoundCog } from 'lucide-react';
+import { useId, useMemo, useRef, useState, type FocusEvent, type FormEvent, type ReactNode } from 'react';
+import { ArchiveX, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Circle, CircleAlert, House, KeyRound, LayoutDashboard, Link2Off, List, LogOut, PanelsTopLeft, Plus, Power, PowerOff, RefreshCw, ScrollText, ShieldOff, UserRoundCog } from 'lucide-react';
 import type {
   AdminSystemSnapshot,
   AdminWarningCode,
@@ -36,10 +36,29 @@ interface AdminScreenProps {
   onRefresh: () => Promise<void>;
   onLogout: () => Promise<void>;
   onUseDeviceToken: (pairing: { deviceId: string; deviceToken: string; assignmentMode: DeviceAssignmentMode }) => Promise<void>;
+  onChangePassword?: (currentPassword: string, newPassword: string) => Promise<void>;
+  passwordChangeError?: string | null;
 }
 
 type AdminTab = 'overview' | 'queue' | 'setup' | 'audit';
 type ClockFormat = '12h' | '24h';
+
+type AdminPasswordChangeValidationError = 'currentPasswordRequired' | 'passwordTooShort' | 'passwordTooLong' | 'passwordConfirmationMismatch';
+
+const ADMIN_PASSWORD_CHANGE_VALIDATION_MESSAGES: Record<AdminPasswordChangeValidationError, MessageKey> = {
+  currentPasswordRequired: 'auth.currentPasswordRequired',
+  passwordTooShort: 'auth.passwordTooShort',
+  passwordTooLong: 'auth.passwordTooLong',
+  passwordConfirmationMismatch: 'auth.passwordConfirmationMismatch'
+};
+
+export function validateAdminPasswordChangeInput(currentPassword: string, newPassword: string, confirmation: string): AdminPasswordChangeValidationError | null {
+  if (currentPassword.length === 0) return 'currentPasswordRequired';
+  if (newPassword.length < 12) return 'passwordTooShort';
+  if (newPassword.length > 256) return 'passwordTooLong';
+  if (confirmation !== newPassword) return 'passwordConfirmationMismatch';
+  return null;
+}
 
 export const SETUP_SECTIONS = ['rooms', 'areas', 'services', 'devices', 'information', 'settings', 'admins'] as const;
 type SetupSection = (typeof SETUP_SECTIONS)[number];
@@ -266,7 +285,7 @@ export function resolveToggleConfirmationCopy(locale: Locale, resource: ToggleCo
   };
 }
 
-export function AdminScreen({ snapshot, csrfToken, installationId, connectionStatus, onRefresh, onLogout, onUseDeviceToken }: AdminScreenProps) {
+export function AdminScreen({ snapshot, csrfToken, installationId, connectionStatus, onRefresh, onLogout, onUseDeviceToken, onChangePassword, passwordChangeError = null }: AdminScreenProps) {
   const { locale, t } = useI18n();
   const clockFormat = resolveAdminClockFormat(snapshot.settings);
   const [tab, setTab] = useState<AdminTab>('overview');
@@ -274,6 +293,7 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
   const [notice, setNotice] = useState<string | null>(null);
   const [secretToken, setSecretToken] = useState<{ deviceId: string; deviceToken: string; assignmentMode: DeviceAssignmentMode } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [passwordChangeOpen, setPasswordChangeOpen] = useState(false);
   const [historyRequest, setHistoryRequest] = useState<RequestDTO | null>(null);
   const [requestHistory, setRequestHistory] = useState<RequestHistoryDTO[] | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
@@ -577,6 +597,7 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
         </div>
          <div className="topbar__right">
            <ConnectionBadge status={connectionStatus} />
+             {onChangePassword !== undefined && <button className="icon-button admin-password-change" type="button" onClick={() => setPasswordChangeOpen(true)} aria-label={t('admin.changePassword')} title={t('admin.changePassword')}><KeyRound aria-hidden="true" size={19} strokeWidth={1.8} /></button>}
              <button className="icon-button admin-logout" type="button" onClick={() => void onLogout()} aria-label={t('common.signOut')} title={t('common.signOut')}><LogOut aria-hidden="true" size={19} strokeWidth={1.8} /></button>
         </div>
       </header>
@@ -614,7 +635,92 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
             onConfirm={() => void confirmConfirmation()}
           />
         )}
+        {onChangePassword !== undefined && <Modal open={passwordChangeOpen} title={t('admin.changePassword')} onClose={() => setPasswordChangeOpen(false)} closeLabel={t('common.closeDialog')} className="admin-password-change-modal">
+          <AdminPasswordChangeForm
+            error={passwordChangeError}
+            submitLabel={t('auth.updatePassword')}
+            onCancel={() => setPasswordChangeOpen(false)}
+            onSubmit={onChangePassword}
+          />
+        </Modal>}
      </main>
+  );
+}
+
+interface AdminPasswordChangeFormProps {
+  error: string | null;
+  submitLabel: string;
+  onSubmit: (currentPassword: string, newPassword: string) => Promise<void>;
+  onCancel?: () => void;
+}
+
+export function AdminPasswordChangeForm({ error, submitLabel, onSubmit, onCancel }: AdminPasswordChangeFormProps) {
+  const { t } = useI18n();
+  const idPrefix = useId().replaceAll(':', '');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [validationError, setValidationError] = useState<AdminPasswordChangeValidationError | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    const validation = validateAdminPasswordChangeInput(currentPassword, newPassword, confirmation);
+    if (validation !== null) {
+      setValidationError(validation);
+      return;
+    }
+    setValidationError(null);
+    setSubmitting(true);
+    try {
+      await onSubmit(currentPassword, newPassword);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const feedback = validationError === null ? error : t(ADMIN_PASSWORD_CHANGE_VALIDATION_MESSAGES[validationError]);
+
+  return (
+    <form className="auth-form admin-password-change-form" onSubmit={(event) => void submit(event)}>
+      <div className="form-field">
+        <label htmlFor={`${idPrefix}-current-password`}>{t('auth.currentPassword')}</label>
+        <input id={`${idPrefix}-current-password`} name="currentPassword" type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => { setCurrentPassword(event.target.value); setValidationError(null); }} required maxLength={256} />
+      </div>
+      <div className="form-field">
+        <label htmlFor={`${idPrefix}-new-password`}>{t('auth.newPassword')}</label>
+        <input id={`${idPrefix}-new-password`} name="newPassword" type="password" autoComplete="new-password" value={newPassword} onChange={(event) => { setNewPassword(event.target.value); setValidationError(null); }} required minLength={12} maxLength={256} />
+      </div>
+      <div className="form-field">
+        <label htmlFor={`${idPrefix}-confirm-password`}>{t('auth.confirmNewPassword')}</label>
+        <input id={`${idPrefix}-confirm-password`} name="confirmPassword" type="password" autoComplete="new-password" value={confirmation} onChange={(event) => { setConfirmation(event.target.value); setValidationError(null); }} required maxLength={256} />
+      </div>
+      {feedback !== null && <div className="inline-alert" role="alert">{feedback}</div>}
+      <div className="form-actions">
+        {onCancel !== undefined && <button className="button button--ghost" type="button" onClick={onCancel} disabled={submitting}>{t('common.cancel')}</button>}
+        <button className="button button--dark" type="submit" disabled={submitting} aria-busy={submitting}>{submitLabel}</button>
+      </div>
+    </form>
+  );
+}
+
+interface AdminPasswordChangeScreenProps {
+  error: string | null;
+  onChangePassword: (currentPassword: string, newPassword: string) => Promise<void>;
+}
+
+export function AdminPasswordChangeScreen({ error, onChangePassword }: AdminPasswordChangeScreenProps) {
+  const { t } = useI18n();
+
+  return (
+    <main className="app-frame app-frame--centered bootstrap-login-screen">
+      <section className="surface-card bootstrap-card bootstrap-login-card" aria-labelledby="admin-password-change-title">
+        <p className="eyebrow eyebrow--muted">{t('admin.administrators')}</p>
+        <h1 id="admin-password-change-title">{t('auth.passwordChangeRequiredTitle')}</h1>
+        <p className="card-copy">{t('auth.passwordChangeRequiredCopy')}</p>
+        <AdminPasswordChangeForm error={error} submitLabel={t('auth.updatePassword')} onSubmit={onChangePassword} />
+      </section>
+    </main>
   );
 }
 
