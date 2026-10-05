@@ -16,9 +16,10 @@ import { applyLocalizedCatalogTextMigration } from './migrations/011_localized_c
 import { applyInformationImageLocalizationMigration } from './migrations/012_information_image_localization';
 import { applyRoomDoNotDisturbActivationTimestampMigration } from './migrations/013_room_do_not_disturb_activation_timestamp';
 import { applyRequestHistoryRetentionMigration } from './migrations/014_request_history_retention';
+import { applyAdminFirstLoginPasswordMigration } from './migrations/019_admin_first_login_password';
 
 export type SqliteDatabase = Database.Database;
-export const LATEST_MIGRATION_VERSION = 14;
+export const LATEST_MIGRATION_VERSION = 19;
 
 interface Migration {
   version: number;
@@ -99,6 +100,11 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
     version: 14,
     name: 'request-history-retention-one-year',
     apply: applyRequestHistoryRetentionMigration
+  },
+  {
+    version: 19,
+    name: 'admin-first-login-password',
+    apply: applyAdminFirstLoginPasswordMigration
   }
 ];
 
