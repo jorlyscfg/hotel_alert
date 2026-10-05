@@ -130,6 +130,7 @@ interface AdminRow {
   username: string;
   password_hash: string;
   active: number;
+  must_change_password: number;
   failed_login_count: number;
   locked_until: string | null;
   last_login_at: string | null;
@@ -143,6 +144,7 @@ interface SessionRow {
   username: string;
   csrf_token_hash: string;
   expires_at: string;
+  must_change_password: number;
 }
 
 interface DeviceTokenRow extends DeviceRow {
@@ -805,7 +807,7 @@ export class HotelService {
       sessionId, admin.id, hashToken(sessionToken, this.config.sessionSecret), hashToken(csrfToken, this.config.sessionSecret), now.toISOString(), expiresAt, now.toISOString(), sourceIp ?? null, userAgent ?? null
     );
     this.audit({ actorType: 'ADMIN', actorId: admin.id }, 'ADMIN_LOGIN_SUCCEEDED', 'ADMIN', admin.id, requestId, {});
-    const adminMe: AdminMe = { id: admin.id, username: admin.username, expiresAt };
+    const adminMe: AdminMe = { id: admin.id, username: admin.username, expiresAt, mustChangePassword: Boolean(admin.must_change_password) };
     return { data: { admin: adminMe, csrfToken }, sessionToken };
   }
 
@@ -814,7 +816,7 @@ export class HotelService {
       throw new AppError('AUTH_REQUIRED', 'Administrator authentication is required.', 401);
     }
     const row = this.db.prepare(`
-      SELECT s.id AS session_id, s.admin_id, a.username, s.csrf_token_hash, s.expires_at
+      SELECT s.id AS session_id, s.admin_id, a.username, s.csrf_token_hash, s.expires_at, a.must_change_password
       FROM admin_sessions s JOIN admins a ON a.id = s.admin_id
       WHERE s.session_token_hash = ? AND s.revoked_at IS NULL AND a.active = 1
     `).get(hashToken(sessionToken, this.config.sessionSecret)) as SessionRow | undefined;
@@ -822,7 +824,15 @@ export class HotelService {
       throw new AppError('AUTH_INVALID', 'Administrator session is invalid or expired.', 401);
     }
     this.db.prepare('UPDATE admin_sessions SET last_seen_at = ? WHERE id = ?').run(new Date().toISOString(), row.session_id);
-    return { kind: 'ADMIN', actorType: 'ADMIN', adminId: row.admin_id, username: row.username, sessionId: row.session_id, csrfTokenHash: row.csrf_token_hash };
+    return {
+      kind: 'ADMIN',
+      actorType: 'ADMIN',
+      adminId: row.admin_id,
+      username: row.username,
+      sessionId: row.session_id,
+      csrfTokenHash: row.csrf_token_hash,
+      mustChangePassword: Boolean(row.must_change_password)
+    };
   }
 
   public verifyCsrf(principal: AdminPrincipal, token: string | undefined): void {
@@ -886,7 +896,7 @@ export class HotelService {
     }
     const now = new Date().toISOString();
     const result = this.mutate(() => {
-      this.db.prepare('UPDATE admins SET password_hash = ?, updated_at = ? WHERE id = ?').run(hashPassword(newPassword), now, adminId);
+      this.db.prepare('UPDATE admins SET password_hash = ?, must_change_password = 0, updated_at = ? WHERE id = ?').run(hashPassword(newPassword), now, adminId);
       this.db.prepare('UPDATE admin_sessions SET revoked_at = ? WHERE admin_id = ? AND revoked_at IS NULL').run(now, adminId);
       this.audit({ actorType: 'ADMIN', actorId: principal.adminId }, 'ADMIN_PASSWORD_CHANGED', 'ADMIN', adminId, requestId, {});
       return this.getAdmin(adminId) ?? this.assertImpossible('Updated administrator disappeared.');
@@ -896,12 +906,12 @@ export class HotelService {
   }
 
   public listAdmins(): AdminDTO[] {
-    const rows = this.db.prepare('SELECT id, username, active, last_login_at, created_at, updated_at FROM admins ORDER BY username').all() as Array<Omit<AdminRow, 'password_hash' | 'failed_login_count' | 'locked_until'>>;
+    const rows = this.db.prepare('SELECT id, username, active, last_login_at, created_at, updated_at FROM admins ORDER BY username').all() as Array<Omit<AdminRow, 'password_hash' | 'failed_login_count' | 'locked_until' | 'must_change_password'>>;
     return rows.map(mapAdmin);
   }
 
   public getAdmin(id: string): AdminDTO | null {
-    const row = this.db.prepare('SELECT id, username, active, last_login_at, created_at, updated_at FROM admins WHERE id = ?').get(id) as Omit<AdminRow, 'password_hash' | 'failed_login_count' | 'locked_until'> | undefined;
+    const row = this.db.prepare('SELECT id, username, active, last_login_at, created_at, updated_at FROM admins WHERE id = ?').get(id) as Omit<AdminRow, 'password_hash' | 'failed_login_count' | 'locked_until' | 'must_change_password'> | undefined;
     return row === undefined ? null : mapAdmin(row);
   }
 
@@ -2492,7 +2502,7 @@ function mapDevice(row: DeviceRow, presence: DevicePresence): DeviceDTO {
   return { id: row.id, installationId: row.installation_id, displayName: row.display_name, assignmentMode: row.assignment_mode, roomId: row.room_id, areaId: row.area_id, active: Boolean(row.active), deviceConfigVersion: row.device_config_version, lastHeartbeatAt: row.last_heartbeat_at, presence };
 }
 
-function mapAdmin(row: Omit<AdminRow, 'password_hash' | 'failed_login_count' | 'locked_until'>): AdminDTO {
+function mapAdmin(row: Omit<AdminRow, 'password_hash' | 'failed_login_count' | 'locked_until' | 'must_change_password'>): AdminDTO {
   return { id: row.id, username: row.username, active: Boolean(row.active), lastLoginAt: row.last_login_at, createdAt: row.created_at, updatedAt: row.updated_at };
 }
 

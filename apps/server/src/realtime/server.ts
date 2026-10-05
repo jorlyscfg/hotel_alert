@@ -345,7 +345,11 @@ function authenticateSocket(headers: IncomingHttpHeaders, auth: RealtimeAuth, se
     if (auth.deviceId !== undefined) {
       throw new AppError('AUTH_AMBIGUOUS_CREDENTIALS', 'Administrator connections cannot include a device identity.', 400);
     }
-    return service.authenticateAdmin(cookie);
+    const principal = service.authenticateAdmin(cookie);
+    if (principal.mustChangePassword === true) {
+      throw new AppError('ADMIN_PASSWORD_CHANGE_REQUIRED', 'Change the initial administrator password before continuing.', 403);
+    }
+    return principal;
   }
   return service.authenticateDeviceToken(auth.deviceToken).principal;
 }

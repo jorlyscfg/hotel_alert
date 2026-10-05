@@ -12,6 +12,10 @@ import type { Actor } from '../../apps/server/src/security/principal';
 const systemActor: Actor = { actorType: 'SYSTEM', actorId: null };
 const adminPassword = 'correct-horse-battery-staple';
 
+function removeMigrationSeededAdmin(database: SqliteDatabase): void {
+  database.prepare("DELETE FROM admins WHERE username = 'admin' AND must_change_password = 1").run();
+}
+
 describe('HTTP API', () => {
   let database: SqliteDatabase;
   let databaseDirectory: string;
@@ -31,6 +35,7 @@ describe('HTTP API', () => {
     });
     database = openDatabase(config);
     runMigrations(database);
+    removeMigrationSeededAdmin(database);
     service = new HotelService(database, config);
     service.createAdmin({ username: 'admin', password: adminPassword }, systemActor, 'setup-admin');
     app = createApp(service, config);

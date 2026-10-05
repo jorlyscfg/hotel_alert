@@ -260,6 +260,8 @@ export interface AdminMe {
   id: string;
   username: string;
   expiresAt: string;
+  /** Optional for compatibility with locally persisted sessions from older clients. */
+  mustChangePassword?: boolean;
 }
 
 export interface AdminLoginResult {

@@ -64,6 +64,7 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
   const app = express();
   const api = Router();
   const admin = requireAdmin(service);
+  const adminSession = requireAdmin(service, true);
   const device = requireDevice(service);
   const anyPrincipal = requireAnyPrincipal(service);
   const loginRateLimit = createRateLimiter({ name: 'admin-login', limit: config.loginRateLimitMaxRequests, windowMs: 60_000, key: sourceIpKey });
@@ -89,6 +90,7 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     }
   });
   const adminMutation = [admin, requireAdminCsrf(service), principalMutationRateLimit];
+  const adminSessionMutation = [adminSession, requireAdminCsrf(service), principalMutationRateLimit];
   const adminSensitiveMutation = [admin, requireAdminCsrf(service), adminOperationRateLimit];
   const requestMutation = [anyPrincipal, requireAdminCsrfIfNeeded(service), principalMutationRateLimit];
 
@@ -111,12 +113,17 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     sendData(res, 200, result.data, req.requestId);
   }));
 
-  api.get('/auth/admin/me', admin, asyncHandler(async (req, res) => {
+  api.get('/auth/admin/me', adminSession, asyncHandler(async (req, res) => {
     const principal = getAdminPrincipal(req);
-    sendData(res, 200, { id: principal.adminId, username: principal.username, expiresAt: getSessionExpiry(service, principal) }, req.requestId);
+    sendData(res, 200, {
+      id: principal.adminId,
+      username: principal.username,
+      expiresAt: getSessionExpiry(service, principal),
+      mustChangePassword: principal.mustChangePassword === true
+    }, req.requestId);
   }));
 
-  api.post('/auth/admin/logout', adminMutation, asyncHandler(async (req, res) => {
+  api.post('/auth/admin/logout', adminSessionMutation, asyncHandler(async (req, res) => {
     service.logoutAdmin(getAdminPrincipal(req), req.requestId);
     res.clearCookie(ADMIN_SESSION_COOKIE, { httpOnly: true, sameSite: 'strict', secure: isSecureOrigin(config.appOrigin), path: '/' });
     res.status(204).send();
@@ -128,7 +135,7 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     res.status(204).send();
   }));
 
-  api.post('/auth/admin/change-password', adminMutation, asyncHandler(async (req, res) => {
+  api.post('/auth/admin/change-password', adminSessionMutation, asyncHandler(async (req, res) => {
     requireMutationKey(req);
     const input = parseBody(passwordChangeSchema, req.body);
     const principal = getAdminPrincipal(req);
@@ -556,14 +563,16 @@ function requestContext(req: Request, res: Response, next: NextFunction): void {
   next();
 }
 
-function requireAdmin(service: HotelService): RequestHandler {
+function requireAdmin(service: HotelService, allowPasswordChangeRequired = false): RequestHandler {
   return (req, _res, next) => {
     try {
       const credentials = readCredentials(req);
       if (credentials.bearer !== undefined || credentials.cookie === undefined) {
         throw new AppError('AUTH_REQUIRED', 'An administrator session is required.', 401);
       }
-      req.principal = service.authenticateAdmin(credentials.cookie);
+      const principal = service.authenticateAdmin(credentials.cookie);
+      if (!allowPasswordChangeRequired) assertAdminPasswordChangeComplete(principal);
+      req.principal = principal;
       next();
     } catch (error) {
       next(error);
@@ -604,7 +613,9 @@ function requireAnyPrincipal(service: HotelService): RequestHandler {
     try {
       const credentials = readCredentials(req);
       if (credentials.cookie !== undefined) {
-        req.principal = service.authenticateAdmin(credentials.cookie);
+        const principal = service.authenticateAdmin(credentials.cookie);
+        assertAdminPasswordChangeComplete(principal);
+        req.principal = principal;
       } else if (credentials.bearer !== undefined) {
         req.principal = service.authenticateDeviceToken(credentials.bearer).principal;
       } else {
@@ -615,6 +626,12 @@ function requireAnyPrincipal(service: HotelService): RequestHandler {
       next(error);
     }
   };
+}
+
+function assertAdminPasswordChangeComplete(principal: AdminPrincipal): void {
+  if (principal.mustChangePassword === true) {
+    throw new AppError('ADMIN_PASSWORD_CHANGE_REQUIRED', 'Change the initial administrator password before continuing.', 403);
+  }
 }
 
 function requireAdminCsrf(service: HotelService): RequestHandler {

@@ -13,6 +13,10 @@ import type { Actor } from '../../apps/server/src/security/principal';
 const systemActor: Actor = { actorType: 'SYSTEM', actorId: null };
 const adminPassword = 'correct-horse-battery-staple';
 
+function removeMigrationSeededAdmin(database: SqliteDatabase): void {
+  database.prepare("DELETE FROM admins WHERE username = 'admin' AND must_change_password = 1").run();
+}
+
 describe('Socket.IO realtime transport', () => {
   let database: SqliteDatabase;
   let databaseDirectory: string;
@@ -179,6 +183,7 @@ describe('Socket.IO realtime transport', () => {
       assignmentMode: 'ROOM',
       roomId: room.id
     }, systemActor, 'setup-device');
+    removeMigrationSeededAdmin(database);
     service.createAdmin({ username: 'admin', password: adminPassword }, systemActor, 'setup-admin');
     const login = service.loginAdmin('admin', adminPassword, 'login-admin', undefined, undefined);
     const recordHeartbeat = vi.spyOn(service, 'recordHeartbeat');
@@ -220,6 +225,7 @@ describe('Socket.IO realtime transport', () => {
     const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
     const roomDevice = service.bootstrapDevice({ installationId: 'installation-room-101', displayName: 'Room 101 tablet', assignmentMode: 'ROOM', roomId: room.id }, systemActor, 'setup-room-device');
     const areaDevice = service.bootstrapDevice({ installationId: 'installation-area-housekeeping', displayName: 'Housekeeping console', assignmentMode: 'AREA', areaId: area.id }, systemActor, 'setup-area-device');
+    removeMigrationSeededAdmin(database);
     service.createAdmin({ username: 'admin', password: adminPassword }, systemActor, 'setup-admin');
     const login = service.loginAdmin('admin', adminPassword, 'login-admin', undefined, undefined);
 
@@ -272,6 +278,7 @@ describe('Socket.IO realtime transport', () => {
       assignmentMode: 'ROOM',
       roomId: room.id
     }, systemActor, 'setup-device');
+    removeMigrationSeededAdmin(database);
     service.createAdmin({ username: 'admin', password: adminPassword }, systemActor, 'setup-admin');
     const login = service.loginAdmin('admin', adminPassword, 'login-admin', undefined, undefined);
     const admin = service.authenticateAdmin(login.sessionToken);
@@ -304,6 +311,7 @@ describe('Socket.IO realtime transport', () => {
       assignmentMode: 'ROOM',
       roomId: room.id
     }, systemActor, 'setup-device');
+    removeMigrationSeededAdmin(database);
     service.createAdmin({ username: 'admin', password: adminPassword }, systemActor, 'setup-admin');
     const login = service.loginAdmin('admin', adminPassword, 'login-admin', undefined, undefined);
     const admin = service.authenticateAdmin(login.sessionToken);
@@ -329,6 +337,7 @@ describe('Socket.IO realtime transport', () => {
   });
 
   it('disconnects connected administrator sockets when the session is revoked', async () => {
+    removeMigrationSeededAdmin(database);
     service.createAdmin({ username: 'admin', password: adminPassword }, systemActor, 'setup-admin');
     const login = service.loginAdmin('admin', adminPassword, 'login-admin', undefined, undefined);
     const admin = service.authenticateAdmin(login.sessionToken);
@@ -394,6 +403,7 @@ describe('Socket.IO realtime transport', () => {
       assignmentMode: 'ROOM',
       roomId: firstRoom.id
     }, systemActor, 'setup-device');
+    removeMigrationSeededAdmin(database);
     service.createAdmin({ username: 'admin', password: adminPassword }, systemActor, 'setup-admin');
     const login = service.loginAdmin('admin', adminPassword, 'login-admin', undefined, undefined);
     const admin = service.authenticateAdmin(login.sessionToken);
@@ -434,6 +444,7 @@ describe('Socket.IO realtime transport', () => {
       assignmentMode: 'ROOM',
       roomId: room.id
     }, systemActor, 'setup-device');
+    removeMigrationSeededAdmin(database);
     service.createAdmin({ username: 'admin', password: adminPassword }, systemActor, 'setup-admin');
     const login = service.loginAdmin('admin', adminPassword, 'login-admin', undefined, undefined);
     const admin = service.authenticateAdmin(login.sessionToken);

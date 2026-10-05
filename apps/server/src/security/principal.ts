@@ -7,6 +7,7 @@ export interface AdminPrincipal {
   username: string;
   sessionId: string;
   csrfTokenHash: string;
+  mustChangePassword?: boolean;
 }
 
 export interface DevicePrincipal {
