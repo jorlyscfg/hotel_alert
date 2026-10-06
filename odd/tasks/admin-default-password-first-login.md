@@ -1,18 +1,19 @@
 # Default Admin and Mandatory First-Login Password Change
 
 ## Objective
-Seed a usable `admin` / `admin` account when an installation has no administrators, require the operator to change that password before entering the Admin view, and provide a web flow for later password changes.
+Seed one usable `admin` / `admin` account when an installation has no administrators, require the operator to change that password before entering the Admin view, and provide a web flow for later password changes. Keep administrator self-service password change in the Admin top bar; do not expose an Administrators management tab.
 
 ## Problem
 The server already exposes a self-service password-change endpoint and revokes existing sessions after a successful change, but the web UI does not call it. A new installation also does not provision a default administrator, and there is no persisted first-login password-change state or server-side restriction for such a session.
 
 ## Why
-The user wants operators to be able to access a new installation with known initial credentials, then set a private password before hotel use. The user clarified that only authorized operators have access during installation/configuration.
+The user wants operators to be able to access a new installation with known initial credentials, then set a private password before hotel use. The user clarified that only authorized operators have access during installation/configuration and that the hotel will not have additional administrator accounts, so the Administrators management tab is unnecessary.
 
 ## Authorized Scope and Constraints
 - Add default credentials `admin` / `admin` only if the database has no administrator; preserve all existing admin accounts and hashes.
 - Require the initial password change before the Admin view and enforce it on server routes, not only in the browser.
 - Add a normal web password-change flow for an authenticated administrator.
+- Remove the Administrators management tab and its UI; keep the existing self-service Change Password action in the Admin top bar.
 - Keep the current branch `jorlys/feat/lan-notification-agent`; the user will handle remaining branch work and move it to `dev` after implementation. Do not create or switch branches.
 - Preserve all existing staged, unstaged, and untracked work. Never stage or commit unrelated changes.
 - Do not modify `.env`, live hotel data, or remote systems/devices.
@@ -40,6 +41,7 @@ The user wants operators to be able to access a new installation with known init
 - [x] **ADM-PW-02 — Enforce forced password change in server authentication.** Return the pending-change state from login and `/auth/admin/me`; allow only the password-change and logout/session bootstrap operations while pending; deny ordinary admin HTTP/realtime access; clear the flag atomically with the password update and retain existing session revocation/audit behavior. Add service/API regressions and adapt existing integration fixtures that create an `admin` after migrations seed the default account. Route: delegated.
 - [x] **ADM-PW-03 — Add mandatory and regular password-change web flows.** After first login or session restoration, show the password form without loading the admin snapshot until the server confirms the password is changed. Provide a normal self-service entry for later changes, preserve CSRF/idempotency behavior, handle forced reauthentication after session revocation, and localize all copy. Add UI/startup/localization regressions. Route: delegated.
 - [x] **ADM-PW-04 — Document bootstrap behavior and complete verification.** Update operator-facing docs with the default login, mandatory change, and installation-only access assumption; run applicable full checks and record results. Route: delegated.
+- [x] **ADM-PW-05 — Remove the Administrators management tab.** Removed its navigation entry, management panel, and web handlers while preserving the existing Change Password action in the Admin top bar; server auth/password behavior is unchanged. Added regression coverage. Route: delegated direct (writer trigger: two source modules plus UI regression test); strict TDD, Vitest, observed RED → GREEN. RDD: disabled/unmanaged.
 
 ## Acceptance Criteria
 - An empty installation database receives exactly one active `admin` account whose password verifier accepts `admin`, with first-login change required.
@@ -48,6 +50,7 @@ The user wants operators to be able to access a new installation with known init
 - The pending state survives browser reload/session restoration; the web app does not fetch the admin snapshot or render the Admin view while change is required.
 - A successful change clears the persisted requirement, hashes the new password using the existing password-hash implementation, revokes sessions, and requires a fresh login.
 - An authenticated administrator can later change their password from the web UI using the existing endpoint and security headers.
+- The Setup view does not expose an Administrators tab or administrator-management panel; the self-service Change Password action remains in the Admin top bar.
 - English and Spanish UI strings, validation, and error handling are covered; tests and docs accompany the behavior.
 - No unrelated worktree changes are staged, committed, reverted, or overwritten.
 
@@ -83,9 +86,15 @@ The user wants operators to be able to access a new installation with known init
 - Full `corepack pnpm lint` remains non-green from unrelated dirty work: `apps/server/src/integrations/geoapify-client.ts:50` (`no-control-regex`), `apps/web/src/features/device/InformationCarousel.tsx:115` (`cycleActive` unused), `apps/web/src/features/device/RoomScreensaver.tsx:118` (`t` unused), and `tests/unit/native-bridge.test.ts:43` (`prefer-const`). None is in this feature's implementation/documentation changes.
 - Full `corepack pnpm test:unit` remains non-green: 57 files, 596 passed and 35 failed across 11 files. Known unrelated categories are the App mock's missing `shouldWebViewSendRestHeartbeat` export (14 failures), migration tests expecting schema version 18 while current worktree has migrations through 19 (including four stale default-catalog expected-version cases), older UI localization/style expectations, and AREA component tests failing with `Cannot read properties of null (reading 'useCallback')`. The new admin-first-login migration test and focused ADM-PW-03 tests pass; do not expand the docs slice to repair unrelated dirty work.
 - RDD outcome for ADM-PW-04: `disabled/unmanaged`; no review, remote operation, PR, merge, or branch change was performed.
+- User clarified there will be no additional administrator accounts and explicitly requested removal of the Administrators tab while keeping the Change Password button in its current top-bar location. The prior request to move the button into an administrator row is superseded.
+- ADM-PW-05 exploration: `SETUP_SECTIONS` and `SetupTab` in `apps/web/src/features/admin/AdminScreen.tsx` expose `admins`; the `AdminManagement` panel is in `apps/web/src/features/admin/SetupPanels.tsx`; UI coverage is in `tests/unit/admin-localization.test.ts` / `tests/unit/admin-screen.test.ts`. No backend change is authorized or needed for removing this UI.
+- ADM-PW-05 strict TDD evidence: RED observed with `corepack pnpm exec vitest run tests/unit/admin-screen.test.ts --testNamePattern='removes administrator management'` — 1 expected failure because `SETUP_SECTIONS` still contained `'admins'`; no production code had been edited. After implementation the same focused regression passed, and `corepack pnpm exec vitest run tests/unit/admin-screen.test.ts` passed 56/56.
+- ADM-PW-05 implementation removes the Administrators entry from `SETUP_SECTIONS`, the AdminManagement component/panel and create/toggle web handlers/props. It leaves the self-service Change Password action in the top bar and does not change server routes or password behavior. `tests/unit/admin-localization.test.ts` was also updated to remove the obsolete tab from its expected list.
+- Parent verification: `corepack pnpm exec vitest run tests/unit/admin-screen.test.ts tests/unit/admin-localization.test.ts` — 79/80 passed; the sole failure is an unrelated existing expectation for manual weather-coordinate inputs (`id="setting-weatherLocationName"`) that the current dirty city-search settings UI no longer renders. `corepack pnpm --filter @hotel/web typecheck` and scoped `git diff --check` passed. RDD: `disabled/unmanaged`.
+- ADM-PW-05 work-unit commit identity pending; no push, PR, merge, deploy, or branch switch authorized/performed.
 
 ## Next Step
-Admin default-password implementation, web flows, operator documentation, and scoped verification are complete on `jorlys/feat/lan-notification-agent`. Keep unrelated dirty/staged work untouched; the user retains the branch move, push, PR, and merge decisions. The unrelated full lint/unit failures above remain follow-up work outside this feature.
+ADM-PW-01..05 are implemented and scoped verification is complete; record the local work-unit commit identity after commit. Keep the self-service password button in the Admin top bar. Keep unrelated dirty/staged work untouched; the user retains the branch move, push, PR, and merge decisions. The unrelated full lint/unit failures above remain follow-up work outside this feature.
 
 ## Relevant Files
 - `apps/server/src/db/connection.ts` — migration registry and transaction runner.

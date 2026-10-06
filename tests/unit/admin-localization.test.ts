@@ -113,7 +113,7 @@ describe('admin dynamic localization', () => {
       onAssignDevice: async () => true
     }));
 
-    expect(SETUP_SECTIONS).toEqual(['rooms', 'areas', 'services', 'devices', 'information', 'settings', 'admins']);
+    expect(SETUP_SECTIONS).toEqual(['rooms', 'areas', 'services', 'devices', 'information', 'settings']);
     expect(markup).toContain('role="tablist"');
     expect(markup.match(/role="tab"/g)).toHaveLength(SETUP_SECTIONS.length);
     expect(markup.match(/data-admin-setup-tab="/g)).toHaveLength(SETUP_SECTIONS.length);

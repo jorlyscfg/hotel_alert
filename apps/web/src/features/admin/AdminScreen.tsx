@@ -26,7 +26,7 @@ import { createTranslator, resolveAreaDisplayName, resolveLocalizedValue, resolv
 import { canCommitMutation, type ConnectionStatus } from '../../realtime';
 import { filterAdminItems } from './admin-search';
 import { InformationPanel } from './InformationPanel';
-import { AdminManagement, CatalogPanels, SERVICE_ICON_OPTIONS, SettingsPanel } from './SetupPanels';
+import { CatalogPanels, SERVICE_ICON_OPTIONS, SettingsPanel } from './SetupPanels';
 
 interface AdminScreenProps {
   snapshot: AdminSystemSnapshot;
@@ -60,7 +60,7 @@ export function validateAdminPasswordChangeInput(currentPassword: string, newPas
   return null;
 }
 
-export const SETUP_SECTIONS = ['rooms', 'areas', 'services', 'devices', 'information', 'settings', 'admins'] as const;
+export const SETUP_SECTIONS = ['rooms', 'areas', 'services', 'devices', 'information', 'settings'] as const;
 type SetupSection = (typeof SETUP_SECTIONS)[number];
 
 const SETUP_SECTION_LABEL_KEYS: Record<SetupSection, MessageKey> = {
@@ -69,8 +69,7 @@ const SETUP_SECTION_LABEL_KEYS: Record<SetupSection, MessageKey> = {
   services: 'admin.servicesTitle',
   devices: 'admin.stations',
   information: 'admin.information',
-  settings: 'admin.systemSettings',
-  admins: 'admin.administrators'
+  settings: 'admin.systemSettings'
 };
 
 const REQUEST_STATUS_KEYS: Record<RequestStatus, MessageKey> = {
@@ -481,19 +480,6 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
     return true;
   }
 
-  async function createAdmin(username: string, password: string): Promise<boolean> {
-    const result = await perform('admin-create', () => api.post('/admins', { username, password }, { headers: adminHeaders('admin-create') }), t('feedback.administratorAdded'));
-    return mutationSucceeded(result);
-  }
-
-  async function toggleAdmin(admin: AdminSystemSnapshot['admins'][number]) {
-    const confirmationCopy = resolveToggleConfirmationCopy(locale, 'administrator', admin.username, admin.active);
-    if (!await requestConfirmation({
-      ...confirmationCopy,
-      onConfirm: async () => (await perform('admin-toggle', () => api.post(`/admins/${encodeURIComponent(admin.id)}/${admin.active ? 'deactivate' : 'activate'}`, undefined, { headers: adminHeaders('admin-toggle') }), admin.active ? t('feedback.administratorDeactivated') : t('feedback.administratorReactivated'))) !== null
-    })) return;
-  }
-
   async function createRoom(values: { code: string; displayName: string; floor: string }): Promise<boolean> {
     const result = await perform<RoomDTO>('create-room', () => api.post<RoomDTO>('/rooms', {
       code: values.code,
@@ -618,7 +604,7 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
 
             {tab === 'overview' && <OverviewTab snapshot={snapshot} clockFormat={clockFormat} onOpenQueue={() => setTab('queue')} onRefresh={onRefresh} />}
             {tab === 'queue' && <QueueTab snapshot={snapshot} onViewHistory={(request) => void openRequestHistory(request)} />}
-            {tab === 'setup' && <SetupTab snapshot={snapshot} busy={mutationBusy} initialInstallationId={installationId} onCreateRoom={createRoom} onCreateArea={createArea} onCreateService={createService} onProvisionDevice={provisionDevice} onToggleDevice={toggleDevice} onRotateToken={rotateToken} onRebindDevice={rebindDevice} onToggleRoom={toggleRoom} onPatchRoom={patchRoom} onToggleArea={toggleArea} onPatchArea={patchArea} onToggleService={toggleService} onPatchService={patchService} onSaveSettings={updateSettings} onUploadRoomBackground={uploadRoomBackgroundImage} onUploadInformationImage={uploadInformationImage} onRepairInformationImage={repairInformationImage} onDeleteInformationImage={deleteInformationImage} onReorderInformationImages={reorderInformationImages} onCreateAdmin={createAdmin} onToggleAdmin={toggleAdmin} onRevokeToken={revokeToken} onRetireDevice={retireDevice} onAssignDevice={assignDevice} />}
+            {tab === 'setup' && <SetupTab snapshot={snapshot} busy={mutationBusy} initialInstallationId={installationId} onCreateRoom={createRoom} onCreateArea={createArea} onCreateService={createService} onProvisionDevice={provisionDevice} onToggleDevice={toggleDevice} onRotateToken={rotateToken} onRebindDevice={rebindDevice} onToggleRoom={toggleRoom} onPatchRoom={patchRoom} onToggleArea={toggleArea} onPatchArea={patchArea} onToggleService={toggleService} onPatchService={patchService} onSaveSettings={updateSettings} onUploadRoomBackground={uploadRoomBackgroundImage} onUploadInformationImage={uploadInformationImage} onRepairInformationImage={repairInformationImage} onDeleteInformationImage={deleteInformationImage} onReorderInformationImages={reorderInformationImages} onRevokeToken={revokeToken} onRetireDevice={retireDevice} onAssignDevice={assignDevice} />}
             {tab === 'audit' && <AuditTab snapshot={snapshot} clockFormat={clockFormat} />}
             {historyRequest !== null && <RequestHistoryDialog request={historyRequest} history={requestHistory} busy={historyBusy} error={historyError} clockFormat={clockFormat} onClose={closeRequestHistory} />}
           </div>
@@ -975,14 +961,12 @@ interface SetupTabProps {
   onRepairInformationImage: (id: string, files: InformationImageUploadSet) => Promise<boolean>;
   onDeleteInformationImage: (id: string) => Promise<boolean>;
   onReorderInformationImages: (ids: string[]) => Promise<boolean>;
-  onCreateAdmin: (username: string, password: string) => Promise<boolean>;
-  onToggleAdmin: (admin: AdminSystemSnapshot['admins'][number]) => Promise<void>;
   onRevokeToken: (deviceId: string) => Promise<void>;
   onRetireDevice: (deviceId: string) => Promise<void>;
   onAssignDevice: (device: AdminSystemSnapshot['devices'][number], values: { assignmentMode: DeviceAssignmentMode; roomId: string; areaId: string; reason: string }) => Promise<boolean>;
 }
 
-export function SetupTab({ snapshot, busy, initialInstallationId, onCreateRoom, onCreateArea, onCreateService, onProvisionDevice, onToggleDevice, onRotateToken, onRebindDevice, onToggleRoom, onPatchRoom, onToggleArea, onPatchArea, onToggleService, onPatchService, onSaveSettings, onUploadRoomBackground, onUploadInformationImage, onRepairInformationImage, onDeleteInformationImage, onReorderInformationImages, onCreateAdmin, onToggleAdmin, onRevokeToken, onRetireDevice, onAssignDevice }: SetupTabProps) {
+export function SetupTab({ snapshot, busy, initialInstallationId, onCreateRoom, onCreateArea, onCreateService, onProvisionDevice, onToggleDevice, onRotateToken, onRebindDevice, onToggleRoom, onPatchRoom, onToggleArea, onPatchArea, onToggleService, onPatchService, onSaveSettings, onUploadRoomBackground, onUploadInformationImage, onRepairInformationImage, onDeleteInformationImage, onReorderInformationImages, onRevokeToken, onRetireDevice, onAssignDevice }: SetupTabProps) {
   const { locale, t } = useI18n();
   const [section, setSection] = useState<SetupSection>('rooms');
   const resourceCounts: Partial<Record<SetupSection, number>> = {
@@ -1003,7 +987,7 @@ export function SetupTab({ snapshot, busy, initialInstallationId, onCreateRoom, 
     if (value === 'devices') return <DeviceManagement initialInstallationId={initialInstallationId} onProvision={async (values) => onProvisionDevice(values)} devices={snapshot.devices} rooms={snapshot.rooms} areas={snapshot.areas} busy={busy} onToggle={onToggleDevice} onRotate={onRotateToken} onRebind={onRebindDevice} onRevoke={onRevokeToken} onRetire={onRetireDevice} onAssign={onAssignDevice} />;
     if (value === 'information') return <InformationPanel images={snapshot.informationImages ?? []} settings={snapshot.settings} onSaveSettings={onSaveSettings} busy={busy} onUpload={onUploadInformationImage} onRepair={onRepairInformationImage} onDelete={onDeleteInformationImage} onReorder={onReorderInformationImages} />;
     if (value === 'settings') return <SettingsPanel settings={snapshot.settings} busy={busy} onSave={onSaveSettings} onUploadRoomBackground={onUploadRoomBackground} />;
-    return <AdminManagement admins={snapshot.admins} busy={busy} onCreate={onCreateAdmin} onToggle={onToggleAdmin} />;
+    return null;
   }
 
   return (

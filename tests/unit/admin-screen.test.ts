@@ -2,9 +2,9 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { AdminSystemSnapshot, InformationImageDTO, RequestDTO } from '@hotel/shared';
-import { AdminConfirmationDialog, AdminScreen, DeviceManagement, filterAdminRequests, type AdminRequestFilters } from '../../apps/web/src/features/admin/AdminScreen';
+import { AdminConfirmationDialog, AdminScreen, DeviceManagement, filterAdminRequests, SETUP_SECTIONS, SetupTab, type AdminRequestFilters } from '../../apps/web/src/features/admin/AdminScreen';
 import { getMissingInformationImageVariantFields, INFORMATION_IMAGE_UPLOAD_FIELDS, InformationImageSourceField, InformationPanel } from '../../apps/web/src/features/admin/InformationPanel';
-import { AdminManagement, buildSettingsChanges, CatalogPanels, SettingsPanel } from '../../apps/web/src/features/admin/SetupPanels';
+import { buildSettingsChanges, CatalogPanels, SettingsPanel } from '../../apps/web/src/features/admin/SetupPanels';
 import { filterAdminItems } from '../../apps/web/src/features/admin/admin-search';
 import { I18nProvider, SpanishI18nProvider } from '../../apps/web/src/i18n';
 import { createElement } from 'react';
@@ -533,23 +533,6 @@ describe('admin request filters', () => {
     expect(markup).not.toContain('>Retire</button>');
   });
 
-  it('renders administrator actions as inline icon-only controls with accessible names', () => {
-    const markup = renderToStaticMarkup(createElement(I18nProvider, {
-      children: createElement(AdminManagement, {
-        admins: [{ id: 'admin-1', username: 'operations', active: true, lastLoginAt: null }],
-        busy: false,
-        onCreate: async () => true,
-        onToggle: async () => undefined
-      })
-    }));
-
-    expect(markup).toContain('class="icon-button admin-item-action"');
-    expect(markup).toContain('aria-label="Deactivate"');
-    expect(markup).toContain('title="Deactivate"');
-    expect(markup).toContain('lucide-power-off');
-    expect(markup).not.toContain('>Deactivate</button>');
-  });
-
   it('uses library icons for administrative navigation and actions', () => {
     const markup = renderToStaticMarkup(createElement(I18nProvider, {
       children: createElement(AdminScreen, {
@@ -680,6 +663,39 @@ describe('admin request filters', () => {
     expect(markup).toContain('Deactivate room');
     expect(markup).toContain('Guests will no longer be able to request services from this room.');
     expect(markup).toContain('button--danger');
+  });
+
+  it('removes administrator management while keeping self-service password change in the Admin screen', () => {
+    const setupMarkup = renderToStaticMarkup(createElement(I18nProvider, {
+      children: createElement(SetupTab, {
+        snapshot: createAdminSnapshot(),
+        busy: false,
+        initialInstallationId: null
+      } as never)
+    }));
+    const adminMarkup = renderToStaticMarkup(createElement(I18nProvider, {
+      children: createElement(AdminScreen, {
+        snapshot: createAdminSnapshot(),
+        csrfToken: 'csrf-token',
+        installationId: null,
+        connectionStatus: 'online',
+        onRefresh: async () => undefined,
+        onLogout: async () => undefined,
+        onUseDeviceToken: async () => undefined,
+        onChangePassword: async () => undefined
+      })
+    }));
+
+    expect(SETUP_SECTIONS).not.toContain('admins');
+    expect(setupMarkup).not.toContain('data-admin-setup-tab="admins"');
+    expect(setupMarkup).not.toContain('id="setup-panel-admins"');
+    expect(adminMarkup).toContain('Change password');
+    expect(adminMarkup).toContain('aria-label="Change password"');
+    const commandHeaderStart = adminMarkup.indexOf('admin-command-header');
+    const passwordButton = adminMarkup.indexOf('aria-label="Change password"');
+    const commandHeaderEnd = adminMarkup.indexOf('</header>', commandHeaderStart);
+    expect(passwordButton).toBeGreaterThan(commandHeaderStart);
+    expect(passwordButton).toBeLessThan(commandHeaderEnd);
   });
 
   it('uses the configured clock format for administrative timestamps', () => {

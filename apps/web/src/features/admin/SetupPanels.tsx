@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, Moon, Pencil, Plus, Power, PowerOff, Upload, X } from 'lucide-react';
 import * as Shared from '@hotel/shared';
-import type { AdminDTO, AreaDTO, LocalizedTextVariants, RoomBackgroundValue, RoomDTO, ServiceDTO, SettingDTO, SettingKey } from '@hotel/shared';
+import type { AreaDTO, LocalizedTextVariants, RoomBackgroundValue, RoomDTO, ServiceDTO, SettingDTO, SettingKey } from '@hotel/shared';
 import { Modal } from '../../components/Modal';
 import { TouchSelect, type TouchSelectOption } from '../../components/TouchSelect';
 import { ServiceIcon } from '../../components/ServiceIcon';
@@ -415,18 +415,3 @@ function loadImage(source: string): Promise<HTMLImageElement> {
     image.src = source;
   });
 }
-
-interface AdminManagementProps {
-  admins: AdminDTO[];
-  busy: boolean;
-  onCreate: (username: string, password: string) => Promise<boolean>;
-  onToggle: (admin: AdminDTO) => Promise<void>;
-}
-
-export function AdminManagement({ admins, busy, onCreate, onToggle }: AdminManagementProps) {
-  const { locale, t } = useI18n();
-  const [username, setUsername] = useState(''); const [password, setPassword] = useState('');
-  return <section className="surface-card admin-management" aria-labelledby="admin-management-title"><div className="panel-card__heading"><div><p className="eyebrow eyebrow--muted">{t('admin.access')}</p><h2 id="admin-management-title">{t('admin.administrators')}</h2></div><span className="section-count">{admins.length}</span></div><div className="admin-management__body"><form className="admin-create-form" onSubmit={async (event) => { event.preventDefault(); if (await onCreate(username, password)) { setUsername(''); setPassword(''); } }}><Field label={t('auth.username')} value={username} onChange={setUsername} required /><Field label={t('auth.password')} type="password" value={password} onChange={setPassword} required /><button className="button button--dark" type="submit" disabled={busy}>{t('admin.addAdministrator')}</button></form><div className="admin-list">{admins.map((admin) => { const toggleLabel = admin.active ? t('admin.deactivate') : t('admin.reactivate'); return <div className="admin-row" key={admin.id}><div><strong>{admin.username}</strong><span>{admin.active ? t('admin.active') : t('admin.inactive')} · {admin.lastLoginAt === null ? t('admin.neverSignedIn') : t('admin.lastSeen', { time: formatAdminDate(admin.lastLoginAt, locale) })}</span></div><button className="icon-button admin-item-action" type="button" onClick={() => void onToggle(admin)} disabled={busy} aria-label={toggleLabel} title={toggleLabel} data-admin-action={admin.active ? 'danger' : undefined}>{admin.active ? <PowerOff aria-hidden="true" size={17} strokeWidth={1.9} /> : <Power aria-hidden="true" size={17} strokeWidth={1.9} />}</button></div>; })}</div></div></section>;
-}
-
-function formatAdminDate(value: string, locale: 'en' | 'es'): string { return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric' }).format(new Date(value)); }
