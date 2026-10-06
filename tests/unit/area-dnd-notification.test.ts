@@ -36,6 +36,10 @@ vi.mock('../../apps/web/node_modules/react', async (importOriginal) => {
   const actual = await importOriginal<typeof React>();
   return {
     ...actual,
+    useCallback: <T>(callback: T, _deps: readonly unknown[]): T => {
+      hookHarness.hookIndex += 1;
+      return callback;
+    },
     useState: <T>(initialState: T | (() => T)): [T, (next: T | ((current: T) => T)) => void] => {
       const index = hookHarness.hookIndex++;
       if (!hookHarness.stateIndexes.has(index)) {
@@ -94,7 +98,8 @@ describe('AREA DND transition notifications', () => {
       setInterval: vi.fn(() => 1),
       clearInterval: vi.fn(),
       addEventListener: vi.fn(),
-      removeEventListener: vi.fn()
+      removeEventListener: vi.fn(),
+      location: { search: '' }
     });
 
     const legacySnapshot = createAreaSnapshot([]);
@@ -160,6 +165,89 @@ describe('AREA DND transition notifications', () => {
     expect(findElementByClassName(noRoomsView, 'area-dnd-strip')).toBeUndefined();
   });
 
+  it('requires a trimmed responsible name in the pending start form and never starts from the queue shortcut', async () => {
+    hookHarness.reset();
+    stubWindow();
+    const request = createAreaPendingRequest();
+    const secondRequest = {
+      ...request,
+      id: 'request-pending-2',
+      roomId: 'room-2',
+      room: { id: 'room-2', code: '202', displayName: 'Room 202', doNotDisturb: false },
+      service: { ...request.service, id: 'service-2', code: 'water', displayName: 'Water delivery' }
+    };
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _requestInit?: RequestInit) => new Response(JSON.stringify({ data: request, requestId: 'request-1' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const snapshot = createAreaSnapshot([], [request, secondRequest]);
+    const area = getAreaDisplayElement(snapshot);
+
+    let view = renderAreaDisplay(area, snapshot);
+    const startButton = findElementsByClassName(view, 'queue-card__action')[1];
+    const startAction = startButton?.props['onClick'];
+    if (typeof startAction !== 'function') throw new Error('The second request should expose its start action.');
+    startAction();
+    await flushPromises();
+    view = renderAreaDisplay(area, snapshot);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    let modal = findElementByClassName(view, 'area-pending-confirmation-modal');
+    expect(modal).toBeDefined();
+    expect(collectText(modal)).toContain('Water delivery');
+
+    let responsibleInput = findElementByClassName(modal!, 'area-responsible-input');
+    let submitButton = findElementByClassName(modal!, 'area-responsible-submit');
+    expect(responsibleInput?.props['required']).toBe(true);
+    expect(submitButton?.props['disabled']).toBe(true);
+
+    const onChange = responsibleInput?.props['onChange'];
+    if (typeof onChange !== 'function') throw new Error('The responsible name field should accept input.');
+    onChange({ target: { value: '   ' } });
+    view = renderAreaDisplay(area, snapshot);
+    modal = findElementByClassName(view, 'area-pending-confirmation-modal');
+    submitButton = findElementByClassName(modal!, 'area-responsible-submit');
+    expect(submitButton?.props['disabled']).toBe(true);
+
+    responsibleInput = findElementByClassName(modal!, 'area-responsible-input');
+    const onNameChange = responsibleInput?.props['onChange'];
+    if (typeof onNameChange !== 'function') throw new Error('The responsible name field should accept input.');
+    onNameChange({ target: { value: '  Taylor  ' } });
+    view = renderAreaDisplay(area, snapshot);
+    modal = findElementByClassName(view, 'area-pending-confirmation-modal');
+    submitButton = findElementByClassName(modal!, 'area-responsible-submit');
+    expect(submitButton?.props['disabled']).toBe(false);
+
+    const form = findElementByClassName(modal!, 'area-pending-confirmation');
+    const submit = form?.props['onSubmit'];
+    if (typeof submit !== 'function') throw new Error('The responsible start form should be submittable.');
+    submit({ preventDefault: vi.fn() });
+    await flushPromises();
+
+    const requestInit = fetchMock.mock.calls[0]?.[1];
+    expect(JSON.parse(String(requestInit?.body))).toMatchObject({ expectedVersion: 1, responsibleName: 'Taylor' });
+  });
+
+  it('opens the selected notification request in the same responsible form', () => {
+    hookHarness.reset();
+    stubWindow();
+    const request = createAreaPendingRequest();
+    const secondRequest = {
+      ...request,
+      id: 'request-from-notification',
+      roomId: 'room-from-notification',
+      room: { id: 'room-from-notification', code: '303', displayName: 'Room 303', doNotDisturb: false },
+      service: { ...request.service, displayName: 'Extra pillows' }
+    };
+    (window as Window & { location: { search: string } }).location.search = '?startRequestId=request-from-notification';
+    const snapshot = createAreaSnapshot([], [request, secondRequest]);
+
+    const area = getAreaDisplayElement(snapshot);
+    const view = renderAreaDisplay(area, snapshot);
+    const modal = findElementByClassName(view, 'area-pending-confirmation-modal');
+
+    expect(collectText(modal)).toContain('Extra pillows');
+    expect(findElementByClassName(modal!, 'area-responsible-input')?.props['required']).toBe(true);
+  });
+
   it('plays one shared tone for each DND room-set change, but not the initial or unrelated snapshot', async () => {
     hookHarness.reset();
     const context = createFakeAudioContext();
@@ -169,7 +257,8 @@ describe('AREA DND transition notifications', () => {
       setInterval: vi.fn(() => 1),
       clearInterval: vi.fn(),
       addEventListener: vi.fn(),
-      removeEventListener: vi.fn()
+      removeEventListener: vi.fn(),
+      location: { search: '' }
     });
 
     const initialRooms = [createDoNotDisturbRoom('room-1', '101')];
@@ -226,7 +315,8 @@ describe('AREA DND transition notifications', () => {
       setInterval: vi.fn(() => 1),
       clearInterval: vi.fn(),
       addEventListener: vi.fn(),
-      removeEventListener: vi.fn()
+      removeEventListener: vi.fn(),
+      location: { search: '' }
     });
 
     const firstRoom = createDoNotDisturbRoom('room-1', '101');
@@ -350,6 +440,11 @@ function findElementByClassName(root: TestElement, className: string): TestEleme
   return undefined;
 }
 
+function findElementsByClassName(root: TestElement, className: string): TestElement[] {
+  const matches = typeof root.props['className'] === 'string' && root.props['className'].split(/\s+/).includes(className) ? [root] : [];
+  return [...matches, ...toElements(root.props['children']).flatMap((child) => findElementsByClassName(child, className))];
+}
+
 function selectDoNotDisturbTab(root: TestElement): void {
   const button = findDoNotDisturbTab(root);
   const onClick = button?.props['onClick'];
@@ -429,7 +524,8 @@ function stubWindow(): void {
     setInterval: vi.fn(() => 1),
     clearInterval: vi.fn(),
     addEventListener: vi.fn(),
-    removeEventListener: vi.fn()
+    removeEventListener: vi.fn(),
+    location: { search: '' }
   });
 }
 

@@ -1,10 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import type { AdminSystemSnapshot, InformationImageDTO, RequestDTO } from '@hotel/shared';
-import { AdminConfirmationDialog, AdminScreen, DeviceManagement, filterAdminRequests, SETUP_SECTIONS, SetupTab, type AdminRequestFilters } from '../../apps/web/src/features/admin/AdminScreen';
+import type { AdminSystemSnapshot, InformationImageDTO, RequestDTO, RequestHistoryDTO } from '@hotel/shared';
+import { AdminConfirmationDialog, AdminQueueTab, AdminScreen, DeviceManagement, filterAdminRequests, RequestHistoryDialog, SETUP_SECTIONS, SetupTab, type AdminRequestFilters } from '../../apps/web/src/features/admin/AdminScreen';
+import { ADMIN_QUEUE_CLOCK_TICK_MS, ADMIN_QUEUE_TABS, buildAdminRequestLifecycle, formatAdminDuration, getAdminRequestDelayState, resolveAdminQueueDelayThresholds } from '../../apps/web/src/features/admin/admin-request-timing';
 import { getMissingInformationImageVariantFields, INFORMATION_IMAGE_UPLOAD_FIELDS, InformationImageSourceField, InformationPanel } from '../../apps/web/src/features/admin/InformationPanel';
-import { buildSettingsChanges, CatalogPanels, SettingsPanel } from '../../apps/web/src/features/admin/SetupPanels';
+import { buildSettingsChanges, CatalogPanels, RoomBackgroundPreview, SettingsPanel } from '../../apps/web/src/features/admin/SetupPanels';
 import { filterAdminItems } from '../../apps/web/src/features/admin/admin-search';
 import { I18nProvider, SpanishI18nProvider } from '../../apps/web/src/i18n';
 import { createElement } from 'react';
@@ -38,6 +39,64 @@ describe('admin request filters', () => {
       { key: 'hotelLogo', value: 'data:image/png;base64,AAAA', updatedAt: '2026-08-31T09:05:00.000Z', updatedByAdminId: null },
       { key: 'roomBackground', value: 'data:image/png;base64,BBBB', updatedAt: '2026-08-31T09:05:00.000Z', updatedByAdminId: null }
     ], { hotelLogo: '', roomBackground: '' })).toEqual({ hotelLogo: null, roomBackground: null });
+  });
+
+  it('renders one source preview while a room background upload is pending', () => {
+    const markup = renderToStaticMarkup(createElement(I18nProvider, {
+      children: createElement(RoomBackgroundPreview, {
+        value: {
+          square480: 'data:image/webp;base64,SAVED-SQUARE',
+          tablet: 'data:image/webp;base64,SAVED-TABLET'
+        },
+        pendingPreviewUrl: 'blob:pending-room-background'
+      })
+    }));
+
+    expect(markup.match(/<img\b/g)).toHaveLength(1);
+    expect(markup).toContain('src="blob:pending-room-background"');
+    expect(markup).not.toContain('data:image/webp;base64,SAVED-SQUARE');
+    expect(markup).not.toContain('data:image/webp;base64,SAVED-TABLET');
+  });
+
+  it('renders the square crop once as the representative saved room background preview', () => {
+    const markup = renderToStaticMarkup(createElement(I18nProvider, {
+      children: createElement(RoomBackgroundPreview, {
+        value: {
+          square480: 'data:image/webp;base64,SQUARE',
+          tablet: 'data:image/webp;base64,TABLET'
+        },
+        pendingPreviewUrl: null
+      })
+    }));
+
+    expect(markup.match(/<img\b/g)).toHaveLength(1);
+    expect(markup).toContain('data-room-background-variant="square480"');
+    expect(markup).toContain('src="data:image/webp;base64,SQUARE"');
+    expect(markup).not.toContain('src="data:image/webp;base64,TABLET"');
+  });
+
+  it('keeps timezone settings available without exposing manual location coordinate inputs', () => {
+    const markup = renderToStaticMarkup(createElement(I18nProvider, {
+      children: createElement(SettingsPanel, {
+        settings: [
+          { key: 'timeZone', value: 'America/Cancun', updatedAt: '2026-08-31T09:05:00.000Z', updatedByAdminId: null },
+          { key: 'weatherLocationName', value: '', updatedAt: '2026-08-31T09:05:00.000Z', updatedByAdminId: null },
+          { key: 'weatherLatitude', value: null, updatedAt: '2026-08-31T09:05:00.000Z', updatedByAdminId: null },
+          { key: 'weatherLongitude', value: null, updatedAt: '2026-08-31T09:05:00.000Z', updatedByAdminId: null }
+        ] as never,
+        busy: false,
+        onSave: async () => undefined,
+        onUploadRoomBackground: async () => true
+      })
+    }));
+
+    expect(markup).toContain('setting-timeZone');
+    expect(markup).toContain('Checking city search availability');
+    expect(markup).toContain('class="form-field city-search-field"');
+    expect(markup).toContain('href="https://www.geoapify.com/pricing/"');
+    expect(markup).toContain('target="_blank" rel="noopener noreferrer">Powered by Geoapify</a>');
+    expect(markup).not.toContain('setting-weatherLatitude');
+    expect(markup).not.toContain('setting-weatherLongitude');
   });
 
   it('renders a localized room background upload control', () => {
@@ -643,28 +702,6 @@ describe('admin request filters', () => {
     expect(spanishMarkup).toContain('aria-label="Cambiar contraseña"');
   });
 
-  it('propagates the assignment mode with a provisioned one-time credential', () => {
-    expect(adminScreenSource).toContain('assignmentMode: result.data.device.assignmentMode');
-  });
-
-  it('renders the Admin confirmation as a constrained, targetable modal', () => {
-    const markup = renderToStaticMarkup(createElement(I18nProvider, {
-      children: createElement(AdminConfirmationDialog, {
-        title: 'Deactivate room',
-        copy: 'Guests will no longer be able to request services from this room.',
-        danger: true,
-        busy: false,
-        onClose: () => undefined,
-        onConfirm: () => undefined
-      })
-    }));
-
-    expect(markup).toContain('admin-confirmation-modal');
-    expect(markup).toContain('Deactivate room');
-    expect(markup).toContain('Guests will no longer be able to request services from this room.');
-    expect(markup).toContain('button--danger');
-  });
-
   it('removes administrator management while keeping self-service password change in the Admin screen', () => {
     const setupMarkup = renderToStaticMarkup(createElement(I18nProvider, {
       children: createElement(SetupTab, {
@@ -698,6 +735,28 @@ describe('admin request filters', () => {
     expect(passwordButton).toBeLessThan(commandHeaderEnd);
   });
 
+  it('propagates the assignment mode with a provisioned one-time credential', () => {
+    expect(adminScreenSource).toContain('assignmentMode: result.data.device.assignmentMode');
+  });
+
+  it('renders the Admin confirmation as a constrained, targetable modal', () => {
+    const markup = renderToStaticMarkup(createElement(I18nProvider, {
+      children: createElement(AdminConfirmationDialog, {
+        title: 'Deactivate room',
+        copy: 'Guests will no longer be able to request services from this room.',
+        danger: true,
+        busy: false,
+        onClose: () => undefined,
+        onConfirm: () => undefined
+      })
+    }));
+
+    expect(markup).toContain('admin-confirmation-modal');
+    expect(markup).toContain('Deactivate room');
+    expect(markup).toContain('Guests will no longer be able to request services from this room.');
+    expect(markup).toContain('button--danger');
+  });
+
   it('uses the configured clock format for administrative timestamps', () => {
     const snapshot = createAdminSnapshot();
     snapshot.settings = [{ key: 'clockFormat', value: '24h', updatedAt: '2026-08-31T09:05:00.000Z', updatedByAdminId: null }];
@@ -726,6 +785,315 @@ describe('admin request filters', () => {
 
     expect(markup).toMatch(/Aug 31.*\d{2}:\d{2}/);
     expect(markup).not.toMatch(/Aug 31.*[AP]M/);
+  });
+});
+
+describe('responsible attribution in Admin request views', () => {
+  it('shows the responsible person or localized unassigned fallback in every queue lifecycle state', () => {
+    for (const status of ['PENDING', 'IN_PROGRESS', 'COMPLETED'] as const) {
+      const assigned = makeRequest({
+        id: `request-${status.toLowerCase()}`,
+        status,
+        acceptedAt: status === 'PENDING' ? null : '2026-08-15T09:05:00.000Z',
+        inProgressAt: status === 'PENDING' ? null : '2026-08-15T09:10:00.000Z',
+        completedAt: status === 'COMPLETED' ? '2026-08-15T09:25:00.000Z' : null,
+        responsibleName: 'Taylor Morgan'
+      });
+      const assignedMarkup = renderQueueRequest(assigned, 'en');
+      expect(assignedMarkup).toContain('Taylor Morgan');
+      expect(assignedMarkup).toContain('Responsible');
+
+      const legacyMarkup = renderQueueRequest({ ...assigned, responsibleName: null }, 'es');
+      expect(legacyMarkup).toContain('Sin asignar');
+      expect(legacyMarkup).toContain('Responsable');
+    }
+  });
+
+  it('keeps the entered responsible separate from the actor in request history', () => {
+    const request = makeRequest({ status: 'COMPLETED', responsibleName: 'Taylor Morgan' });
+    const history: RequestHistoryDTO[] = [
+      {
+        id: 'history-start', requestId: request.id, fromStatus: 'PENDING', toStatus: 'IN_PROGRESS',
+        actorType: 'DEVICE', actorId: 'device-actor-1', requestVersion: 2, createdAt: '2026-08-15T09:10:00.000Z',
+        responsibleName: 'Taylor Morgan'
+      },
+      {
+        id: 'history-complete', requestId: request.id, fromStatus: 'IN_PROGRESS', toStatus: 'COMPLETED',
+        actorType: 'ADMIN', actorId: 'admin-actor-1', requestVersion: 3, createdAt: '2026-08-15T09:25:00.000Z',
+        responsibleName: null
+      }
+    ];
+    const markup = renderToStaticMarkup(createElement(I18nProvider, {
+      children: createElement(RequestHistoryDialog, {
+        request, history, busy: false, error: null, clockFormat: '24h', onClose: () => undefined
+      })
+    }));
+
+    expect(markup).toContain('Taylor Morgan');
+    expect(markup).toContain('device-actor-1');
+    expect(markup).toContain('admin-actor-1');
+    expect(markup).not.toContain('Unassigned');
+
+    const legacyMarkup = renderToStaticMarkup(createElement(I18nProvider, {
+      children: createElement(RequestHistoryDialog, {
+        request: { ...request, responsibleName: null },
+        history: [{ ...history[0]!, responsibleName: null }],
+        busy: false, error: null, clockFormat: '24h', onClose: () => undefined
+      })
+    }));
+    expect(legacyMarkup).toContain('Unassigned');
+  });
+
+  it('formats request-history timestamps in the shared configured timezone', () => {
+    const request = makeRequest({ id: 'request-timezone' });
+    const history: RequestHistoryDTO[] = [{
+      id: 'history-timezone', requestId: request.id, fromStatus: null, toStatus: 'PENDING',
+      actorType: 'SYSTEM', actorId: null, requestVersion: 1, createdAt: '2026-10-01T02:15:00.000Z'
+    }];
+    const markup = renderToStaticMarkup(createElement(I18nProvider, {
+      children: createElement(RequestHistoryDialog, {
+        request, history, busy: false, error: null, clockFormat: '12h', timeZone: 'America/Cancun', onClose: () => undefined
+      })
+    }));
+
+    expect(markup).toContain('Sep 30, 9:15 PM');
+    expect(markup).not.toContain('Oct 1, 2:15 AM');
+  });
+});
+
+function renderQueueRequest(request: RequestDTO, locale: 'en' | 'es'): string {
+  const Provider = locale === 'es' ? SpanishI18nProvider : I18nProvider;
+  const snapshot = { ...createAdminSnapshot(), requests: [request] };
+  return renderToStaticMarkup(createElement(Provider, {
+    children: createElement(AdminQueueTab, {
+      snapshot,
+      onViewHistory: () => undefined,
+      initialStatus: request.status === 'PENDING' ? 'PENDING' : request.status === 'COMPLETED' ? 'COMPLETED' : 'IN_PROGRESS',
+      initialNow: new Date('2026-08-15T09:30:00.000Z')
+    })
+  }));
+}
+
+describe('admin live queue lifecycle and delay timing', () => {
+  it('exposes pending, in-progress, completed, and No molestar queue tabs', () => {
+    expect(ADMIN_QUEUE_TABS).toEqual(['PENDING', 'IN_PROGRESS', 'COMPLETED', 'DO_NOT_DISTURB']);
+  });
+
+  it.each([
+    [59_999, 'just now', 'ahora'],
+    [60_000, '1min', '1min'],
+    [59 * 60_000, '59min', '59min'],
+    [60 * 60_000, '1h', '1h'],
+    [24 * 60 * 60_000 - 60_000, '23h 59min', '23h 59min'],
+    [24 * 60 * 60_000, '1d', '1d'],
+    [25 * 60 * 60_000 + 5 * 60_000, '1d 1h 5min', '1d 1h 5min']
+  ])('formats %i ms as compact days, hours, and minutes', (durationMs, english, spanish) => {
+    expect(formatAdminDuration(durationMs, 'en')).toBe(english);
+    expect(formatAdminDuration(durationMs, 'es')).toBe(spanish);
+  });
+
+  it('calculates the complete direct pending-to-in-progress lifecycle', () => {
+    const lifecycle = buildAdminRequestLifecycle(makeRequest({
+      status: 'COMPLETED',
+      createdAt: '2026-09-29T09:00:00.000Z',
+      inProgressAt: '2026-09-29T09:03:00.000Z',
+      completedAt: '2026-09-29T09:18:00.000Z'
+    }));
+
+    expect(lifecycle.segments.map(({ stage, durationMs }) => [stage, durationMs])).toEqual([
+      ['PENDING', 3 * 60_000],
+      ['IN_PROGRESS', 15 * 60_000]
+    ]);
+    expect(lifecycle.totalDurationMs).toBe(18 * 60_000);
+  });
+
+  it('includes the legacy accepted interval when both accepted and in-progress timestamps exist', () => {
+    const lifecycle = buildAdminRequestLifecycle(makeRequest({
+      status: 'COMPLETED',
+      createdAt: '2026-09-29T09:00:00.000Z',
+      acceptedAt: '2026-09-29T09:02:00.000Z',
+      inProgressAt: '2026-09-29T09:07:00.000Z',
+      completedAt: '2026-09-29T09:17:00.000Z'
+    }));
+
+    expect(lifecycle.segments.map(({ stage, durationMs }) => [stage, durationMs])).toEqual([
+      ['PENDING', 2 * 60_000],
+      ['ACCEPTED', 5 * 60_000],
+      ['IN_PROGRESS', 10 * 60_000]
+    ]);
+    expect(lifecycle.totalDurationMs).toBe(17 * 60_000);
+  });
+
+  it('marks each active stage overdue at its configured threshold and refreshes elapsed age', () => {
+    const pending = makeRequest({ status: 'PENDING', createdAt: '2026-09-29T09:00:00.000Z' });
+    const thresholds = { pendingMinutes: 3, inProgressMinutes: 15 };
+    const beforeWarning = getAdminRequestDelayState(pending, new Date('2026-09-29T09:02:59.000Z'), thresholds);
+    const afterWarning = getAdminRequestDelayState(pending, new Date('2026-09-29T09:03:00.000Z'), thresholds);
+
+    expect(beforeWarning).toMatchObject({ elapsedMs: 179_000, overdue: false });
+    expect(afterWarning).toMatchObject({ elapsedMs: 180_000, overdue: true });
+    expect(ADMIN_QUEUE_CLOCK_TICK_MS).toBeGreaterThan(0);
+  });
+
+  it('uses acceptedAt as a legacy in-progress start and applies its own configured threshold', () => {
+    const request = makeRequest({ status: 'ACCEPTED', acceptedAt: '2026-09-29T09:00:00.000Z' });
+    const delay = getAdminRequestDelayState(request, new Date('2026-09-29T09:15:00.000Z'), { pendingMinutes: 3, inProgressMinutes: 15 });
+
+    expect(delay).toMatchObject({ stage: 'IN_PROGRESS', startedAt: '2026-09-29T09:00:00.000Z', elapsedMs: 900_000, overdue: true });
+  });
+
+  it('uses the persisted threshold settings and falls back to defaults when missing or invalid', () => {
+    expect(resolveAdminQueueDelayThresholds([
+      { key: 'requests.pendingDelayWarningMinutes', value: 6 },
+      { key: 'requests.inProgressDelayWarningMinutes', value: 'invalid' }
+    ])).toEqual({ pendingMinutes: 6, inProgressMinutes: 15 });
+  });
+
+  it('renders four queue tabs and marks an active request overdue at the configured boundary', () => {
+    const snapshot = createAdminSnapshot();
+    snapshot.requests = [makeRequest({ status: 'PENDING', createdAt: '2026-09-29T09:00:00.000Z' })];
+    snapshot.settings = [
+      { key: 'requests.pendingDelayWarningMinutes', value: 3, updatedAt: '2026-09-29T09:00:00.000Z', updatedByAdminId: null },
+      { key: 'requests.inProgressDelayWarningMinutes', value: 15, updatedAt: '2026-09-29T09:00:00.000Z', updatedByAdminId: null }
+    ];
+    const markup = renderToStaticMarkup(createElement(I18nProvider, {
+      children: createElement(AdminQueueTab, {
+        snapshot,
+        initialNow: new Date('2026-09-29T09:03:00.000Z'),
+        onViewHistory: () => undefined
+      })
+    }));
+
+    expect(markup.match(/data-admin-queue-tab=/g)).toHaveLength(4);
+    expect(markup).not.toContain('data-admin-queue-tab="ALL"');
+    expect(markup).toContain('aria-pressed="true"');
+    expect(markup).toContain('data-admin-stage-overdue="true"');
+    expect(markup).toContain('Overdue');
+    expect(adminScreenSource).toContain('setInterval(() => setNow(new Date()), ADMIN_QUEUE_CLOCK_TICK_MS)');
+  });
+
+  it('renders the completed request lifecycle and total from its recorded timestamps', () => {
+    const snapshot = createAdminSnapshot();
+    snapshot.requests = [makeRequest({
+      status: 'COMPLETED',
+      createdAt: '2026-09-29T09:00:00.000Z',
+      inProgressAt: '2026-09-29T09:03:00.000Z',
+      completedAt: '2026-09-29T09:18:00.000Z'
+    })];
+    const markup = renderToStaticMarkup(createElement(I18nProvider, {
+      children: createElement(AdminQueueTab, { snapshot, initialStatus: 'COMPLETED', onViewHistory: () => undefined })
+    }));
+
+    expect(markup).toContain('Lifecycle');
+    expect(markup).toContain('Pending');
+    expect(markup).toContain('In progress');
+    expect(markup).toContain('Total elapsed');
+    expect(markup).toContain('3min');
+    expect(markup).toContain('15min');
+    expect(markup).toContain('18min');
+  });
+
+  it('labels a legacy accepted interval separately from in-progress work', () => {
+    const snapshot = createAdminSnapshot();
+    snapshot.requests = [makeRequest({
+      status: 'COMPLETED',
+      createdAt: '2026-09-29T09:00:00.000Z',
+      acceptedAt: '2026-09-29T09:02:00.000Z',
+      inProgressAt: '2026-09-29T09:07:00.000Z',
+      completedAt: '2026-09-29T09:17:00.000Z'
+    })];
+    const markup = renderToStaticMarkup(createElement(I18nProvider, {
+      children: createElement(AdminQueueTab, { snapshot, initialStatus: 'COMPLETED', onViewHistory: () => undefined })
+    }));
+
+    expect(markup).toContain('Accepted');
+    expect(markup).toContain('In progress');
+    expect(markup).toContain('5min');
+  });
+
+  it('renders long active-stage ages with localized ago copy', () => {
+    const snapshot = createAdminSnapshot();
+    snapshot.requests = [makeRequest({ status: 'PENDING', createdAt: '2026-09-27T00:00:00.000Z' })];
+    const now = new Date('2026-09-29T03:05:00.000Z');
+    const englishMarkup = renderToStaticMarkup(createElement(I18nProvider, {
+      children: createElement(AdminQueueTab, { snapshot, initialNow: now, onViewHistory: () => undefined })
+    }));
+    const spanishMarkup = renderToStaticMarkup(createElement(SpanishI18nProvider, {
+      children: createElement(AdminQueueTab, { snapshot, initialNow: now, onViewHistory: () => undefined })
+    }));
+
+    expect(englishMarkup).toContain('2d 3h 5min ago');
+    expect(spanishMarkup).toContain('hace 2d 3h 5min');
+  });
+
+  it('renders the active No molestar rooms tab with Area-matching time and severity', () => {
+    const snapshot = Object.assign(createAdminSnapshot(), {
+      activeDoNotDisturbRooms: [
+        { id: 'room-101', code: '101', displayName: 'Room 101', doNotDisturb: true, doNotDisturbActivatedAt: '2026-08-31T11:06:00.000Z' },
+        { id: 'room-202', code: '202', displayName: 'Room 202', doNotDisturb: true, doNotDisturbActivatedAt: null }
+      ]
+    });
+    const renderAt = (initialNow: Date, activeSnapshot = snapshot) => renderToStaticMarkup(createElement(I18nProvider, {
+      children: createElement(AdminQueueTab, { snapshot: activeSnapshot, initialStatus: 'DO_NOT_DISTURB' as never, initialNow, onViewHistory: () => undefined })
+    }));
+    const baselineMarkup = renderAt(new Date('2026-08-31T12:05:00.000Z'));
+
+    expect(baselineMarkup).toContain('data-admin-queue-tab="DO_NOT_DISTURB"');
+    expect(baselineMarkup).toContain('Do not disturb');
+    expect(baselineMarkup).toContain('area-dnd-tab-count--gray');
+    expect(baselineMarkup).toContain('>2</span>');
+    expect(baselineMarkup).toContain('area-dnd-room--gray');
+    expect(baselineMarkup).toContain('Active for 59m');
+    expect(baselineMarkup).toContain('Time unavailable');
+    expect(baselineMarkup).toContain('202');
+
+    const warningMarkup = renderAt(new Date('2026-08-31T12:06:00.000Z'));
+    expect(warningMarkup).toContain('area-dnd-tab-count--yellow');
+    expect(warningMarkup).toContain('area-dnd-room--yellow');
+
+    const criticalMarkup = renderAt(new Date('2026-08-31T14:06:00.000Z'));
+    expect(criticalMarkup).toContain('area-dnd-tab-count--red');
+    expect(criticalMarkup).toContain('area-dnd-room--red');
+
+    const refreshedSnapshot = { ...snapshot, activeDoNotDisturbRooms: snapshot.activeDoNotDisturbRooms.slice(0, 1) };
+    const refreshedMarkup = renderAt(new Date('2026-08-31T12:06:00.000Z'), refreshedSnapshot);
+    expect(refreshedMarkup).toContain('area-dnd-tab-count--yellow');
+    expect(refreshedMarkup).toContain('>1</span>');
+    expect(refreshedMarkup).not.toContain('Room 202');
+
+    const longDurationSnapshot = { ...snapshot, activeDoNotDisturbRooms: [{
+      id: 'room-long', code: '303', displayName: 'Room 303', doNotDisturb: true, doNotDisturbActivatedAt: '2026-08-29T09:00:00.000Z'
+    }] };
+    expect(renderAt(new Date('2026-08-31T12:05:00.000Z'), longDurationSnapshot)).toContain('Active for 2d 3h 5min');
+
+    const spanishMarkup = renderToStaticMarkup(createElement(SpanishI18nProvider, {
+      children: createElement(AdminQueueTab, { snapshot, initialStatus: 'DO_NOT_DISTURB' as never, initialNow: new Date('2026-08-31T12:05:00.000Z'), onViewHistory: () => undefined })
+    }));
+    expect(spanishMarkup).toContain('No molestar');
+    expect(spanishMarkup).toContain('Activo desde hace 59min');
+
+    const emptySnapshot = { ...snapshot, activeDoNotDisturbRooms: [] };
+    const emptyMarkup = renderAt(new Date('2026-08-31T12:06:00.000Z'), emptySnapshot);
+    expect(emptyMarkup).toContain('data-admin-queue-tab="DO_NOT_DISTURB"');
+    expect(emptyMarkup).not.toContain('area-dnd-tab-count');
+    expect(emptyMarkup).not.toContain('area-dnd-strip');
+  });
+
+  it('localizes a legacy accepted lifecycle interval in Spanish', () => {
+    const snapshot = createAdminSnapshot();
+    snapshot.requests = [makeRequest({
+      status: 'COMPLETED',
+      createdAt: '2026-09-29T09:00:00.000Z',
+      acceptedAt: '2026-09-29T09:02:00.000Z',
+      inProgressAt: '2026-09-29T09:07:00.000Z',
+      completedAt: '2026-09-29T09:17:00.000Z'
+    })];
+    const markup = renderToStaticMarkup(createElement(SpanishI18nProvider, {
+      children: createElement(AdminQueueTab, { snapshot, initialStatus: 'COMPLETED', onViewHistory: () => undefined })
+    }));
+
+    expect(markup).toContain('Aceptada');
+    expect(markup).toContain('En proceso');
   });
 });
 

@@ -69,7 +69,7 @@ describe('default catalog migration', () => {
 
     expect(readAreas(database)).toEqual(expectedAreas);
     expect(readServices(database)).toEqual(expectedServices);
-    expect(readMigrationVersions(database)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    expect(readMigrationVersions(database)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
     expect(readBrandingSettings(database)).toEqual({ hotelName: 'Hotel Local', hotelNameEn: '', hotelLogo: null, roomBackground: null, clockFormat: '12h' });
     expect(database.prepare('SELECT do_not_disturb FROM rooms').get()).toBeUndefined();
     expect(readConfigurationRevision(database)).toBe(2);
@@ -164,7 +164,7 @@ describe('default catalog migration', () => {
     expect(database.prepare('SELECT * FROM services WHERE id = ?').get('svc-custom-wake-up')).toMatchObject({ code: 'WAKE-UP-CALL', display_name: 'Custom wake-up workflow' });
     expect(readConfigurationRevision(database)).toBe(revisionBeforeReplay);
     expect((database.prepare('SELECT COUNT(*) AS count FROM outbox_events').get() as { count: number }).count).toBe(eventCountBeforeReplay);
-    expect(readMigrationVersions(database)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    expect(readMigrationVersions(database)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
   });
 
   it('adds branding defaults while upgrading a version three database', () => {
@@ -172,7 +172,7 @@ describe('default catalog migration', () => {
 
     runMigrations(database);
 
-    expect(readMigrationVersions(database)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    expect(readMigrationVersions(database)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
     expect(readBrandingSettings(database)).toEqual({ hotelName: 'Hotel Local', hotelNameEn: '', hotelLogo: null, roomBackground: null, clockFormat: '12h' });
   });
 
@@ -229,7 +229,7 @@ describe('default catalog migration', () => {
 
     runMigrations(database);
 
-    expect(readMigrationVersions(database)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    expect(readMigrationVersions(database)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
     expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_one_active_room_device'").get()).toEqual({ name: 'idx_one_active_room_device' });
 
     const devices = database.prepare('SELECT id, active, retired_at, updated_at FROM devices WHERE room_id = ? ORDER BY id').all('room-duplicate') as Array<{

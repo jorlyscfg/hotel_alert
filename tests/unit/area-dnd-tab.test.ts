@@ -36,6 +36,10 @@ vi.mock('../../apps/web/node_modules/react', async (importOriginal) => {
   const actual = await importOriginal<typeof React>();
   return {
     ...actual,
+    useCallback: <T>(callback: T, _deps: readonly unknown[]): T => {
+      hooks.hookIndex += 1;
+      return callback;
+    },
     useState: <T>(initialState: T | (() => T)): [T, (next: T | ((current: T) => T)) => void] => {
       const index = hooks.hookIndex++;
       if (!hooks.stateIndexes.has(index)) {
@@ -120,13 +124,13 @@ describe('AREA No molestar tab', () => {
     const selectedGrid = findElementByClassName(selectedView, 'area-dnd-strip');
     expect(findElementByClassName(selectedView, 'queue-board')).toBeUndefined();
     expect(collectText(findElementByClassName(selectedView, 'area-dnd-tab-count'))).toBe('2');
-    expect(findElementByClassName(selectedView, 'area-dnd-tab-count')?.props['className']).toContain('area-dnd-tab-count--green');
+    expect(findElementByClassName(selectedView, 'area-dnd-tab-count')?.props['className']).toContain('area-dnd-tab-count--gray');
     expect(collectText(selectedGrid)).toContain('101');
     expect(collectText(selectedGrid)).toContain('202');
-    const timedRoomBadge = findElementByClassName(selectedGrid!, 'area-dnd-room--green');
+    const timedRoomBadge = findElementByClassName(selectedGrid!, 'area-dnd-room--gray');
     const unknownRoomBadge = findElementByClassName(selectedGrid!, 'area-dnd-room--unknown');
     expect(timedRoomBadge).toBeDefined();
-    expect(collectText(timedRoomBadge)).toContain('Activo desde hace 59 min');
+    expect(collectText(timedRoomBadge)).toContain('Activo desde hace 59min');
     expect(unknownRoomBadge).toBeDefined();
     expect(collectText(unknownRoomBadge)).toContain('Tiempo no disponible');
 
@@ -154,6 +158,11 @@ describe('AREA No molestar tab', () => {
     const onlyUnknownSnapshot = { ...initialSnapshot, activeDoNotDisturbRooms: [secondRoom] };
     const onlyUnknownView = renderAreaDisplay(area, onlyUnknownSnapshot);
     expect(findElementByClassName(onlyUnknownView, 'area-dnd-tab-count')?.props['className']).toContain('area-dnd-tab-count--unknown');
+
+    const longDurationRoom = createRoom('room-3', '303', '2026-08-29T09:00:00.000Z');
+    const longDurationSnapshot = { ...initialSnapshot, activeDoNotDisturbRooms: [longDurationRoom] };
+    const longDurationView = renderAreaDisplay(area, longDurationSnapshot, new Date('2026-08-31T12:05:00.000Z'));
+    expect(collectText(findElementByClassName(longDurationView, 'area-dnd-room--red'))).toContain('2d 3h 5min');
   });
 });
 

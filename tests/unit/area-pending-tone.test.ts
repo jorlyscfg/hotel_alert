@@ -60,6 +60,10 @@ vi.mock('../../apps/web/node_modules/react', async (importOriginal) => {
   const actual = await importOriginal<typeof React>();
   return {
     ...actual,
+    useCallback: <T>(callback: T, _deps: readonly unknown[]): T => {
+      hookHarness.hookIndex += 1;
+      return callback;
+    },
     useState: <T>(initialState: T | (() => T)): [T, (next: T | ((current: T) => T)) => void] => {
       const index = hookHarness.hookIndex++;
       if (hookHarness.states[index] === undefined) {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, Moon, Pencil, Plus, Power, PowerOff, Upload, X } from 'lucide-react';
 import * as Shared from '@hotel/shared';
 import type { AreaDTO, LocalizedTextVariants, RoomBackgroundValue, RoomDTO, ServiceDTO, SettingDTO, SettingKey } from '@hotel/shared';
+import { api } from '../../api';
 import { Modal } from '../../components/Modal';
 import { TouchSelect, type TouchSelectOption } from '../../components/TouchSelect';
 import { ServiceIcon } from '../../components/ServiceIcon';
@@ -198,6 +199,8 @@ const SETTING_LABEL_KEYS: Record<SettingKey, MessageKey> = {
   'realtime.replayMaxEvents': 'settings.replayEventFloor',
   'requests.pageSizeDefault': 'settings.requestPageSize',
   'requests.historyRetentionDays': 'settings.historyRetention',
+  'requests.pendingDelayWarningMinutes': 'settings.pendingDelayWarningMinutes',
+  'requests.inProgressDelayWarningMinutes': 'settings.inProgressDelayWarningMinutes',
   'idempotency.retentionHours': 'settings.idempotencyRetention',
   'client.offlineQueueTtlHours': 'settings.offlineQueueTtl',
   'audit.retentionDays': 'settings.auditRetention',
@@ -206,6 +209,10 @@ const SETTING_LABEL_KEYS: Record<SettingKey, MessageKey> = {
   hotelLogo: 'settings.hotelLogo',
   roomBackground: 'settings.roomBackground',
   clockFormat: 'settings.clockFormat',
+  timeZone: 'settings.timeZone',
+  weatherLocationName: 'settings.weatherLocationName',
+  weatherLatitude: 'settings.weatherLatitude',
+  weatherLongitude: 'settings.weatherLongitude',
   'information.idleTimeoutSeconds': 'settings.informationIdleTimeout',
   'information.slideIntervalSeconds': 'settings.informationSlideInterval'
 };
@@ -217,6 +224,7 @@ export function buildSettingsChanges(settings: SettingDTO[], values: Record<stri
   return Object.fromEntries(settings.map((setting) => {
     const value = values[setting.key];
     if (setting.key === 'hotelLogo' || setting.key === 'roomBackground') return [setting.key, value === null || value === undefined || value === '' ? null : value];
+    if (setting.key === 'weatherLatitude' || setting.key === 'weatherLongitude') return [setting.key, value === null || value === undefined || value === '' ? null : Number(value)];
     if (typeof setting.value === 'number') return [setting.key, Number(value ?? '')];
     return [setting.key, value ?? ''];
   }));
@@ -233,7 +241,7 @@ function RuntimePolicyPanel({ settings, busy, onSave }: SettingsPanelProps) {
     void onSave(buildSettingsChanges(settings, values));
   }
 
-  return <section className="surface-card settings-card settings-runtime-policy" aria-labelledby="runtime-policy-title" data-admin-settings-runtime-policy="true"><div className="panel-card__heading"><div><p className="eyebrow eyebrow--muted">{t('admin.runtimePolicy')}</p><h2 id="runtime-policy-title">{t('admin.runtimePolicy')}</h2></div><span className="section-count">{t('admin.validated')}</span></div><form className="settings-grid" data-admin-settings-controls="runtime-policy" onSubmit={submitSettings}><div className="settings-numeric-grid">{numericSettings.map((setting) => { const value = values[setting.key]; return <div className="form-field" key={setting.key}><label htmlFor={`setting-${setting.key}`}>{t(SETTING_LABEL_KEYS[setting.key])}</label><input id={`setting-${setting.key}`} type="number" value={typeof value === 'number' || typeof value === 'string' ? value : ''} onChange={(event) => setValues((current) => ({ ...current, [setting.key]: event.target.value }))} required /></div>; })}</div><button className="button button--dark" type="submit" disabled={busy}>{t('common.saveChanges')}</button></form></section>;
+  return <section className="surface-card settings-card settings-runtime-policy" aria-labelledby="runtime-policy-title" data-admin-settings-runtime-policy="true"><div className="panel-card__heading"><div><p className="eyebrow eyebrow--muted">{t('admin.runtimePolicy')}</p><h2 id="runtime-policy-title">{t('admin.runtimePolicy')}</h2></div><span className="section-count">{t('admin.validated')}</span></div><form className="settings-grid" data-admin-settings-controls="runtime-policy" onSubmit={submitSettings}><div className="settings-numeric-grid">{numericSettings.map((setting) => { const value = values[setting.key]; const isQueueDelayThreshold = isQueueDelayThresholdSetting(setting.key); return <div className="form-field" key={setting.key}><label htmlFor={`setting-${setting.key}`}>{t(SETTING_LABEL_KEYS[setting.key])}</label><input id={`setting-${setting.key}`} type="number" min={isQueueDelayThreshold ? 1 : undefined} max={isQueueDelayThreshold ? 1440 : undefined} step={isQueueDelayThreshold ? 1 : undefined} value={typeof value === 'number' || typeof value === 'string' ? value : ''} onChange={(event) => setValues((current) => ({ ...current, [setting.key]: event.target.value }))} required /></div>; })}</div><button className="button button--dark" type="submit" disabled={busy}>{t('common.saveChanges')}</button></form></section>;
 }
 
 export function SettingsPanel(props: SettingsPanelWithRoomBackgroundProps) {
@@ -241,18 +249,21 @@ export function SettingsPanel(props: SettingsPanelWithRoomBackgroundProps) {
   const [activeOption, setActiveOption] = useState<SettingsOption>('station-identity');
   const stationIdentitySettings = useMemo(() => props.settings.filter((setting) => setting.key === 'hotelName' || setting.key === 'hotelNameEn' || setting.key === 'hotelLogo'), [props.settings]);
   const clockFormatSettings = useMemo(() => props.settings.filter((setting) => setting.key === 'clockFormat'), [props.settings]);
-  const numericSettings = useMemo(() => props.settings.filter((setting) => typeof setting.value === 'number' && !isInformationCarouselSetting(setting.key)), [props.settings]);
+  const timeZoneLocationSettings = useMemo(() => props.settings.filter((setting) => setting.key === 'timeZone' || setting.key === 'weatherLocationName' || setting.key === 'weatherLatitude' || setting.key === 'weatherLongitude'), [props.settings]);
+  const numericSettings = useMemo(() => props.settings.filter((setting) => typeof setting.value === 'number' && !isInformationCarouselSetting(setting.key) && setting.key !== 'weatherLatitude' && setting.key !== 'weatherLongitude'), [props.settings]);
   const roomBackgroundSetting = useMemo(() => props.settings.find((setting) => setting.key === 'roomBackground'), [props.settings]);
 
-  return <div className="settings-panels" data-admin-settings-panel="true"><div className="setup-accordions" data-admin-settings-carousel="true">{SETTINGS_OPTIONS.map((option) => { const isOpen = activeOption === option; const panelId = `admin-settings-option-${option}`; const triggerId = `admin-settings-accordion-${option}`; return <section className={`setup-accordion${isOpen ? ' setup-accordion--open' : ''}`} data-admin-settings-option={option} key={option}><h3 className="setup-accordion__heading"><button className="setup-accordion__trigger" type="button" id={triggerId} data-admin-settings-accordion={option} aria-expanded={isOpen} aria-controls={panelId} onClick={() => setActiveOption(option)}><span className="setup-accordion__label">{t(SETTINGS_OPTION_LABEL_KEYS[option])}</span><ChevronDown className="setup-accordion__icon" aria-hidden="true" size={18} strokeWidth={1.8} /></button></h3><div className="setup-accordion__panel" id={panelId} aria-labelledby={triggerId} data-admin-settings-option-panel={option} hidden={!isOpen}>{option === 'station-identity' ? <CompactStationIdentityPanel settings={stationIdentitySettings} busy={props.busy} onSave={props.onSave} /> : option === 'clock-format' ? <CompactClockFormatPanel settings={clockFormatSettings} busy={props.busy} onSave={props.onSave} /> : option === 'room-background' ? <CompactRoomBackgroundPanel setting={roomBackgroundSetting} busy={props.busy} onSave={props.onSave} onUploadRoomBackground={props.onUploadRoomBackground} /> : <RuntimePolicyPanel settings={numericSettings} busy={props.busy} onSave={props.onSave} />}</div></section>; })}</div></div>;
+  return <div className="settings-panels" data-admin-settings-panel="true"><div className="setup-accordions" data-admin-settings-carousel="true">{SETTINGS_OPTIONS.map((option) => { const isOpen = activeOption === option; const panelId = `admin-settings-option-${option}`; const triggerId = `admin-settings-accordion-${option}`; return <section className={`setup-accordion${isOpen ? ' setup-accordion--open' : ''}`} data-admin-settings-option={option} key={option}><h3 className="setup-accordion__heading"><button className="setup-accordion__trigger" type="button" id={triggerId} data-admin-settings-accordion={option} aria-expanded={isOpen} aria-controls={panelId} onClick={() => setActiveOption(option)}><span className="setup-accordion__label">{t(SETTINGS_OPTION_LABEL_KEYS[option])}</span><ChevronDown className="setup-accordion__icon" aria-hidden="true" size={18} strokeWidth={1.8} /></button></h3><div className="setup-accordion__panel" id={panelId} aria-labelledby={triggerId} data-admin-settings-option-panel={option} hidden={!isOpen}>{option === 'station-identity' ? <CompactStationIdentityPanel settings={stationIdentitySettings} busy={props.busy} onSave={props.onSave} /> : option === 'clock-format' ? <CompactClockFormatPanel settings={clockFormatSettings} busy={props.busy} onSave={props.onSave} /> : option === 'time-zone-location' ? <TimeZoneLocationPanel settings={timeZoneLocationSettings} busy={props.busy} onSave={props.onSave} /> : option === 'room-background' ? <CompactRoomBackgroundPanel setting={roomBackgroundSetting} busy={props.busy} onSave={props.onSave} onUploadRoomBackground={props.onUploadRoomBackground} /> : <RuntimePolicyPanel settings={numericSettings} busy={props.busy} onSave={props.onSave} />}</div></section>; })}</div></div>;
 }
 
-const SETTINGS_OPTIONS = ['station-identity', 'clock-format', 'room-background', 'runtime-policy'] as const;
+const SETTINGS_OPTIONS = ['station-identity', 'clock-format', 'time-zone-location', 'room-background', 'runtime-policy'] as const;
+export const AMERICA_TIME_ZONE_OPTIONS: TouchSelectOption[] = Shared.AMERICA_TIME_ZONES.map((value) => ({ value, label: value }));
 type SettingsOption = (typeof SETTINGS_OPTIONS)[number];
 
 const SETTINGS_OPTION_LABEL_KEYS: Record<SettingsOption, MessageKey> = {
   'station-identity': 'settings.stationIdentity',
   'clock-format': 'settings.clockFormat',
+  'time-zone-location': 'settings.timeZoneLocation',
   'room-background': 'settings.roomBackground',
   'runtime-policy': 'admin.runtimePolicy'
 };
@@ -264,8 +275,127 @@ function initialSettingsValues(settings: SettingDTO[]): Record<string, SettingsC
   })) as Record<string, SettingsChangeValue>;
 }
 
+function TimeZoneLocationPanel({ settings, busy, onSave }: SettingsPanelProps) {
+  const { t } = useI18n();
+  const [values, setValues] = useState<Record<string, SettingsChangeValue>>(() => initialSettingsValues(settings));
+  const initialLocationName = typeof values['weatherLocationName'] === 'string' ? values['weatherLocationName'] : '';
+  const [cityQuery, setCityQuery] = useState(initialLocationName);
+  const [citySearchAvailability, setCitySearchAvailability] = useState<'checking' | 'available' | 'unavailable'>('checking');
+  const [availabilityCheck, setAvailabilityCheck] = useState(0);
+  const [citySearchState, setCitySearchState] = useState<'idle' | 'loading' | 'results' | 'empty'>('idle');
+  const [cityResults, setCityResults] = useState<CitySearchResult[]>([]);
+
+  useEffect(() => {
+    const nextValues = initialSettingsValues(settings);
+    setValues(nextValues);
+    setCityQuery(typeof nextValues['weatherLocationName'] === 'string' ? nextValues['weatherLocationName'] : '');
+  }, [settings]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    void api.get<CitySearchAvailability>('/settings/location-search/availability', { signal: controller.signal })
+      .then(({ data }) => {
+        if (active) setCitySearchAvailability(data.available ? 'available' : 'unavailable');
+      })
+      .catch(() => {
+        if (active) setCitySearchAvailability('unavailable');
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [availabilityCheck]);
+
+  function submitSettings(event: React.FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    void onSave(buildSettingsChanges(settings, values));
+  }
+
+  const timeZone = typeof values['timeZone'] === 'string' ? values['timeZone'] : '';
+  const locationName = typeof values['weatherLocationName'] === 'string' ? values['weatherLocationName'] : '';
+  const hasUnselectedCityQuery = citySearchAvailability === 'available' && cityQuery.trim() !== locationName;
+
+  useEffect(() => {
+    const query = cityQuery.trim();
+    if (citySearchAvailability !== 'available' || query.length < 2 || query === locationName) {
+      setCityResults([]);
+      setCitySearchState('idle');
+      return;
+    }
+
+    const controller = new AbortController();
+    let active = true;
+    const debounce = setTimeout(() => {
+      setCitySearchState('loading');
+      void api.get<CitySearchResult[]>(`/settings/location-search?text=${encodeURIComponent(query)}`, { signal: controller.signal })
+        .then(({ data }) => {
+          if (!active) return;
+          setCityResults(data);
+          setCitySearchState(data.length === 0 ? 'empty' : 'results');
+        })
+        .catch(() => {
+          if (!active) return;
+          setCitySearchAvailability('unavailable');
+          setCityResults([]);
+          setCitySearchState('idle');
+        });
+    }, 350);
+    return () => {
+      active = false;
+      clearTimeout(debounce);
+      controller.abort();
+    };
+  }, [cityQuery, citySearchAvailability, locationName]);
+
+  function selectCity(result: CitySearchResult): void {
+    setValues((current) => ({
+      ...current,
+      weatherLocationName: result.displayName,
+      weatherLatitude: result.latitude,
+      weatherLongitude: result.longitude
+    }));
+    setCityQuery(result.displayName);
+    setCityResults([]);
+    setCitySearchState('idle');
+  }
+
+  function updateCityQuery(value: string): void {
+    setCityQuery(value);
+    if (value.trim().length === 0) {
+      setValues((current) => ({ ...current, weatherLocationName: '', weatherLatitude: null, weatherLongitude: null }));
+    }
+  }
+
+  function retryCitySearchAvailability(): void {
+    setCitySearchAvailability('checking');
+    setAvailabilityCheck((current) => current + 1);
+  }
+
+  return <section className="surface-card settings-card" aria-labelledby="timezone-location-title"><div className="panel-card__heading"><div><p className="eyebrow eyebrow--muted">{t('settings.timeZoneLocation')}</p><h2 id="timezone-location-title">{t('settings.timeZoneLocation')}</h2></div><span className="section-count">{t('admin.validated')}</span></div><form className="settings-grid" data-admin-settings-controls="time-zone-location" onSubmit={submitSettings}><div className="form-field"><TouchSelect id="setting-timeZone" label={t(SETTING_LABEL_KEYS.timeZone)} value={timeZone} onChange={(value) => setValues((current) => ({ ...current, timeZone: value }))} options={AMERICA_TIME_ZONE_OPTIONS} required /><p className="field-hint">{t('settings.timeZoneHelp')}</p></div>{citySearchAvailability === 'available' ? <div className="form-field city-search-field"><label htmlFor="setting-weatherLocationName">{t(SETTING_LABEL_KEYS.weatherLocationName)}</label><input id="setting-weatherLocationName" type="search" role="combobox" aria-autocomplete="list" aria-expanded={cityResults.length > 0} aria-controls="weather-city-results" autoComplete="off" value={cityQuery} maxLength={120} placeholder={t('settings.citySearchPlaceholder')} onChange={(event) => updateCityQuery(event.target.value)} /><p className="field-hint">{t('settings.citySearchHelp')}</p>{citySearchState === 'loading' && <p className="field-hint" role="status">{t('settings.citySearchSearching')}</p>}{citySearchState === 'empty' && <p className="field-hint" role="status">{t('settings.citySearchNoResults')}</p>}{cityResults.length > 0 && <div className="city-search-results" id="weather-city-results" role="listbox">{cityResults.map((result) => <button className="city-search-result" key={result.id} type="button" role="option" aria-selected={result.displayName === locationName} onClick={() => selectCity(result)}>{result.displayName}</button>)}</div>}<GeoapifyAttribution /></div> : <div className="form-field city-search-field"><span className="form-field__label">{t(SETTING_LABEL_KEYS.weatherLocationName)}</span>{locationName.length > 0 && <p className="field-hint">{locationName}</p>}<p className="field-hint" role="status">{t(citySearchAvailability === 'checking' ? 'settings.citySearchChecking' : 'settings.citySearchUnavailable')}</p>{citySearchAvailability === 'unavailable' && <button className="button button--light" type="button" onClick={retryCitySearchAvailability}>{t('settings.citySearchRetry')}</button>}<GeoapifyAttribution /></div>}<p className="field-hint">{t('settings.weatherLocationHelp')}</p><button className="button button--dark" type="submit" disabled={busy || hasUnselectedCityQuery}>{t('common.saveChanges')}</button></form></section>;
+}
+
+function GeoapifyAttribution() {
+  return <p className="field-hint city-search-attribution"><a href="https://www.geoapify.com/pricing/" target="_blank" rel="noopener noreferrer">Powered by Geoapify</a></p>;
+}
+
+interface CitySearchAvailability {
+  available: boolean;
+}
+
+interface CitySearchResult {
+  id: string;
+  displayName: string;
+  latitude: number;
+  longitude: number;
+}
+
 function isInformationCarouselSetting(key: SettingKey): boolean {
   return key === 'information.idleTimeoutSeconds' || key === 'information.slideIntervalSeconds';
+}
+
+function isQueueDelayThresholdSetting(key: SettingKey): boolean {
+  return key === 'requests.pendingDelayWarningMinutes' || key === 'requests.inProgressDelayWarningMinutes';
 }
 
 function CompactStationIdentityPanel({ settings, busy, onSave }: SettingsPanelProps) {
@@ -324,7 +454,6 @@ function CompactRoomBackgroundPanel({ setting, busy, onSave, onUploadRoomBackgro
   const backgroundInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => setRoomBackground(isRoomBackgroundValue(setting?.value) ? setting.value : null), [setting]);
-
   useEffect(() => {
     if (pendingBackgroundFile === null) {
       setPendingPreviewUrl(null);
@@ -391,11 +520,11 @@ function encodeWebp(source: HTMLImageElement, width: number, height: number, max
   throw new Error('Image is too large.');
 }
 
-function RoomBackgroundPreview({ value, pendingPreviewUrl }: { value: RoomBackgroundValue; pendingPreviewUrl: string | null }): ReactNode {
-  if (pendingPreviewUrl !== null) return <div className="branding-background-previews"><img className="branding-background-preview" data-room-background-variant="square480" src={pendingPreviewUrl} alt="" /><img className="branding-background-preview" data-room-background-variant="tablet" src={pendingPreviewUrl} alt="" /></div>;
+export function RoomBackgroundPreview({ value, pendingPreviewUrl }: { value: RoomBackgroundValue; pendingPreviewUrl: string | null }): ReactNode {
+  if (pendingPreviewUrl !== null) return <img className="branding-background-preview" src={pendingPreviewUrl} alt="" />;
   if (value === null) return null;
   if (typeof value === 'string') return <img className="branding-background-preview" src={value} alt="" />;
-  return <div className="branding-background-previews"><img className="branding-background-preview" data-room-background-variant="square480" src={value.square480} alt="" /><img className="branding-background-preview" data-room-background-variant="tablet" src={value.tablet} alt="" /></div>;
+  return <img className="branding-background-preview" data-room-background-variant="square480" src={value.square480} alt="" />;
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {

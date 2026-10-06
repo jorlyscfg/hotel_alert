@@ -45,7 +45,7 @@ import {
   playNotificationTone,
   replaceNotificationAudioContext
 } from './notification-audio';
-import { useRealtimeConnection, type ConnectionStatus, type RealtimeRefreshResult } from './realtime';
+import { shouldWebViewSendRestHeartbeat, useRealtimeConnection, type ConnectionStatus, type RealtimeRefreshResult } from './realtime';
 import {
   clearNativeRoomSession,
   configureNativeRoomSession,
@@ -156,6 +156,7 @@ export function App() {
   viewRef.current = view;
   const route = view.kind === 'device' ? view.snapshot.config.mode === 'ROOM' ? 'room' : 'area' : view.kind === 'assignment' || view.kind === 'password-change' ? 'bootstrap' : view.kind;
   const nativeStationBridgeAvailable = getNativeStationBridge() !== null;
+  const nativeRoomPresenceAvailable = supportsNativeRoomPresence(getNativeRoomPresenceBridge());
   const roomAudioUnlockScope = view.kind === 'device' && view.snapshot.config.mode === 'ROOM'
     ? `${view.snapshot.device.id}:${view.snapshot.config.room?.id ?? ''}`
     : null;
@@ -652,7 +653,7 @@ export function App() {
     : nativeStationBridgeAvailable && !isRoomDeviceView
     ? { enabled: false, hasSnapshot: view.kind === 'device' }
     : view.kind === 'device'
-    ? { enabled: true, hasSnapshot: true, deviceId: view.snapshot.device.id, deviceToken: localStorage.getItem(DEVICE_TOKEN_STORAGE_KEY) ?? undefined, deviceConfigVersion: view.snapshot.deviceConfigVersion, lastSeenEventSequence: view.snapshot.currentEventSequence, heartbeatIntervalMs: view.snapshot.config.heartbeatIntervalMs }
+    ? { enabled: true, hasSnapshot: true, deviceId: view.snapshot.device.id, deviceToken: localStorage.getItem(DEVICE_TOKEN_STORAGE_KEY) ?? undefined, deviceConfigVersion: view.snapshot.deviceConfigVersion, lastSeenEventSequence: view.snapshot.currentEventSequence, heartbeatIntervalMs: view.snapshot.config.heartbeatIntervalMs, heartbeatEnabled: shouldWebViewSendRestHeartbeat({ isRoomDevice: isRoomDeviceView, nativeRoomPresenceSupported: nativeRoomPresenceAvailable }) }
     : { enabled: false, hasSnapshot: false };
 
   const clearRoomRequestNotifications = useCallback(() => {

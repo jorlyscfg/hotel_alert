@@ -1,5 +1,5 @@
-import { useId, useMemo, useRef, useState, type FocusEvent, type FormEvent, type ReactNode } from 'react';
-import { ArchiveX, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Circle, CircleAlert, House, KeyRound, LayoutDashboard, Link2Off, List, LogOut, PanelsTopLeft, Plus, Power, PowerOff, RefreshCw, ScrollText, ShieldOff, UserRoundCog } from 'lucide-react';
+import { useEffect, useId, useMemo, useRef, useState, type FocusEvent, type FormEvent, type ReactNode } from 'react';
+import { ArchiveX, ArrowUpRight, CalendarDays, Check, ChevronLeft, ChevronRight, Circle, CircleAlert, House, KeyRound, LayoutDashboard, Link2Off, List, LogOut, Moon, PanelsTopLeft, Plus, Power, PowerOff, RefreshCw, ScrollText, ShieldOff, UserRoundCog } from 'lucide-react';
 import type {
   AdminSystemSnapshot,
   AdminWarningCode,
@@ -8,6 +8,7 @@ import type {
   DeviceBootstrapResult,
   DevicePresence,
   InformationImageDTO,
+  CompactRoom,
   RequestDTO,
   RequestStatus,
   RoomDTO,
@@ -16,6 +17,8 @@ import type {
   ServiceDTO,
   TokenRotationResult
 } from '@hotel/shared';
+import { ADMIN_QUEUE_CLOCK_TICK_MS, ADMIN_QUEUE_TABS, buildAdminRequestLifecycle, formatAdminDuration, formatAdminElapsedWithAgo, getAdminRequestDelayState, resolveAdminQueueDelayThresholds } from './admin-request-timing';
+import { resolveDoNotDisturbRoomAge, resolveDoNotDisturbTabSeverity } from '../do-not-disturb/do-not-disturb-timing';
 import { api, deleteInformationImage as deleteInformationImageRequest, errorMessage, repairInformationImageVariants as repairInformationImageVariantsRequest, reorderInformationImages as reorderInformationImagesRequest, uploadInformationImage as uploadInformationImageRequest, uploadRoomBackgroundImage as uploadRoomBackgroundImageRequest, type InformationImageUploadSet } from '../../api';
 import { buildDeviceAssignmentPayload, formatElapsedWithAgo, makeMutationKey, mutationSucceeded } from '../../app-model';
 import { ConnectionBadge } from '../../components/ConnectionBadge';
@@ -139,7 +142,7 @@ const ADMIN_WARNING_KEYS: Record<AdminWarningCode, MessageKey> = {
   INVALID_ACTIVE_DEVICE_ASSIGNMENT: 'admin.warning.invalidActiveDeviceAssignment'
 };
 
-const ADMIN_STATUS_FILTERS = ['ALL', 'PENDING', 'IN_PROGRESS', 'COMPLETED'] as const;
+type AdminQueueStatus = (typeof ADMIN_QUEUE_TABS)[number];
 
 interface ConfirmationRequest {
   title: string;
@@ -150,7 +153,7 @@ interface ConfirmationRequest {
 }
 
 export interface AdminRequestFilters {
-  status: (typeof ADMIN_STATUS_FILTERS)[number];
+  status: 'ALL' | AdminQueueStatus;
   roomId: string;
   serviceId: string;
   areaId: string;
@@ -160,13 +163,14 @@ export interface AdminRequestFilters {
   search: string;
 }
 
-function requestStatusBucket(status: RequestStatus): Exclude<AdminRequestFilters['status'], 'ALL'> {
+function requestStatusBucket(status: RequestStatus): Exclude<AdminRequestFilters['status'], 'ALL' | 'DO_NOT_DISTURB'> {
   if (status === 'PENDING') return 'PENDING';
   if (status === 'COMPLETED') return 'COMPLETED';
   return 'IN_PROGRESS';
 }
 
 export function filterAdminRequests(requests: RequestDTO[], filters: AdminRequestFilters, locale: Locale = 'es'): RequestDTO[] {
+  if (filters.status === 'DO_NOT_DISTURB') return [];
   const searchTerms = filters.search.trim().toLocaleLowerCase().split(/\s+/).filter((term) => term.length > 0);
   const filteredRequests = requests.filter((request) => {
     if (filters.status !== 'ALL' && requestStatusBucket(request.status) !== filters.status) return false;
@@ -198,7 +202,7 @@ export function filterAdminRequests(requests: RequestDTO[], filters: AdminReques
 }
 
 const EMPTY_ADMIN_REQUEST_FILTERS: AdminRequestFilters = {
-  status: 'ALL',
+  status: 'PENDING',
   roomId: '',
   serviceId: '',
   areaId: '',
@@ -210,6 +214,15 @@ const EMPTY_ADMIN_REQUEST_FILTERS: AdminRequestFilters = {
 
 function requestStatusLabel(status: RequestStatus, locale: Locale): string {
   return createTranslator(locale)(REQUEST_STATUS_KEYS[status === 'ACCEPTED' ? 'IN_PROGRESS' : status]);
+}
+
+function requestLifecycleStageLabel(status: RequestStatus, locale: Locale): string {
+  const messageKey = status === 'ACCEPTED' ? 'admin.lifecycleAccepted' : REQUEST_STATUS_KEYS[status];
+  return createTranslator(locale)(messageKey);
+}
+
+function resolveResponsibleName(name: string | null | undefined, unassignedLabel: string): string {
+  return typeof name === 'string' && name.trim().length > 0 ? name.trim() : unassignedLabel;
 }
 
 function readableCode(value: string): string {
@@ -243,6 +256,11 @@ export function adminWarningLabel(warning: string, locale: Locale): string {
 
 function resolveAdminClockFormat(settings: AdminSystemSnapshot['settings']): ClockFormat {
   return settings.find((setting) => setting.key === 'clockFormat')?.value === '24h' ? '24h' : '12h';
+}
+
+function resolveAdminTimeZone(settings: AdminSystemSnapshot['settings']): string {
+  const timeZone = settings.find((setting) => setting.key === 'timeZone')?.value;
+  return typeof timeZone === 'string' && timeZone.trim().length > 0 ? timeZone : 'UTC';
 }
 
 export function formatAdminRoomAreaCounts(locale: Locale, rooms: number, areas: number): string {
@@ -287,6 +305,7 @@ export function resolveToggleConfirmationCopy(locale: Locale, resource: ToggleCo
 export function AdminScreen({ snapshot, csrfToken, installationId, connectionStatus, onRefresh, onLogout, onUseDeviceToken, onChangePassword, passwordChangeError = null }: AdminScreenProps) {
   const { locale, t } = useI18n();
   const clockFormat = resolveAdminClockFormat(snapshot.settings);
+  const timeZone = resolveAdminTimeZone(snapshot.settings);
   const [tab, setTab] = useState<AdminTab>('overview');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -602,16 +621,16 @@ export function AdminScreen({ snapshot, csrfToken, installationId, connectionSta
             {notice !== null && <div className="inline-alert inline-alert--success" role="status"><span aria-hidden="true"><Check size={16} strokeWidth={1.8} /></span><span>{notice}</span><button className="text-button" type="button" onClick={() => setNotice(null)}>{t('common.dismiss')}</button></div>}
              {secretToken !== null && <SecretTokenCard token={secretToken.deviceToken} onDismiss={() => setSecretToken(null)} onUseOnThisStation={installationId === null ? undefined : () => void useTokenOnThisStation()} />}
 
-            {tab === 'overview' && <OverviewTab snapshot={snapshot} clockFormat={clockFormat} onOpenQueue={() => setTab('queue')} onRefresh={onRefresh} />}
-            {tab === 'queue' && <QueueTab snapshot={snapshot} onViewHistory={(request) => void openRequestHistory(request)} />}
+            {tab === 'overview' && <OverviewTab snapshot={snapshot} clockFormat={clockFormat} timeZone={timeZone} onOpenQueue={() => setTab('queue')} onRefresh={onRefresh} />}
+            {tab === 'queue' && <AdminQueueTab snapshot={snapshot} onViewHistory={(request) => void openRequestHistory(request)} />}
             {tab === 'setup' && <SetupTab snapshot={snapshot} busy={mutationBusy} initialInstallationId={installationId} onCreateRoom={createRoom} onCreateArea={createArea} onCreateService={createService} onProvisionDevice={provisionDevice} onToggleDevice={toggleDevice} onRotateToken={rotateToken} onRebindDevice={rebindDevice} onToggleRoom={toggleRoom} onPatchRoom={patchRoom} onToggleArea={toggleArea} onPatchArea={patchArea} onToggleService={toggleService} onPatchService={patchService} onSaveSettings={updateSettings} onUploadRoomBackground={uploadRoomBackgroundImage} onUploadInformationImage={uploadInformationImage} onRepairInformationImage={repairInformationImage} onDeleteInformationImage={deleteInformationImage} onReorderInformationImages={reorderInformationImages} onRevokeToken={revokeToken} onRetireDevice={retireDevice} onAssignDevice={assignDevice} />}
-            {tab === 'audit' && <AuditTab snapshot={snapshot} clockFormat={clockFormat} />}
-            {historyRequest !== null && <RequestHistoryDialog request={historyRequest} history={requestHistory} busy={historyBusy} error={historyError} clockFormat={clockFormat} onClose={closeRequestHistory} />}
+            {tab === 'audit' && <AuditTab snapshot={snapshot} clockFormat={clockFormat} timeZone={timeZone} />}
+            {historyRequest !== null && <RequestHistoryDialog request={historyRequest} history={requestHistory} busy={historyBusy} error={historyError} clockFormat={clockFormat} timeZone={timeZone} onClose={closeRequestHistory} />}
           </div>
         </section>
         </div>
         <AdminNavigation variant="mobile" activeTab={tab} openRequestCount={snapshot.requests.filter((request) => request.status !== 'COMPLETED').length} onTabChange={setTab} />
-         {confirmation !== null && (
+        {confirmation !== null && (
            <AdminConfirmationDialog
             title={confirmation.title}
             copy={confirmation.copy}
@@ -751,7 +770,7 @@ function AdminNavButton({ tab, active, onClick, icon, children }: { tab: AdminTa
   return <button className={`admin-nav__item${active ? ' admin-nav__item--active' : ''}`} type="button" onClick={onClick} aria-current={active ? 'page' : undefined} data-admin-nav-item={tab}><span aria-hidden="true">{icon}</span><span className="admin-nav__label">{children}</span></button>;
 }
 
-function OverviewTab({ snapshot, clockFormat, onOpenQueue, onRefresh }: { snapshot: AdminSystemSnapshot; clockFormat: ClockFormat; onOpenQueue: () => void; onRefresh: () => Promise<void> }) {
+function OverviewTab({ snapshot, clockFormat, timeZone, onOpenQueue, onRefresh }: { snapshot: AdminSystemSnapshot; clockFormat: ClockFormat; timeZone: string; onOpenQueue: () => void; onRefresh: () => Promise<void> }) {
   const { locale, t } = useI18n();
   const openRequests = snapshot.requests.filter((request) => request.status !== 'COMPLETED');
   const onlineDevices = snapshot.devices.filter((device) => device.presence === 'ONLINE').length;
@@ -777,45 +796,128 @@ function OverviewTab({ snapshot, clockFormat, onOpenQueue, onRefresh }: { snapsh
              <div className="presence-list">{snapshot.devices.slice(0, 6).map((device) => <div className="presence-row" key={device.id}><span className={`presence-dot presence-dot--${device.presence.toLowerCase()}`} aria-hidden="true" /><div><strong>{device.displayName}</strong><span>{device.roomId !== null ? t('admin.modeRoom') : device.areaId !== null ? t('admin.modeArea') : t('device.unassignedStation')}</span></div><span className="presence-status">{devicePresenceLabel(device.presence, locale)}</span></div>)}</div>
        </section>
       </div>
-         <section className="surface-card panel-card audit-preview" aria-labelledby="activity-title"><div className="panel-card__heading"><div><p className="eyebrow eyebrow--muted">{t('admin.traceability')}</p><h2 id="activity-title">{t('admin.recentActivity')}</h2></div><span className="section-count">{translateCount(locale, 'admin.events', snapshot.auditLog.length)}</span></div><div className="activity-list">{snapshot.auditLog.slice(0, 5).map((entry) => <div className="activity-row" key={entry.id}><span className="activity-row__mark" aria-hidden="true">·</span><div><strong>{auditActionLabel(entry.action, locale)}</strong><span>{entityTypeLabel(entry.entityType, locale)} · {formatDate(entry.createdAt, locale, clockFormat)}</span></div></div>)}</div></section>
+         <section className="surface-card panel-card audit-preview" aria-labelledby="activity-title"><div className="panel-card__heading"><div><p className="eyebrow eyebrow--muted">{t('admin.traceability')}</p><h2 id="activity-title">{t('admin.recentActivity')}</h2></div><span className="section-count">{translateCount(locale, 'admin.events', snapshot.auditLog.length)}</span></div><div className="activity-list">{snapshot.auditLog.slice(0, 5).map((entry) => <div className="activity-row" key={entry.id}><span className="activity-row__mark" aria-hidden="true">·</span><div><strong>{auditActionLabel(entry.action, locale)}</strong><span>{entityTypeLabel(entry.entityType, locale)} · {formatDate(entry.createdAt, locale, clockFormat, timeZone)}</span></div></div>)}</div></section>
     </div>
   );
 }
 
-function QueueTab({ snapshot, onViewHistory }: { snapshot: AdminSystemSnapshot; onViewHistory: (request: RequestDTO) => void }) {
+export interface AdminQueueTabProps {
+  snapshot: AdminSystemSnapshot;
+  onViewHistory: (request: RequestDTO) => void;
+  initialStatus?: AdminQueueStatus;
+  initialNow?: Date;
+}
+
+export function AdminQueueTab({ snapshot, onViewHistory, initialStatus = 'PENDING', initialNow }: AdminQueueTabProps) {
   const { locale, t } = useI18n();
-  const [filters, setFilters] = useState<AdminRequestFilters>(EMPTY_ADMIN_REQUEST_FILTERS);
-  const requests = useMemo(() => filterAdminRequests(snapshot.requests, filters, locale).sort((left, right) => right.createdAt.localeCompare(left.createdAt)), [snapshot.requests, filters, locale]);
+  const [filters, setFilters] = useState<AdminRequestFilters>(() => ({ ...EMPTY_ADMIN_REQUEST_FILTERS, status: initialStatus }));
+  const [now, setNow] = useState(() => initialNow ?? new Date());
+  const delayThresholds = resolveAdminQueueDelayThresholds(snapshot.settings);
+  const activeDoNotDisturbRooms = snapshot.activeDoNotDisturbRooms ?? [];
+  const activeDoNotDisturbSeverity = resolveDoNotDisturbTabSeverity(activeDoNotDisturbRooms, now, locale);
+  const isDoNotDisturbTab = filters.status === 'DO_NOT_DISTURB';
+  const requests = useMemo(() => isDoNotDisturbTab ? [] : filterAdminRequests(snapshot.requests, filters, locale).sort((left, right) => right.createdAt.localeCompare(left.createdAt)), [filters, isDoNotDisturbTab, locale, snapshot.requests]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), ADMIN_QUEUE_CLOCK_TICK_MS);
+    return () => window.clearInterval(timer);
+  }, []);
 
   return (
     <div className="admin-content">
-      <div className="queue-filter-grid" role="group" aria-label={t('admin.additionalFilters')}>
+      {!isDoNotDisturbTab && <div className="queue-filter-grid" role="group" aria-label={t('admin.additionalFilters')}>
         <CalendarDatePicker label={t('admin.fromDate')} value={filters.from} onChange={(value) => setFilters((current) => ({ ...current, from: value }))} />
         <CalendarDatePicker label={t('admin.toDate')} value={filters.to} onChange={(value) => setFilters((current) => ({ ...current, to: value }))} />
         <TextInput label={t('admin.search')} value={filters.search} onChange={(value) => setFilters((current) => ({ ...current, search: value }))} placeholder={t('admin.searchPlaceholder')} />
-      </div>
+      </div>}
       <div className="setup-tabs filter-row" role="group" aria-label={t('admin.filterRequests')}>
-        {ADMIN_STATUS_FILTERS.map((value) => (
-          <button className={`setup-tab${filters.status === value ? ' setup-tab--active' : ''}`} type="button" key={value} onClick={() => setFilters((current) => ({ ...current, status: value }))}>
-            <span className="setup-tab__label">{value === 'ALL' ? t('admin.all') : requestStatusLabel(value, locale)}</span>
+        {ADMIN_QUEUE_TABS.map((value) => (
+          <button className={`setup-tab${filters.status === value ? ' setup-tab--active' : ''}`} type="button" key={value} data-admin-queue-tab={value} aria-pressed={filters.status === value} onClick={() => setFilters((current) => ({ ...current, status: value }))}>
+            <span className="setup-tab__label">{value === 'DO_NOT_DISTURB' ? t('admin.doNotDisturb') : requestStatusLabel(value, locale)}</span>
+            {value === 'DO_NOT_DISTURB' && activeDoNotDisturbRooms.length > 0 && <span className={`area-dnd-tab-count area-dnd-tab-count--${activeDoNotDisturbSeverity}`} aria-label={String(activeDoNotDisturbRooms.length)}>{formatNumber(activeDoNotDisturbRooms.length, locale)}</span>}
           </button>
         ))}
       </div>
-      <div className="surface-card request-table">
-         <div className="request-table__header"><span>{t('admin.tableService')}</span><span>{t('admin.tableRoom')}</span><span>{t('admin.tableStatus')}</span><span>{t('admin.tableCreated')}</span><span>{t('admin.tableAction')}</span></div>
+      {isDoNotDisturbTab ? <AdminDoNotDisturbRooms rooms={activeDoNotDisturbRooms} now={now} locale={locale} /> : <div className="surface-card request-table">
+         <div className="request-table__header"><span>{t('admin.tableService')}</span><span>{t('admin.tableRoom')}</span><span>{t('admin.tableStatus')}</span><span>{filters.status === 'COMPLETED' ? t('admin.lifecycleTitle') : t('admin.currentStageAge')}</span><span>{t('admin.tableAction')}</span></div>
          {requests.length === 0 ? <EmptyPanel title={t('admin.noRequestsView')} copy={t('admin.tryDifferentFilter')} /> : requests.map((request) => (
           <div className="request-table__row" key={request.id}>
-              <div className="table-service"><span className="request-icon" aria-hidden="true"><ServiceIcon iconKey={request.service.iconKey} size={16} /></span><div><strong>{resolveServiceDisplayName(request.service, locale)}</strong><span>{resolveAreaDisplayName(request.responsibleArea, locale)}</span></div></div>
+              <div className="table-service"><span className="request-icon" aria-hidden="true"><ServiceIcon iconKey={request.service.iconKey} size={16} /></span><div><strong>{resolveServiceDisplayName(request.service, locale)}</strong><span>{resolveAreaDisplayName(request.responsibleArea, locale)}</span><span className="request-responsible">{t('request.responsible')}: {resolveResponsibleName(request.responsibleName, t('request.unassigned'))}</span></div></div>
               <span>{t('admin.roomPrefix', { name: resolveLocalizedValue(request.room.displayName, locale, request.room.displayNameVariants) ?? request.room.displayName })}</span>
              <span className={`status-label status-label--${request.status.toLowerCase().replace('_', '-')}`}>{requestStatusLabel(request.status, locale)}</span>
-              <span>{formatElapsedWithAgo(request.createdAt, new Date(), locale, t('common.ago'))}</span>
+              <div>{request.status === 'COMPLETED'
+                ? <AdminRequestLifecycleView request={request} locale={locale} t={t} />
+                : <AdminRequestStageTiming request={request} now={now} locale={locale} t={t} thresholds={delayThresholds} />}</div>
             <div className="request-table__actions">
                <span className="table-complete">{t('admin.areaResponsibleAction')}</span>
                <button className="text-button" type="button" onClick={() => onViewHistory(request)}>{t('common.history')}</button>
             </div>
           </div>
         ))}
-      </div>
+      </div>}
+    </div>
+  );
+}
+
+function AdminDoNotDisturbRooms({ rooms, now, locale }: { rooms: readonly CompactRoom[]; now: Date; locale: Locale }) {
+  const { t } = useI18n();
+  if (rooms.length === 0) {
+    return <div className="surface-card"><EmptyPanel title={t('admin.doNotDisturb')} copy={t('admin.noActiveDoNotDisturbRooms')} /></div>;
+  }
+
+  return <section className="area-dnd-strip" aria-label={t('device.activeDoNotDisturbRooms')}>
+    <div className="area-dnd-strip__rooms" role="list">
+      {rooms.map((room) => {
+        const displayName = resolveLocalizedValue(room.displayName, locale, room.displayNameVariants) ?? room.displayName;
+        const roomNameIncludesCode = localizedDndRoomNameContainsCode(displayName, room.code, locale);
+        const age = resolveDoNotDisturbRoomAge(room.doNotDisturbActivatedAt, now, locale);
+        const elapsedLabel = age.elapsed === null ? t('device.doNotDisturbTimeUnavailable') : t('device.doNotDisturbActiveFor', { time: age.elapsed });
+
+        return <div className={`area-dnd-room area-dnd-room--${age.severity}`} role="listitem" key={room.id}>
+          <Moon size={16} aria-hidden="true" />
+          {roomNameIncludesCode ? <strong>{displayName}</strong> : <><strong>{room.code}</strong><span>{displayName}</span></>}
+          <span className="area-dnd-room__age">{elapsedLabel}</span>
+        </div>;
+      })}
+    </div>
+  </section>;
+}
+
+function localizedDndRoomNameContainsCode(displayName: string, roomCode: string, locale: Locale): boolean {
+  const normalizedCode = roomCode.trim().toLocaleLowerCase(locale);
+  if (normalizedCode.length === 0) return false;
+  const escapedCode = normalizedCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapedCode}(?:$|[^\\p{L}\\p{N}])`, 'u').test(displayName.toLocaleLowerCase(locale));
+}
+
+function AdminRequestStageTiming({ request, now, locale, t, thresholds }: { request: RequestDTO; now: Date; locale: Locale; t: (key: MessageKey, parameters?: Record<string, string | number>) => string; thresholds: ReturnType<typeof resolveAdminQueueDelayThresholds> }) {
+  const delay = getAdminRequestDelayState(request, now, thresholds);
+  if (delay === null) return <span className="request-stage-timing__unavailable">—</span>;
+
+  return (
+    <div className={`request-stage-timing${delay.overdue ? ' request-stage-timing--overdue' : ''}`} data-admin-stage-age="true" data-admin-stage-overdue={delay.overdue}>
+      <span className="request-stage-timing__label">{t('admin.currentStageAge')}</span>
+      <strong className="request-stage-timing__value">{formatAdminElapsedWithAgo(delay.elapsedMs, locale, t('common.ago'))}</strong>
+      {delay.overdue && <span className="request-stage-timing__warning" role="status">{t('admin.delayWarning')}</span>}
+    </div>
+  );
+}
+
+function AdminRequestLifecycleView({ request, locale, t }: { request: RequestDTO; locale: Locale; t: (key: MessageKey, parameters?: Record<string, string | number>) => string }) {
+  const lifecycle = buildAdminRequestLifecycle(request);
+
+  return (
+    <div className="request-lifecycle" data-admin-request-lifecycle="true">
+      {lifecycle.segments.map((segment) => (
+        <span className="request-lifecycle__segment" key={`${segment.stage}-${segment.startedAt}`} data-lifecycle-stage={segment.stage}>
+          <span>{requestLifecycleStageLabel(segment.stage, locale)}</span>
+          <strong>{formatAdminDuration(segment.durationMs, locale)}</strong>
+        </span>
+      ))}
+      <span className="request-lifecycle__total">
+        <span>{t('admin.totalElapsed')}</span>
+        <strong>{formatAdminDuration(lifecycle.totalDurationMs, locale)}</strong>
+      </span>
     </div>
   );
 }
@@ -1142,20 +1244,20 @@ function DeviceRebindForm({ busy, onCancel, onSubmit }: { busy: boolean; onCance
   return <form className="device-action-form" onSubmit={async (event) => { event.preventDefault(); await onSubmit(reason); }}><p className="eyebrow eyebrow--muted">{t('admin.credentialReset')}</p><TextInput label={t('admin.reason')} value={reason} onChange={setReason} placeholder={t('admin.rebindPlaceholder')} required /><div className="form-actions"><button className="button button--ghost button--small" type="button" onClick={onCancel}>{t('common.cancel')}</button><button className="button button--dark button--small" type="submit" disabled={busy}>{t('admin.rebindDevice')}</button></div></form>;
 }
 
-function RequestHistoryDialog({ request, history, busy, error, clockFormat, onClose }: { request: RequestDTO; history: RequestHistoryDTO[] | null; busy: boolean; error: string | null; clockFormat: ClockFormat; onClose: () => void }) {
+export function RequestHistoryDialog({ request, history, busy, error, clockFormat, timeZone = 'UTC', onClose }: { request: RequestDTO; history: RequestHistoryDTO[] | null; busy: boolean; error: string | null; clockFormat: ClockFormat; timeZone?: string; onClose: () => void }) {
   const { locale, t } = useI18n();
   return (
     <Modal open title={resolveServiceDisplayName(request.service, locale)} onClose={onClose} closeLabel={t('common.closeDialog')}>
         <p className="eyebrow eyebrow--muted">{t('admin.requestHistory')}</p>
-        <p className="modal-card__copy">{t('admin.roomPrefix', { name: resolveLocalizedValue(request.room.displayName, locale, request.room.displayNameVariants) ?? request.room.displayName })} · {resolveAreaDisplayName(request.responsibleArea, locale)}</p>
+        <p className="modal-card__copy">{t('admin.roomPrefix', { name: resolveLocalizedValue(request.room.displayName, locale, request.room.displayNameVariants) ?? request.room.displayName })} · {resolveAreaDisplayName(request.responsibleArea, locale)} · {t('request.responsible')}: {resolveResponsibleName(request.responsibleName, t('request.unassigned'))}</p>
         {busy && <p className="form-hint">{t('admin.loadingHistory')}</p>}
         {error !== null && <p className="form-error" role="alert">{error}</p>}
         {history !== null && (
           <ol className="request-history">
             {history.map((entry) => (
               <li className="request-history__item" key={entry.id}>
-                 <div><strong>{entry.fromStatus === null ? t('admin.created') : `${requestStatusLabel(entry.fromStatus, locale)} → ${requestStatusLabel(entry.toStatus, locale)}`}</strong><span>{actorTypeLabel(entry.actorType, locale)} · {entry.actorId ?? t('admin.system')}</span></div>
-                  <time dateTime={entry.createdAt}>{formatDate(entry.createdAt, locale, clockFormat)}</time>
+                  <div><strong>{entry.fromStatus === null ? t('admin.created') : `${requestStatusLabel(entry.fromStatus, locale)} → ${requestStatusLabel(entry.toStatus, locale)}`}</strong><span>{actorTypeLabel(entry.actorType, locale)} · {entry.actorId ?? t('admin.system')}</span><span className="request-responsible">{t('request.responsible')}: {resolveResponsibleName(entry.toStatus === 'IN_PROGRESS' ? entry.responsibleName : request.responsibleName, t('request.unassigned'))}</span></div>
+                  <time dateTime={entry.createdAt}>{formatDate(entry.createdAt, locale, clockFormat, timeZone)}</time>
               </li>
             ))}
           </ol>
@@ -1164,9 +1266,9 @@ function RequestHistoryDialog({ request, history, busy, error, clockFormat, onCl
   );
 }
 
-function AuditTab({ snapshot, clockFormat }: { snapshot: AdminSystemSnapshot; clockFormat: ClockFormat }) {
+function AuditTab({ snapshot, clockFormat, timeZone }: { snapshot: AdminSystemSnapshot; clockFormat: ClockFormat; timeZone: string }) {
   const { locale, t } = useI18n();
-    return <div className="admin-content"><div className="surface-card audit-table">{snapshot.auditLog.length === 0 ? <EmptyPanel title={t('admin.noActivity')} copy={t('admin.activityWillAppear')} /> : snapshot.auditLog.map((entry) => <div className="audit-row" key={entry.id}><span className="audit-row__id">#{entry.id}</span><div><strong>{auditActionLabel(entry.action, locale)}</strong><span>{actorTypeLabel(entry.actorType, locale)} · {entityTypeLabel(entry.entityType, locale)}{entry.entityId === null ? '' : ` · ${entry.entityId}`}</span></div><time dateTime={entry.createdAt}>{formatDate(entry.createdAt, locale, clockFormat)}</time></div>)}</div></div>;
+    return <div className="admin-content"><div className="surface-card audit-table">{snapshot.auditLog.length === 0 ? <EmptyPanel title={t('admin.noActivity')} copy={t('admin.activityWillAppear')} /> : snapshot.auditLog.map((entry) => <div className="audit-row" key={entry.id}><span className="audit-row__id">#{entry.id}</span><div><strong>{auditActionLabel(entry.action, locale)}</strong><span>{actorTypeLabel(entry.actorType, locale)} · {entityTypeLabel(entry.entityType, locale)}{entry.entityId === null ? '' : ` · ${entry.entityId}`}</span></div><time dateTime={entry.createdAt}>{formatDate(entry.createdAt, locale, clockFormat, timeZone)}</time></div>)}</div></div>;
 }
 
 function SecretTokenCard({ token, onDismiss, onUseOnThisStation }: { token: string; onDismiss: () => void; onUseOnThisStation?: (() => void) | undefined }) {
@@ -1182,7 +1284,7 @@ function MetricCard({ label, value, note, accent }: { label: string; value: stri
 
 function CompactRequest({ request }: { request: RequestDTO }) {
   const { locale, t } = useI18n();
-  return <div className="compact-request"><span className={`status-dot status-dot--${request.status.toLowerCase().replace('_', '-')}`} /><div><strong>{resolveServiceDisplayName(request.service, locale)}</strong><span>{t('admin.roomPrefix', { name: resolveLocalizedValue(request.room.displayName, locale, request.room.displayNameVariants) ?? request.room.displayName })} · {formatElapsedWithAgo(request.createdAt, new Date(), locale, t('common.ago'))}</span></div><span className={`status-label status-label--${request.status.toLowerCase().replace('_', '-')}`}>{requestStatusLabel(request.status, locale)}</span></div>;
+  return <div className="compact-request"><span className={`status-dot status-dot--${request.status.toLowerCase().replace('_', '-')}`} /><div><strong>{resolveServiceDisplayName(request.service, locale)}</strong><span>{t('admin.roomPrefix', { name: resolveLocalizedValue(request.room.displayName, locale, request.room.displayNameVariants) ?? request.room.displayName })} · {formatElapsedWithAgo(request.createdAt, new Date(), locale, t('common.ago'))}</span><span className="request-responsible">{t('request.responsible')}: {resolveResponsibleName(request.responsibleName, t('request.unassigned'))}</span></div><span className={`status-label status-label--${request.status.toLowerCase().replace('_', '-')}`}>{requestStatusLabel(request.status, locale)}</span></div>;
 }
 
 function EmptyPanel({ title, copy }: { title: string; copy: string }) { return <div className="empty-panel"><span aria-hidden="true"><Circle size={19} strokeWidth={1.8} /></span><div><strong>{title}</strong><p>{copy}</p></div></div>; }
@@ -1199,12 +1301,13 @@ function SelectInput({ label, value, onChange, options, required = false, modal 
   return <TouchSelect label={label} value={value} onChange={onChange} options={options} placeholder={t('common.select', { label: label.toLowerCase() })} required={required} modal={modal} />;
 }
 
-function formatDate(value: string, locale: Locale = 'en', clockFormat: ClockFormat = '12h'): string {
+function formatDate(value: string, locale: Locale = 'en', clockFormat: ClockFormat = '12h', timeZone = 'UTC'): string {
   return new Intl.DateTimeFormat(locale, {
     month: 'short',
     day: 'numeric',
     hour: clockFormat === '24h' ? '2-digit' : 'numeric',
     minute: '2-digit',
-    hour12: clockFormat === '12h'
+    hour12: clockFormat === '12h',
+    timeZone
   }).format(new Date(value));
 }

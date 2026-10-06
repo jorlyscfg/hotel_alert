@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type InvalidEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type InvalidEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import { useI18n } from '../i18n';
 
@@ -64,21 +64,20 @@ export function TouchSelect({ label, value, options, onChange, selectedLabel, cl
     const handlePointerDown = (event: PointerEvent): void => {
       const isInsideRoot = event.target instanceof Node && rootRef.current?.contains(event.target) === true;
       if (isInsideRoot) return;
-       if (modal) {
-         event.preventDefault();
-         event.stopPropagation();
-         setOpen(false);
-         return;
-       }
+      if (modal) {
+        // Keep the modal layer mounted until the matching click can be consumed.
+        event.stopPropagation();
+        return;
+      }
       setOpen(false);
     };
     const handleClick = (event: MouseEvent): void => {
       if (!modal) return;
       const isInsideRoot = event.target instanceof Node && rootRef.current?.contains(event.target) === true;
-       if (isInsideRoot) return;
-       event.preventDefault();
-       event.stopPropagation();
-       setOpen(false);
+      if (isInsideRoot) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
     };
     const handleKeyDown = (event: globalThis.KeyboardEvent): void => {
       if (event.key === 'Escape') setOpen(false);
@@ -139,8 +138,22 @@ export function TouchSelect({ label, value, options, onChange, selectedLabel, cl
   }
 
   function handleOptionPointerDown(event: ReactPointerEvent<HTMLDivElement>, option: TouchSelectOption): void {
+    if (modal) return;
     event.preventDefault();
     selectOption(option);
+  }
+
+  function handleModalOptionClick(event: ReactMouseEvent<HTMLDivElement>, option: TouchSelectOption): void {
+    if (!modal) return;
+    event.preventDefault();
+    event.stopPropagation();
+    selectOption(option);
+  }
+
+  function handleModalBackdropClick(event: ReactMouseEvent<HTMLDivElement>): void {
+    event.preventDefault();
+    event.stopPropagation();
+    setOpen(false);
   }
 
   return (
@@ -167,7 +180,7 @@ export function TouchSelect({ label, value, options, onChange, selectedLabel, cl
         {selectedOption === undefined ? <span className="touch-select__placeholder">{resolvedPlaceholder}</span> : <span className="touch-select__value">{selectedOption.icon !== undefined && <span className="touch-select__option-icon" aria-hidden="true">{selectedOption.icon}</span>}<span>{selectedLabel ?? selectedOption.label}</span></span>}
         <span className="touch-select__chevron" aria-hidden="true"><ChevronDown size={18} strokeWidth={1.8} /></span>
        </button>
-        {open && modal && <div className="touch-select__backdrop" aria-hidden="true" onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); setOpen(false); }} />}
+        {open && modal && <div className="touch-select__backdrop" aria-hidden="true" onClick={handleModalBackdropClick} />}
        {open && (
         <div className="touch-select__menu" id={listboxId} role="listbox" aria-labelledby={labelId}>
           {options.length === 0 ? <div className="touch-select__empty">{resolvedPlaceholder}</div> : options.map((option, index) => (
@@ -180,7 +193,8 @@ export function TouchSelect({ label, value, options, onChange, selectedLabel, cl
               aria-posinset={index + 1}
               aria-setsize={options.length}
               aria-selected={option.value === value}
-               onPointerDown={(event) => handleOptionPointerDown(event, option)}
+              onPointerDown={(event) => handleOptionPointerDown(event, option)}
+              onClick={(event) => handleModalOptionClick(event, option)}
             >
               <span className="touch-select__value">{option.icon !== undefined && <span className="touch-select__option-icon" aria-hidden="true">{option.icon}</span>}<span>{option.label}</span></span>
                {option.value === value && <Check className="touch-select__check" aria-hidden="true" size={16} strokeWidth={2} />}
