@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SyntheticEvent } from 'react';
 import type { InformationImageDTO, InformationImageLanguage, InformationImageVariant } from '@hotel/shared';
-import { fetchDeviceInformationImageContent, isDeviceAuthFailure, setDeviceInformationScreensaver } from '../../api';
+import { fetchDeviceInformationImageContent, isDeviceAuthFailure } from '../../api';
+import { setNativeRoomScreensaverActive } from '../../native-bridge';
 
 export const INFORMATION_CAROUSEL_IDLE_MS = 5_000;
 export const INFORMATION_CAROUSEL_SLIDE_MS = 5_000;
 export const INFORMATION_CAROUSEL_COMPACT_MAX = 520;
+const MAX_NATIVE_SAVER_SIGNAL_DIAGNOSTICS = 14;
 
 export function resolveInformationImageVariant(width: number, height: number): InformationImageVariant {
   return width <= INFORMATION_CAROUSEL_COMPACT_MAX && height <= INFORMATION_CAROUSEL_COMPACT_MAX ? 'square480' : 'wide';
@@ -47,7 +49,6 @@ export interface InformationCarouselLifecycleState {
 
 export interface InformationCarouselLifecycleOptions {
   imageCount: number;
-  setScreensaver: (enabled: boolean) => Promise<void>;
   inactivityMs?: number;
   slideIntervalMs?: number;
   onStateChange?: (state: InformationCarouselLifecycleState) => void;
@@ -111,12 +112,9 @@ export function createInformationCarouselLifecycle(options: InformationCarouselL
   let activeIndex = 0;
   let started = false;
   let disposed = false;
-  let cycleActive = false;
   let generation = 0;
   let cycleId = 0;
   let timerHandle: unknown = null;
-  let desiredScreensaverEnabled = true;
-  let commandTail = Promise.resolve();
 
   const emitState = (): void => {
     options.onStateChange?.({ phase, activeIndex });
@@ -131,14 +129,6 @@ export function createInformationCarouselLifecycle(options: InformationCarouselL
   const invalidateTimers = (): void => {
     generation += 1;
     clearTimer();
-  };
-
-  const queueScreensaverCommand = (enabled: boolean): Promise<void> => {
-    if (desiredScreensaverEnabled === enabled) return commandTail;
-    desiredScreensaverEnabled = enabled;
-    const command = commandTail.then(() => options.setScreensaver(enabled));
-    commandTail = command.catch(() => undefined);
-    return commandTail;
   };
 
   const scheduleTimer = (
@@ -166,7 +156,6 @@ export function createInformationCarouselLifecycle(options: InformationCarouselL
   const completeCycle = (expectedGeneration: number, expectedCycleId: number): void => {
     if (disposed || generation !== expectedGeneration || cycleId !== expectedCycleId || phase !== 'GRACE') return;
 
-    cycleActive = false;
     phase = 'SAVER';
     activeIndex = 0;
     generation += 1;
@@ -192,12 +181,10 @@ export function createInformationCarouselLifecycle(options: InformationCarouselL
   function startCycle(expectedGeneration: number): void {
     if (disposed || generation !== expectedGeneration || imageCount === 0 || phase !== 'ROOM') return;
 
-    cycleActive = true;
     cycleId += 1;
     phase = 'IMAGE';
     activeIndex = 0;
     emitState();
-    void queueScreensaverCommand(false);
     scheduleTimer(timing.slideIntervalMs, expectedGeneration, () => advanceCycle(expectedGeneration, cycleId), cycleId, 'IMAGE');
   }
 
@@ -207,14 +194,11 @@ export function createInformationCarouselLifecycle(options: InformationCarouselL
     const normalizedCount = normalizeImageCount(nextImageCount);
     if (normalizedCount === imageCount) return;
 
-    const wasRunning = cycleActive || phase !== 'ROOM' || !desiredScreensaverEnabled;
     invalidateTimers();
     imageCount = normalizedCount;
-    cycleActive = false;
     phase = 'ROOM';
     activeIndex = 0;
     emitState();
-    if (wasRunning) void queueScreensaverCommand(true);
     scheduleInactivity();
   };
 
@@ -223,40 +207,31 @@ export function createInformationCarouselLifecycle(options: InformationCarouselL
     const normalizedTiming = normalizeInformationCarouselTiming(nextTiming);
     if (normalizedTiming.inactivityMs === timing.inactivityMs && normalizedTiming.slideIntervalMs === timing.slideIntervalMs) return;
 
-    const wasRunning = cycleActive || phase !== 'ROOM' || !desiredScreensaverEnabled;
     timing = normalizedTiming;
     invalidateTimers();
-    cycleActive = false;
     phase = 'ROOM';
     activeIndex = 0;
     emitState();
-    if (wasRunning) void queueScreensaverCommand(true);
     scheduleInactivity();
   };
 
   const cancel = (): void => {
     if (disposed) return;
 
-    const wasRunning = cycleActive || phase !== 'ROOM' || !desiredScreensaverEnabled;
     invalidateTimers();
-    cycleActive = false;
     phase = 'ROOM';
     activeIndex = 0;
     emitState();
-    if (wasRunning) void queueScreensaverCommand(true);
     scheduleInactivity();
   };
 
   const dispose = (): void => {
     if (disposed) return;
 
-    const wasRunning = cycleActive || phase !== 'ROOM' || !desiredScreensaverEnabled;
     invalidateTimers();
-    cycleActive = false;
     phase = 'ROOM';
     activeIndex = 0;
     disposed = true;
-    if (wasRunning) void queueScreensaverCommand(true);
   };
 
   return {
@@ -365,22 +340,13 @@ export function InformationCarousel({ images, locale = 'es', deviceToken, onAuth
   const [activeIndex, setActiveIndex] = useState(0);
   const [viewportSize, setViewportSize] = useState(() => readViewportSize());
   const lifecycleRef = useRef<InformationCarouselLifecycle | null>(null);
-  const screensaverHandlerRef = useRef<(enabled: boolean) => Promise<void>>(() => Promise.resolve());
   const cycleCompleteRef = useRef<(() => void) | undefined>(undefined);
+  const reportedNativeSaverSignalsRef = useRef(new Set<string>());
   const imagesRef = useRef(images);
   imagesRef.current = images;
   const imageVariant = viewportSize === null ? 'wide' : resolveInformationImageVariant(viewportSize.width, viewportSize.height);
   const imageKey = useMemo(() => `${locale}:${imageVariant}:${images.map((image) => `${image.id}:${image.updatedAt}`).join('|')}`, [imageVariant, images, locale]);
 
-  const setScreensaver = useCallback(async (enabled: boolean): Promise<void> => {
-    try {
-      await setDeviceInformationScreensaver(enabled, deviceToken);
-    } catch (error) {
-      if (isDeviceAuthFailure(error)) onAuthFailure();
-    }
-  }, [deviceToken, onAuthFailure]);
-
-  screensaverHandlerRef.current = setScreensaver;
   cycleCompleteRef.current = onCycleComplete;
 
   useEffect(() => {
@@ -388,6 +354,30 @@ export function InformationCarousel({ images, locale = 'es', deviceToken, onAuth
     window.addEventListener('resize', updateViewportSize);
     return () => window.removeEventListener('resize', updateViewportSize);
   }, []);
+
+  useEffect(() => {
+    const reportNativeSaverState = (active: boolean): void => {
+      const result = setNativeRoomScreensaverActive(active);
+      const diagnosticKey = `${active}:${result}`;
+      const reported = reportedNativeSaverSignalsRef.current;
+      if (reported.has(diagnosticKey) || reported.size >= MAX_NATIVE_SAVER_SIGNAL_DIAGNOSTICS) return;
+      reported.add(diagnosticKey);
+
+      const diagnostic = { event: 'room.screensaver.native_signal', active, result };
+      const diagnosticJson = JSON.stringify(diagnostic);
+      if (result === 'accepted') console.info(`[Hotel Alert ROOM screensaver] ${diagnosticJson}`);
+      else console.warn(`[Hotel Alert ROOM screensaver] ${diagnosticJson}`);
+    };
+    const syncNativeSaverState = (): void => reportNativeSaverState(experience === 'SAVER');
+    syncNativeSaverState();
+    window.addEventListener('focus', syncNativeSaverState);
+    document.addEventListener('visibilitychange', syncNativeSaverState);
+    return () => {
+      window.removeEventListener('focus', syncNativeSaverState);
+      document.removeEventListener('visibilitychange', syncNativeSaverState);
+      reportNativeSaverState(false);
+    };
+  }, [experience]);
 
   const handleLifecycleStateChange = useCallback((state: InformationCarouselLifecycleState): void => {
     setExperience(state.phase);
@@ -399,7 +389,6 @@ export function InformationCarousel({ images, locale = 'es', deviceToken, onAuth
       imageCount: 0,
       inactivityMs: inactivityMs ?? DEFAULT_INFORMATION_CAROUSEL_TIMING.inactivityMs,
       slideIntervalMs: slideIntervalMs ?? DEFAULT_INFORMATION_CAROUSEL_TIMING.slideIntervalMs,
-      setScreensaver: (enabled) => screensaverHandlerRef.current(enabled),
       onStateChange: handleLifecycleStateChange,
       onCycleComplete: () => cycleCompleteRef.current?.()
     });

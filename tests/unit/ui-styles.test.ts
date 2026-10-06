@@ -62,6 +62,19 @@ describe('accessible UI styles', () => {
     expect(styles).toMatch(/\.date-picker__trigger \{[^}]*min-height: 48px;/s);
   });
 
+  it('keeps ROOM saver weather larger, lower, and scrollable on short viewports', () => {
+    const contentRule = styles.match(/\.room-screensaver__content \{[^}]*\}/s)?.[0] ?? '';
+    const weatherRule = styles.match(/\.room-screensaver__weather \{[^}]*\}/s)?.[0] ?? '';
+    const valueRule = styles.match(/\.room-screensaver__weather-value \{[^}]*\}/s)?.[0] ?? '';
+    const iconRule = styles.match(/\.room-screensaver__weather-icon \{[^}]*\}/s)?.[0] ?? '';
+
+    expect(contentRule).toContain('max-height: 100%;');
+    expect(contentRule).toContain('overflow-y: auto;');
+    expect(weatherRule).toContain('margin-top: clamp(44px, 7vh, 72px);');
+    expect(valueRule).toContain('font-size: clamp(1.75rem, 5vw, 3rem);');
+    expect(iconRule).toContain('height: clamp(68px, 15vw, 112px);');
+  });
+
   it('styles compact AREA request metadata and keeps DND room lists scrollable', () => {
     const roomRule = styles.match(/\.queue-card__room \{[^}]*\}/s)?.[0] ?? '';
     const metadataRule = styles.match(/\.queue-card__metadata \{[^}]*\}/s)?.[0] ?? '';
@@ -103,7 +116,7 @@ describe('accessible UI styles', () => {
 
   it('colors DND room and tab badges by activation age and keeps unknown times neutral', () => {
     const severityColors = {
-      green: '#2f6b45',
+      gray: '#495057',
       yellow: '#785700',
       red: '#a94d3a',
       unknown: '#70777a'

@@ -73,12 +73,16 @@ describe('information carousel timeline', () => {
     expect(informationCarouselSource).toContain('key={`${activeImage.image.id}:${activeIndex}`}');
   });
 
+  it('owns the saver in the app instead of sending external screensaver commands', () => {
+    expect(informationCarouselSource).not.toContain('setDeviceInformationScreensaver');
+    expect(informationCarouselSource).not.toContain('queueScreensaverCommand');
+  });
+
   it('keeps an active overlay through pointer-down and cancels only after a consumed click', () => {
     const states: InformationCarouselLifecycleState[] = [];
     const scheduled: Array<() => void> = [];
     const lifecycle = createInformationCarouselLifecycle({
       imageCount: 1,
-      setScreensaver: async () => undefined,
       onStateChange: (state) => states.push(state),
       schedule: (callback) => {
         scheduled.push(callback);
@@ -117,8 +121,7 @@ describe('information carousel timeline', () => {
   it('keeps the custom saver active through pointer-down and returns to ROOM after the click', async () => {
     vi.useFakeTimers();
     const states: InformationCarouselLifecycleState[] = [];
-    const setScreensaver = vi.fn(async (_enabled: boolean) => undefined);
-    const lifecycle = createInformationCarouselLifecycle({ imageCount: 1, setScreensaver, onStateChange: (state) => states.push(state) });
+    const lifecycle = createInformationCarouselLifecycle({ imageCount: 1, onStateChange: (state) => states.push(state) });
 
     lifecycle.start();
     await vi.advanceTimersByTimeAsync(15_000);
@@ -137,7 +140,6 @@ describe('information carousel timeline', () => {
     expect(click.prevented).toBe(true);
     expect(click.stopped).toBe(true);
     expect(states.at(-1)).toEqual({ phase: 'ROOM', activeIndex: 0 });
-    expect(setScreensaver).toHaveBeenLastCalledWith(true);
     lifecycle.dispose();
   });
 });
@@ -145,11 +147,9 @@ describe('information carousel timeline', () => {
 describe('information carousel lifecycle', () => {
   it('ignores image-count updates after disposal', () => {
     const states: InformationCarouselLifecycleState[] = [];
-    const setScreensaver = vi.fn(async (_enabled: boolean) => undefined);
     const schedule = vi.fn((_callback: () => void, _delayMs: number) => 0);
     const lifecycle = createInformationCarouselLifecycle({
       imageCount: 0,
-      setScreensaver,
       onStateChange: (state) => states.push(state),
       schedule
     });
@@ -158,119 +158,95 @@ describe('information carousel lifecycle', () => {
     lifecycle.setImageCount(1);
 
     expect(states).toEqual([]);
-    expect(setScreensaver).not.toHaveBeenCalled();
     expect(schedule).not.toHaveBeenCalled();
   });
 
-  it('enters the custom saver after the grace period and stays until interaction', async () => {
+  it('enters the app-owned custom saver after the grace period and stays until interaction', async () => {
     vi.useFakeTimers();
     const states: InformationCarouselLifecycleState[] = [];
-    const setScreensaver = vi.fn(async (_enabled: boolean) => undefined);
     const onCycleComplete = vi.fn();
     const lifecycle = createInformationCarouselLifecycle({
       imageCount: 2,
-      setScreensaver,
       onStateChange: (state) => states.push(state),
       onCycleComplete
     });
 
     lifecycle.start();
     await vi.advanceTimersByTimeAsync(4_999);
-    expect(setScreensaver).not.toHaveBeenCalled();
+    expect(states).toEqual([]);
 
     await vi.advanceTimersByTimeAsync(1);
     expect(states.at(-1)).toEqual({ phase: 'IMAGE', activeIndex: 0 });
-    expect(setScreensaver).toHaveBeenNthCalledWith(1, false);
 
     await vi.advanceTimersByTimeAsync(5_000);
     expect(states.at(-1)).toEqual({ phase: 'IMAGE', activeIndex: 1 });
     await vi.advanceTimersByTimeAsync(5_000);
     expect(states.at(-1)).toEqual({ phase: 'GRACE', activeIndex: 1 });
     expect(onCycleComplete).not.toHaveBeenCalled();
-    expect(setScreensaver).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(4_999);
     expect(onCycleComplete).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(onCycleComplete).toHaveBeenCalledOnce();
     expect(states.at(-1)).toEqual({ phase: 'SAVER', activeIndex: 0 });
-    expect(setScreensaver).toHaveBeenCalledOnce();
-    expect(setScreensaver).toHaveBeenNthCalledWith(1, false);
 
     await vi.advanceTimersByTimeAsync(60_000);
     expect(states.at(-1)).toEqual({ phase: 'SAVER', activeIndex: 0 });
-    expect(setScreensaver).toHaveBeenCalledOnce();
     expect(onCycleComplete).toHaveBeenCalledOnce();
 
     lifecycle.cancel();
-    await flushPromises();
     expect(states.at(-1)).toEqual({ phase: 'ROOM', activeIndex: 0 });
-    expect(setScreensaver).toHaveBeenNthCalledWith(2, true);
     lifecycle.dispose();
   });
 
-  it('does not re-enable the device screensaver when the custom saver begins', async () => {
+  it('keeps Hotel Alert in the custom saver without an external device screensaver', async () => {
     vi.useFakeTimers();
     const states: InformationCarouselLifecycleState[] = [];
-    const setScreensaver = vi.fn(async (_enabled: boolean) => undefined);
     const onCycleComplete = vi.fn();
-    const lifecycle = createInformationCarouselLifecycle({ imageCount: 1, setScreensaver, onStateChange: (state) => states.push(state), onCycleComplete });
+    const lifecycle = createInformationCarouselLifecycle({ imageCount: 1, onStateChange: (state) => states.push(state), onCycleComplete });
 
     lifecycle.start();
     await vi.advanceTimersByTimeAsync(15_000);
 
     expect(states.at(-1)).toEqual({ phase: 'SAVER', activeIndex: 0 });
-    expect(setScreensaver).toHaveBeenCalledOnce();
-    expect(setScreensaver).toHaveBeenNthCalledWith(1, false);
     expect(onCycleComplete).toHaveBeenCalledOnce();
 
     await vi.advanceTimersByTimeAsync(60_000);
     expect(onCycleComplete).toHaveBeenCalledOnce();
-    expect(setScreensaver).toHaveBeenCalledOnce();
     lifecycle.dispose();
   });
 
   it('starts one new information cycle only after interaction with the custom saver', async () => {
     vi.useFakeTimers();
-    const commands: boolean[] = [];
-    const setScreensaver = vi.fn((enabled: boolean): Promise<void> => {
-      commands.push(enabled);
-      return Promise.resolve();
-    });
     const onCycleComplete = vi.fn();
     const states: InformationCarouselLifecycleState[] = [];
-    const lifecycle = createInformationCarouselLifecycle({ imageCount: 1, setScreensaver, onStateChange: (state) => states.push(state), onCycleComplete });
+    const lifecycle = createInformationCarouselLifecycle({ imageCount: 1, onStateChange: (state) => states.push(state), onCycleComplete });
 
     lifecycle.start();
     await vi.advanceTimersByTimeAsync(15_000);
 
-    expect(commands).toEqual([false]);
     expect(states.at(-1)).toEqual({ phase: 'SAVER', activeIndex: 0 });
     expect(onCycleComplete).toHaveBeenCalledOnce();
 
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(commands).toEqual([false]);
     expect(states.at(-1)).toEqual({ phase: 'SAVER', activeIndex: 0 });
 
     lifecycle.cancel();
-    await flushPromises();
-    expect(commands).toEqual([false, true]);
+    expect(states.at(-1)).toEqual({ phase: 'ROOM', activeIndex: 0 });
     await vi.advanceTimersByTimeAsync(4_999);
-    expect(commands).toEqual([false, true]);
+    expect(states.at(-1)).toEqual({ phase: 'ROOM', activeIndex: 0 });
     await vi.advanceTimersByTimeAsync(1);
 
-    expect(commands).toEqual([false, true, false]);
+    expect(states.at(-1)).toEqual({ phase: 'IMAGE', activeIndex: 0 });
     expect(onCycleComplete).toHaveBeenCalledOnce();
     lifecycle.dispose();
   });
 
-  it('cancels stale queued timers and safely re-enables the screensaver', async () => {
+  it('cancels stale timers when returning from the app-owned screensaver', () => {
     const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
     const states: InformationCarouselLifecycleState[] = [];
-    const setScreensaver = vi.fn(async (_enabled: boolean) => undefined);
     const lifecycle = createInformationCarouselLifecycle({
       imageCount: 2,
-      setScreensaver,
       onStateChange: (state) => states.push(state),
       schedule: (callback, delayMs) => {
         scheduled.push({ callback, delayMs });
@@ -288,11 +264,8 @@ describe('information carousel lifecycle', () => {
     const staleSlideTimer = scheduled[1];
     lifecycle.cancel();
     staleSlideTimer?.callback();
-    await flushPromises();
 
     expect(states.at(-1)).toEqual({ phase: 'ROOM', activeIndex: 0 });
-    expect(setScreensaver).toHaveBeenNthCalledWith(1, false);
-    expect(setScreensaver).toHaveBeenNthCalledWith(2, true);
   });
 
   it('schedules configured inactivity and slide intervals', () => {
@@ -301,7 +274,6 @@ describe('information carousel lifecycle', () => {
       imageCount: 1,
       inactivityMs: 1_000,
       slideIntervalMs: 2_000,
-      setScreensaver: async () => undefined,
       schedule: (callback, delayMs) => {
         scheduled.push({ callback, delayMs });
         return scheduled.length - 1;
@@ -321,12 +293,10 @@ describe('information carousel lifecycle', () => {
   it('updates timing in place without leaving a stale cycle active', async () => {
     const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
     const states: InformationCarouselLifecycleState[] = [];
-    const setScreensaver = vi.fn(async (_enabled: boolean) => undefined);
     const lifecycle = createInformationCarouselLifecycle({
       imageCount: 1,
       inactivityMs: 1_000,
       slideIntervalMs: 2_000,
-      setScreensaver,
       onStateChange: (state) => states.push(state),
       schedule: (callback, delayMs) => {
         scheduled.push({ callback, delayMs });
@@ -349,59 +319,19 @@ describe('information carousel lifecycle', () => {
     scheduled[2]?.callback();
     expect(states.at(-1)).toEqual({ phase: 'IMAGE', activeIndex: 0 });
     expect(scheduled.at(-1)?.delayMs).toBe(4_000);
-    await flushPromises();
-    expect(setScreensaver).toHaveBeenNthCalledWith(1, false);
-    expect(setScreensaver).toHaveBeenNthCalledWith(2, true);
-    expect(setScreensaver).toHaveBeenCalledTimes(2);
     lifecycle.dispose();
   });
 
-  it('serializes screensaver commands so a newer cycle ends with the latest requested state', async () => {
+  it('does not leave ROOM or complete when the image set is empty', async () => {
     vi.useFakeTimers();
-    const resolvers: Array<() => void> = [];
-    const commands: boolean[] = [];
-    const setScreensaver = vi.fn((enabled: boolean) => {
-      commands.push(enabled);
-      return new Promise<void>((resolve) => resolvers.push(resolve));
-    });
-    const lifecycle = createInformationCarouselLifecycle({ imageCount: 2, setScreensaver });
-
-    lifecycle.start();
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(commands).toEqual([false]);
-
-    lifecycle.cancel();
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(commands).toEqual([false]);
-
-    resolvers.shift()?.();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(commands).toEqual([false, true]);
-
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(commands).toEqual([false, true]);
-    resolvers.shift()?.();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(commands).toEqual([false, true, false]);
-
-    resolvers.shift()?.();
-    lifecycle.cancel();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(commands).toEqual([false, true, false, true]);
-    resolvers.shift()?.();
-    lifecycle.dispose();
-  });
-
-  it('does not control the screensaver or complete when the image set is empty', async () => {
-    vi.useFakeTimers();
-    const setScreensaver = vi.fn(async (_enabled: boolean) => undefined);
     const onCycleComplete = vi.fn();
-    const lifecycle = createInformationCarouselLifecycle({ imageCount: 0, setScreensaver, onCycleComplete });
+    const states: InformationCarouselLifecycleState[] = [];
+    const lifecycle = createInformationCarouselLifecycle({ imageCount: 0, onCycleComplete, onStateChange: (state) => states.push(state) });
 
     lifecycle.start();
     await vi.advanceTimersByTimeAsync(60_000);
 
-    expect(setScreensaver).not.toHaveBeenCalled();
+    expect(states.every((state) => state.phase === 'ROOM')).toBe(true);
     expect(onCycleComplete).not.toHaveBeenCalled();
     lifecycle.dispose();
   });
