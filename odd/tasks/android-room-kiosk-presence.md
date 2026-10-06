@@ -1,12 +1,14 @@
 # ODD Task: Android ROOM kiosk and persistent presence
 
+> **Supersession:** Hotel Alert's APK owns the ROOM display and in-app screensaver lifecycle. FreeKiosk comparisons below are historical research only; no separate app, configuration, API key, or integration is required.
+
 ## Objective
 
 Make the Hotel Alert Android APK a practical replacement for the separate ROOM kiosk app: keep the existing shared web registration flow, enter a full-screen ROOM experience after assignment, return to it after reboot, and keep the ROOM station heartbeating while the display is off.
 
 ## Problem and Why
 
-ROOM assignment and live presence currently depend on the WebView's browser storage and JavaScript timers. When Android suspends the WebView or the device restarts, the station may stop reporting presence. The APK has no HOME launcher or kiosk policy today. Full-screen immersive UI is not strict lockdown; Android Lock Task requires Device Owner policy. FreeKiosk's useful lesson is to distinguish a low-friction Basic mode from an optional fully managed/strict mode instead of promising both through an ordinary launcher setting.
+ROOM assignment and live presence currently depend on the WebView's browser storage and JavaScript timers. When Android suspends the WebView or the device restarts, the station may stop reporting presence. The APK has no HOME launcher or kiosk policy today. Full-screen immersive UI is not strict lockdown; Android Lock Task requires Device Owner policy. Historical FreeKiosk research highlighted the distinction between a low-friction Basic mode and an optional fully managed/strict mode; this is background only, not a product dependency or implementation target.
 
 ## Authorized Scope
 
@@ -147,7 +149,7 @@ ROOM assignment and live presence currently depend on the WebView's browser stor
 
 ## Verification Evidence
 
-- FreeKiosk's current installation/features documentation distinguishes Basic auto-start/partial lock from Device Owner strict Lock Task. Its setup guide documents `dpm set-device-owner` and says factory reset is typically not needed when account/device state allows; some OEM/device states may still require remediation.
+- Historical FreeKiosk installation/features documentation distinguished Basic auto-start/partial lock from Device Owner strict Lock Task. This is retained as research context only; it is not a Hotel Alert setup instruction.
 - Android official Lock Task documentation confirms only DPC-allowlisted apps can enter real Lock Task; screen pinning is user-exitable: https://developer.android.com/work/dpc/dedicated-devices/lock-task-mode.
 - Android's DeviceAdminReceiver contract requires the system-protected `BIND_DEVICE_ADMIN` permission, device-admin XML metadata, and `DEVICE_ADMIN_ENABLED` intent filter: https://developer.android.com/reference/android/app/admin/DeviceAdminReceiver.
 - Android Device Owner is an operator-provisioned management state; the APK cannot grant itself that authority. Avoid disabling system lock-task features absent an explicit recovery policy: https://developer.android.com/work/dpc/dedicated-devices/cookbook.
@@ -156,7 +158,7 @@ ROOM assignment and live presence currently depend on the WebView's browser stor
 - Android's `RoleManager.createRequestRoleIntent()` explicitly prompts the user to grant HOME; `DevicePolicyManager.addPersistentPreferredActivity()` requires profile/device-owner authority to set a persistent default intent handler: https://developer.android.com/reference/android/app/role/RoleManager ; https://developer.android.com/reference/android/app/admin/DevicePolicyManager#addPersistentPreferredActivity(android.content.ComponentName,android.content.IntentFilter,android.content.ComponentName).
 - Android restricts background Activity launches starting in API 29; a normal HOME selection does not authorize arbitrary foreground launches when the screen wakes: https://developer.android.com/guide/components/activities/background-starts.
 - Android documents `ACTION_SCREEN_ON` as a runtime system broadcast; it is not a manifest receiver or a general exemption from background Activity launch restrictions: https://developer.android.com/reference/android/content/Intent#ACTION_SCREEN_ON ; https://developer.android.com/guide/components/activities/secure-bal.
-- FreeKiosk's changelog documents a dynamic `SCREEN_ON` watchdog that checked app foreground state and relaunched after wake, tested on Xiaomi MiTV-MSSP3 / Android 9; this is evidence for a best-effort recovery pattern, not proof it bypasses modern Android launch restrictions: https://github.com/RushB-fr/freekiosk/blob/main/CHANGELOG.md.
+- Historical FreeKiosk changelog documented a dynamic `SCREEN_ON` watchdog that checked app foreground state and relaunched after wake, tested on Xiaomi MiTV-MSSP3 / Android 9; it is not a Hotel Alert implementation target and does not prove that modern Android launch restrictions can be bypassed: https://github.com/RushB-fr/freekiosk/blob/main/CHANGELOG.md.
 - Android lists user-granted `SYSTEM_ALERT_WINDOW` as an exception that permits background Activity launches; requesting it is a security-sensitive opt-in and must be explained, user-granted, and checked before recovery: https://developer.android.com/guide/components/activities/secure-bal.
 - Android 15 target-35 boot restrictions explicitly prohibit boot-starting selected FGS types (including `dataSync`) but list no generic Activity launch allowance; the app must not start its fullscreen Activity directly from a boot receiver: https://developer.android.com/about/versions/15/behavior-changes-15.
 - Android target-35 documentation prohibits launching `dataSync` FGS from `BOOT_COMPLETED` and imposes a six-hour-per-day `dataSync` cap; FGS starts also have background restrictions. Do not reuse AREA's `dataSync` service for ROOM presence: https://developer.android.com/about/versions/15/changes/foreground-service-types ; https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start.

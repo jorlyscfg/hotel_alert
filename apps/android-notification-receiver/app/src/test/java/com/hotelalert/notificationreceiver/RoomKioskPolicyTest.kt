@@ -23,6 +23,62 @@ class RoomKioskPolicyTest {
     }
 
     @Test
+    fun `keep screen on is limited to an active focused ROOM session outside maintenance and diagnostics`() {
+        assertTrue(
+            shouldKeepRoomScreenOn(
+                hasRoomSession = true,
+                hasServerOrigin = true,
+                activityResumed = true,
+                windowFocused = true,
+                showDiagnostics = false
+            )
+        )
+        assertFalse(shouldKeepRoomScreenOn(
+            hasRoomSession = false,
+            hasServerOrigin = true,
+            activityResumed = true,
+            windowFocused = true,
+            showDiagnostics = false
+        ))
+        assertFalse(shouldKeepRoomScreenOn(
+            hasRoomSession = true,
+            hasServerOrigin = false,
+            activityResumed = true,
+            windowFocused = true,
+            showDiagnostics = false
+        ))
+        assertFalse(shouldKeepRoomScreenOn(
+            hasRoomSession = true,
+            hasServerOrigin = true,
+            activityResumed = false,
+            windowFocused = true,
+            showDiagnostics = false
+        ))
+        assertFalse(shouldKeepRoomScreenOn(
+            hasRoomSession = true,
+            hasServerOrigin = true,
+            activityResumed = true,
+            windowFocused = false,
+            showDiagnostics = false
+        ))
+        assertFalse(shouldKeepRoomScreenOn(
+            hasRoomSession = true,
+            hasServerOrigin = true,
+            activityResumed = true,
+            windowFocused = true,
+            showDiagnostics = true
+        ))
+        assertFalse(shouldKeepRoomScreenOn(
+            hasRoomSession = true,
+            hasServerOrigin = true,
+            activityResumed = true,
+            windowFocused = true,
+            showDiagnostics = false,
+            maintenanceActive = true
+        ))
+    }
+
+    @Test
     fun `HOME request requires a ROOM session an available role and no prior request`() {
         assertTrue(shouldRequestHomeRole(29, true, true, false, false))
         assertFalse(shouldRequestHomeRole(28, true, true, false, false))

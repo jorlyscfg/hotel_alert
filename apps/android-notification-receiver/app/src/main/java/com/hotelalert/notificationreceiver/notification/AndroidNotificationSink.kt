@@ -19,7 +19,6 @@ import com.hotelalert.notificationreceiver.R
 import com.hotelalert.notificationreceiver.protocol.NotificationSink
 import com.hotelalert.notificationreceiver.protocol.RequestNotification
 import com.hotelalert.notificationreceiver.protocol.DoNotDisturbNotification
-import com.hotelalert.notificationreceiver.receiver.NotificationActionReceiver
 
 class AndroidNotificationSink(
     private val context: Context,
@@ -52,10 +51,10 @@ class AndroidNotificationSink(
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val startActionPendingIntent = if (content.action == NotificationAction.START_REQUEST) {
-            PendingIntent.getBroadcast(
+            PendingIntent.getActivity(
                 context,
                 content.notificationId,
-                NotificationActionReceiver.startRequestIntent(context, content),
+                MainActivity.startRequestIntent(context, content.metadata[MainActivity.EXTRA_REQUEST_ID].orEmpty()),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
         } else {
@@ -84,7 +83,7 @@ class AndroidNotificationSink(
         if (content.action == NotificationAction.START_REQUEST) {
             val bubbleShortcutId = NotificationMapper.bubbleShortcutId(content)
             val bubbleIcon = IconCompat.createWithResource(context, R.drawable.ic_hotel_alert_launcher)
-            val actionIntent = NotificationActionReceiver.startRequestIntent(context, content)
+            val actionIntent = MainActivity.startRequestIntent(context, content.metadata[MainActivity.EXTRA_REQUEST_ID].orEmpty())
             val bubbleLines = content.expandedText.lineSequence().toList()
             val bubbleIntent = Intent(context, RequestBubbleActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP

@@ -20,7 +20,8 @@ import {
 import { closeNotificationAudioContext, createNotificationAudioContext, playDoNotDisturbTransitionTones, playNotificationTone, replaceNotificationAudioContext } from '../../notification-audio';
 import { DEFAULT_INFORMATION_CAROUSEL_TIMING, InformationCarousel, type InformationCarouselTiming } from './InformationCarousel';
 import { PendingRequestWarningController, resolveBrowserPendingWarningRequests } from './pending-request-warning';
-import { RoomScreensaver } from './RoomScreensaver';
+import { RoomScreensaverContainer } from './RoomScreensaver';
+import { resolveDoNotDisturbRoomAge, resolveDoNotDisturbTabSeverity } from '../do-not-disturb/do-not-disturb-timing';
 import { transitionNativeRequest, type NativeWebViewBridge } from '../../native-bridge';
 
 const { isRoomBackgroundValue } = Shared;
@@ -74,15 +75,6 @@ const AREA_FILTER_TABS = [
   'DO_NOT_DISTURB'
 ] as const;
 type AreaFilterTab = typeof AREA_FILTER_TABS[number];
-type DoNotDisturbAgeSeverity = 'green' | 'yellow' | 'red' | 'unknown';
-const DND_AGE_SEVERITY_RANK: Record<DoNotDisturbAgeSeverity, number> = {
-  unknown: 0,
-  green: 1,
-  yellow: 2,
-  red: 3
-};
-const DND_WARNING_THRESHOLD_MS = 60 * 60 * 1000;
-const DND_CRITICAL_THRESHOLD_MS = 3 * 60 * 60 * 1000;
 const ROOM_SERVICE_PAGE_SIZE = 9;
 const ROOM_AREA_PAGE_SIZE = 4;
 const ROOM_SQUARE_BREAKPOINT = 520;
@@ -151,6 +143,17 @@ export function seedAreaPendingModalQueue(pendingIds: readonly string[]): string
 
 function resolveLocalizedDisplayName(value: { displayName: string; displayNameVariants?: LocalizedTextVariants }, locale: Locale): string {
   return resolveLocalizedValue(value.displayName, locale, value.displayNameVariants) ?? value.displayName;
+}
+
+function resolveResponsibleName(value: string | null | undefined, unassignedLabel: string): string {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : unassignedLabel;
+}
+
+function readRequestedStartRequestId(): string | null {
+  if (typeof window === 'undefined') return null;
+  const search = window.location?.search ?? '';
+  const requestId = new URLSearchParams(search).get('startRequestId')?.trim();
+  return requestId === undefined || requestId.length === 0 ? null : requestId;
 }
 
 function localizedNameContainsRoomCode(displayName: string, roomCode: string, locale: Locale): boolean {
@@ -287,21 +290,28 @@ export function resolveDeviceFooterMessage(status: ConnectionStatus, lastSynchro
   return resolveDeviceConnectionMessage(status, lastSynchronizedAt, locale);
 }
 
-export function formatClock(value: Date, locale?: string, timeZone?: string, clockFormat: '12h' | '24h' = '12h'): string {
+export function resolveDeviceTimeZone(timeZone: string | undefined): string {
+  return timeZone?.trim() || 'UTC';
+}
+
+export function formatClock(value: Date, locale?: string, timeZone = 'UTC', clockFormat: '12h' | '24h' = '12h'): string {
+  const hourCycle = clockFormat === '24h' ? 'h23' : 'h12';
+
   return new Intl.DateTimeFormat(locale, {
     hour: clockFormat === '24h' ? '2-digit' : 'numeric',
     minute: '2-digit',
-    hour12: clockFormat === '12h',
-    ...(timeZone === undefined ? {} : { timeZone })
+    hourCycle,
+    timeZone
   }).format(value);
 }
 
-export function formatRoomScreensaverDate(value: Date, locale: Locale = 'en'): string {
+export function formatRoomScreensaverDate(value: Date, locale: Locale = 'en', timeZone = 'UTC'): string {
   return new Intl.DateTimeFormat(locale, {
     weekday: 'long',
     day: 'numeric',
     month: 'long',
-    year: 'numeric'
+    year: 'numeric',
+    timeZone
   }).format(value);
 }
 
@@ -311,43 +321,6 @@ export function formatAreaRequestAge(createdAt: string, currentTime: Date, local
 
 export function formatRoomRequestAge(createdAt: string, currentTime: Date, locale: Locale = 'en'): string {
   return formatElapsed(createdAt, currentTime, locale);
-}
-
-function resolveDoNotDisturbRoomAge(activatedAt: string | null | undefined, currentTime: Date, locale: Locale): { severity: DoNotDisturbAgeSeverity; elapsed: string | null } {
-  if (activatedAt === undefined || activatedAt === null) return { severity: 'unknown', elapsed: null };
-
-  const activatedAtTime = Date.parse(activatedAt);
-  const rawElapsedMilliseconds = currentTime.getTime() - activatedAtTime;
-  if (!Number.isFinite(activatedAtTime) || !Number.isFinite(rawElapsedMilliseconds)) {
-    return { severity: 'unknown', elapsed: null };
-  }
-
-  const elapsedMilliseconds = Math.max(0, rawElapsedMilliseconds);
-  let severity: DoNotDisturbAgeSeverity = 'green';
-  if (elapsedMilliseconds >= DND_CRITICAL_THRESHOLD_MS) severity = 'red';
-  else if (elapsedMilliseconds >= DND_WARNING_THRESHOLD_MS) severity = 'yellow';
-
-  const totalMinutes = Math.floor(elapsedMilliseconds / 60_000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  let elapsed: string;
-  if (locale === 'es') {
-    if (hours > 0) elapsed = minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`;
-    else elapsed = totalMinutes > 0 ? `${totalMinutes} min` : 'menos de 1 min';
-  } else if (hours > 0) {
-    elapsed = minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-  } else {
-    elapsed = totalMinutes > 0 ? `${totalMinutes}m` : 'under 1m';
-  }
-
-  return { severity, elapsed };
-}
-
-function resolveDoNotDisturbTabSeverity(rooms: readonly CompactRoom[], currentTime: Date, locale: Locale): DoNotDisturbAgeSeverity {
-  return rooms.reduce<DoNotDisturbAgeSeverity>((highest, room) => {
-    const next = resolveDoNotDisturbRoomAge(room.doNotDisturbActivatedAt, currentTime, locale).severity;
-    return DND_AGE_SEVERITY_RANK[next] > DND_AGE_SEVERITY_RANK[highest] ? next : highest;
-  }, 'unknown');
 }
 
 export function resolveAreaRequestBucket(status: RequestStatus): Exclude<AreaQueueFilter, 'ALL'> {
@@ -494,9 +467,35 @@ export function DeviceScreen({ snapshot, deviceToken, deviceCommandsSupported = 
   const deviceDisplayName = resolveLocalizedDisplayName(snapshot.device, locale);
   const roomCode = snapshot.config.room?.code.trim() || t('device.unassignedStation');
   const currentTime = useServerClock(snapshot.serverTime, connectionStatus);
-  const lastSynchronizedAt = formatSynchronizedAt(snapshot.serverTime, locale, snapshot.config.clockFormat);
+  const timeZone = resolveDeviceTimeZone(snapshot.config.timeZone);
+  const lastSynchronizedAt = formatSynchronizedAt(snapshot.serverTime, locale, snapshot.config.clockFormat, timeZone);
   const roomBackgroundStyle = mode === 'ROOM' ? resolveRoomBackgroundStyle(snapshot.config.roomBackground) : undefined;
   const informationCarouselTiming = resolveInformationCarouselTiming(snapshot.config);
+  const roomDoNotDisturbEnabled = snapshot.config.room?.doNotDisturb ?? false;
+  const [roomDoNotDisturbBusy, setRoomDoNotDisturbBusy] = useState(false);
+  const [roomDoNotDisturbError, setRoomDoNotDisturbError] = useState<string | null>(null);
+  const roomDoNotDisturbBusyRef = useRef(false);
+  const toggleRoomDoNotDisturb = useCallback(async (): Promise<void> => {
+    if (roomDoNotDisturbBusyRef.current) return;
+    roomDoNotDisturbBusyRef.current = true;
+    setRoomDoNotDisturbBusy(true);
+    setRoomDoNotDisturbError(null);
+    try {
+      await performRoomDoNotDisturbToggle({
+        enabled: roomDoNotDisturbEnabled,
+        deviceToken,
+        connectionStatus,
+        onRefresh,
+        onAuthFailure,
+        onError: setRoomDoNotDisturbError,
+        actionPausedMessage: t('connection.actionsPaused'),
+        getFailureMessage: (error) => errorMessage(error, t('errors.roomDoNotDisturbFailed'), locale)
+      });
+    } finally {
+      roomDoNotDisturbBusyRef.current = false;
+      setRoomDoNotDisturbBusy(false);
+    }
+  }, [roomDoNotDisturbEnabled, deviceToken, connectionStatus, onRefresh, onAuthFailure, t, locale]);
 
   const header = (
     <header className={`topbar${mode === 'ROOM' ? ' topbar--room' : ' topbar--area'}`}>
@@ -522,7 +521,7 @@ export function DeviceScreen({ snapshot, deviceToken, deviceCommandsSupported = 
               <span className="station-context__location">{location} · {t('device.areaConsole')}</span>
             </div>
              <ConnectionBadge status={connectionStatus} />
-             <time className="station-clock" dateTime={currentTime.toISOString()}>{formatClock(currentTime, locale, undefined, snapshot.config.clockFormat)}</time>
+             <time className="station-clock" dateTime={currentTime.toISOString()}>{formatClock(currentTime, locale, timeZone, snapshot.config.clockFormat)}</time>
              <button className="button button--ghost button--small" type="button" onClick={onOpenAdmin}>{t('common.admin')}</button>
           </div>
         </>
@@ -538,10 +537,13 @@ export function DeviceScreen({ snapshot, deviceToken, deviceCommandsSupported = 
           deviceToken={deviceToken}
            connectionStatus={connectionStatus}
            currentTime={currentTime}
-           onRefresh={onRefresh}
-           onOpenAdmin={onOpenAdmin}
-           onAuthFailure={onAuthFailure}
-           roomRequestNotificationsUnread={roomRequestNotificationsUnread}
+          onRefresh={onRefresh}
+          onOpenAdmin={onOpenAdmin}
+          onAuthFailure={onAuthFailure}
+          roomDoNotDisturbBusy={roomDoNotDisturbBusy}
+          roomDoNotDisturbError={roomDoNotDisturbError}
+          onToggleRoomDoNotDisturb={toggleRoomDoNotDisturb}
+          roomRequestNotificationsUnread={roomRequestNotificationsUnread}
            onClearRoomRequestNotifications={onClearRoomRequestNotifications}
           />
       ) : (
@@ -572,11 +574,17 @@ export function DeviceScreen({ snapshot, deviceToken, deviceCommandsSupported = 
           inactivityMs={informationCarouselTiming.inactivityMs}
           slideIntervalMs={informationCarouselTiming.slideIntervalMs}
           screensaver={(
-            <RoomScreensaver
+            <RoomScreensaverContainer
               label={t('device.roomScreensaver')}
-              time={formatClock(currentTime, locale, undefined, snapshot.config.clockFormat)}
-              date={formatRoomScreensaverDate(currentTime, locale)}
+              time={formatClock(currentTime, locale, timeZone, snapshot.config.clockFormat)}
+              date={formatRoomScreensaverDate(currentTime, locale, timeZone)}
               dateTime={currentTime.toISOString()}
+              locale={locale}
+              deviceToken={deviceToken}
+              onAuthFailure={onAuthFailure}
+              doNotDisturbEnabled={roomDoNotDisturbEnabled}
+              doNotDisturbError={roomDoNotDisturbError}
+              onToggleDoNotDisturb={toggleRoomDoNotDisturb}
             />
           )}
         >
@@ -599,31 +607,49 @@ export function DeviceScreen({ snapshot, deviceToken, deviceCommandsSupported = 
   );
 }
 
-function RoomDoNotDisturbControl({ enabled, deviceToken, connectionStatus, onRefresh, onAuthFailure }: { enabled: boolean; deviceToken: string; connectionStatus: ConnectionStatus; onRefresh: () => Promise<void>; onAuthFailure: (error?: unknown) => void }) {
-  const { locale, t } = useI18n();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function toggleDoNotDisturb(): Promise<void> {
-    if (!canCommitMutation(connectionStatus)) {
-      setError(t('connection.actionsPaused'));
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await api.patch('/room/me/do-not-disturb', { doNotDisturb: !enabled }, { token: deviceToken, headers: { 'Idempotency-Key': makeMutationKey('room-dnd') } });
-      await onRefresh();
-    } catch (toggleError) {
-      if (isDeviceAuthFailure(toggleError)) onAuthFailure(toggleError);
-      setError(errorMessage(toggleError, t('errors.roomDoNotDisturbFailed'), locale));
-    } finally {
-      setBusy(false);
-    }
+export async function performRoomDoNotDisturbToggle(options: {
+  enabled: boolean;
+  deviceToken: string;
+  connectionStatus: ConnectionStatus;
+  onRefresh: () => Promise<void>;
+  onAuthFailure: (error?: unknown) => void;
+  onError: (message: string) => void;
+  actionPausedMessage: string;
+  getFailureMessage: (error: unknown) => string;
+  update?: (deviceToken: string, enabled: boolean) => Promise<void>;
+}): Promise<void> {
+  if (!canCommitMutation(options.connectionStatus)) {
+    options.onError(options.actionPausedMessage);
+    return;
   }
 
+  try {
+    if (options.update === undefined) {
+      await api.patch('/room/me/do-not-disturb', { doNotDisturb: !options.enabled }, {
+        token: options.deviceToken,
+        headers: { 'Idempotency-Key': makeMutationKey('room-dnd') }
+      });
+    } else {
+      await options.update(options.deviceToken, !options.enabled);
+    }
+    await options.onRefresh();
+  } catch (error) {
+    if (isDeviceAuthFailure(error)) options.onAuthFailure(error);
+    options.onError(options.getFailureMessage(error));
+  }
+}
+
+function RoomDoNotDisturbControl({ enabled, busy, error, connectionStatus, onToggle }: {
+  enabled: boolean;
+  busy: boolean;
+  error: string | null;
+  connectionStatus: ConnectionStatus;
+  onToggle: () => void | Promise<void>;
+}) {
+  const { t } = useI18n();
+
   return <div className="room-dnd-control">
-    <button className={`room-dnd-button${enabled ? ' room-dnd-button--active' : ''}`} type="button" onClick={() => void toggleDoNotDisturb()} disabled={busy || !canCommitMutation(connectionStatus)} aria-pressed={enabled} aria-label={enabled ? t('device.disableDoNotDisturb') : t('device.enableDoNotDisturb')}>
+    <button className={`room-dnd-button${enabled ? ' room-dnd-button--active' : ''}`} type="button" onClick={() => void onToggle()} disabled={busy || !canCommitMutation(connectionStatus)} aria-pressed={enabled} aria-label={enabled ? t('device.disableDoNotDisturb') : t('device.enableDoNotDisturb')}>
         <span className="room-dnd-button__icon" aria-hidden="true"><Moon size={21} strokeWidth={1.8} /></span>
        <span className="room-dnd-button__label">{enabled ? t('device.doNotDisturbOn') : t('device.doNotDisturb')}</span>
     </button>
@@ -675,6 +701,9 @@ interface DeviceDisplayProps {
   onRefresh: () => Promise<void>;
   onOpenAdmin: () => void;
   onAuthFailure: (error?: unknown) => void;
+  roomDoNotDisturbBusy?: boolean;
+  roomDoNotDisturbError?: string | null;
+  onToggleRoomDoNotDisturb?: () => void | Promise<void>;
   roomRequestNotificationsUnread?: boolean;
   onClearRoomRequestNotifications?: (() => void) | undefined;
 }
@@ -699,7 +728,7 @@ function useViewportSize(): ViewportSize | null {
   return viewportSize;
 }
 
-function RoomDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onRefresh, onOpenAdmin, onAuthFailure, roomRequestNotificationsUnread = false, onClearRoomRequestNotifications }: DeviceDisplayProps) {
+function RoomDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onRefresh, onOpenAdmin, onAuthFailure, roomDoNotDisturbBusy = false, roomDoNotDisturbError = null, onToggleRoomDoNotDisturb = () => undefined, roomRequestNotificationsUnread = false, onClearRoomRequestNotifications }: DeviceDisplayProps) {
   const { locale, t } = useI18n();
   const doNotDisturbEnabled = snapshot.config.room?.doNotDisturb ?? false;
   const [selectedService, setSelectedService] = useState<ServiceDTO | null>(null);
@@ -808,7 +837,7 @@ function RoomDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
      <div className="device-layout device-layout--room">
       {connectionStatus !== 'online' && (
         <div className="visually-hidden" role="status" aria-live="polite">
-          {resolveDeviceConnectionMessage(connectionStatus, formatSynchronizedAt(snapshot.serverTime, locale, snapshot.config.clockFormat), locale)} {t('device.requestNotSentYet')}
+          {resolveDeviceConnectionMessage(connectionStatus, formatSynchronizedAt(snapshot.serverTime, locale, snapshot.config.clockFormat, resolveDeviceTimeZone(snapshot.config.timeZone)), locale)} {t('device.requestNotSentYet')}
         </div>
       )}
       {queueError !== null && <div className="visually-hidden" role="alert">{queueError}</div>}
@@ -914,10 +943,10 @@ function RoomDisplay({ snapshot, deviceToken, connectionStatus, currentTime, onR
           </div>
           <RoomDoNotDisturbControl
            enabled={doNotDisturbEnabled}
-           deviceToken={deviceToken}
+           busy={roomDoNotDisturbBusy}
+           error={roomDoNotDisturbError}
            connectionStatus={connectionStatus}
-           onRefresh={onRefresh}
-           onAuthFailure={onAuthFailure}
+           onToggle={onToggleRoomDoNotDisturb}
           />
           <div className="room-bottom-controls__actions">
             <button className="button button--ghost button--small" type="button" onClick={onOpenAdmin}>{t('common.admin')}</button>
@@ -1076,6 +1105,8 @@ function AreaDisplay({ snapshot, deviceToken, deviceCommandsSupported = true, na
   const [filter, setFilter] = useState<AreaFilterTab>('ALL');
   const [completedSearchQuery, setCompletedSearchQuery] = useState('');
   const [completedOrder, setCompletedOrder] = useState<CompletedRequestOrder>('completed-newest');
+  const [responsibleName, setResponsibleName] = useState('');
+  const [selectedStartRequestId, setSelectedStartRequestId] = useState<string | null>(() => readRequestedStartRequestId());
   const activeDoNotDisturbRooms = snapshot.activeDoNotDisturbRooms ?? [];
   const activeDoNotDisturbRoomCount = activeDoNotDisturbRooms.length;
   const activeDoNotDisturbTabSeverity = resolveDoNotDisturbTabSeverity(activeDoNotDisturbRooms, currentTime, locale);
@@ -1106,6 +1137,10 @@ function AreaDisplay({ snapshot, deviceToken, deviceCommandsSupported = true, na
   const pendingModalRequest = pendingModalQueue
     .map((requestId) => snapshot.activeRequests.find((request) => request.id === requestId && request.status === 'PENDING'))
     .find((request): request is RequestDTO => request !== undefined) ?? null;
+  const selectedStartRequest = selectedStartRequestId === null
+    ? null
+    : snapshot.activeRequests.find((request) => request.id === selectedStartRequestId && (request.status === 'PENDING' || request.status === 'ACCEPTED')) ?? null;
+  const responsibleModalRequest = selectedStartRequest ?? pendingModalRequest;
   const pendingToneNeedsRetry = pendingModalRequest !== null
     && (pendingToneAttemptRef.current?.requestId !== pendingModalRequest.id || !pendingTonePlayed);
   useEffect(() => {
@@ -1215,8 +1250,18 @@ function AreaDisplay({ snapshot, deviceToken, deviceCommandsSupported = true, na
   }
 
   async function advanceRequest(request: RequestDTO): Promise<boolean> {
+    return transitionRequest(request);
+  }
+
+  async function transitionRequest(request: RequestDTO, responsibleNameValue?: string): Promise<boolean> {
     const nextStatus = NEXT_STATUS[request.status];
     if (request.status === 'COMPLETED' || nextStatus === null) return false;
+    const normalizedResponsibleName = nextStatus === 'IN_PROGRESS' ? responsibleNameValue?.trim() : undefined;
+    if (nextStatus === 'IN_PROGRESS' && !normalizedResponsibleName) {
+      setSelectedStartRequestId(request.id);
+      setResponsibleName('');
+      return false;
+    }
     if (!deviceCommandsSupported) {
       setError(t('device.nativeDeviceCommandsUnavailable'));
       return false;
@@ -1233,14 +1278,15 @@ function AreaDisplay({ snapshot, deviceToken, deviceCommandsSupported = true, na
         requestId: request.id,
         targetStatus: nextStatus as Exclude<RequestStatus, 'PENDING'>,
         expectedVersion: request.version,
-        idempotencyKey: makeMutationKey('transition')
+        idempotencyKey: makeMutationKey('transition'),
+        ...(normalizedResponsibleName === undefined ? {} : { responsibleName: normalizedResponsibleName })
       } as const;
       if (nativeBridge !== null && deviceCommandsSupported) {
         await transitionNativeRequest(nativeBridge, transition);
       } else {
         await api.post<RequestDTO>(
           `/requests/${encodeURIComponent(request.id)}/${TRANSITION_PATH[request.status]}`,
-          { expectedVersion: request.version },
+          { expectedVersion: request.version, ...(normalizedResponsibleName === undefined ? {} : { responsibleName: normalizedResponsibleName }) },
           { token: deviceToken, headers: { 'Idempotency-Key': transition.idempotencyKey } }
         );
       }
@@ -1268,10 +1314,18 @@ function AreaDisplay({ snapshot, deviceToken, deviceCommandsSupported = true, na
     setError(null);
   }
 
+  function dismissResponsibleRequest(requestId: string): void {
+    setSelectedStartRequestId((current) => current === requestId ? null : current);
+    setResponsibleName('');
+    dismissPendingRequest(requestId);
+  }
+
   async function confirmPendingRequest(): Promise<void> {
-    if (pendingModalRequest === null) return;
-    const transitioned = await advanceRequest(pendingModalRequest);
-    if (transitioned) dismissPendingRequest(pendingModalRequest.id);
+    if (responsibleModalRequest === null) return;
+    const normalizedResponsibleName = responsibleName.trim();
+    if (normalizedResponsibleName.length === 0) return;
+    const transitioned = await transitionRequest(responsibleModalRequest, normalizedResponsibleName);
+    if (transitioned) dismissResponsibleRequest(responsibleModalRequest.id);
   }
 
   function retryPendingToneOnInteraction(): void {
@@ -1285,7 +1339,7 @@ function AreaDisplay({ snapshot, deviceToken, deviceCommandsSupported = true, na
           {connectionStatus !== 'online' && (
             <div className="inline-alert inline-alert--stale" role="status">
               <span aria-hidden="true"><CircleAlert size={16} strokeWidth={1.8} /></span>
-              <span>{resolveDeviceConnectionMessage(connectionStatus, formatSynchronizedAt(snapshot.serverTime, locale, snapshot.config.clockFormat), locale)} {t('connection.actionsPaused')}</span>
+              <span>{resolveDeviceConnectionMessage(connectionStatus, formatSynchronizedAt(snapshot.serverTime, locale, snapshot.config.clockFormat, resolveDeviceTimeZone(snapshot.config.timeZone)), locale)} {t('connection.actionsPaused')}</span>
             </div>
           )}
           {!deviceCommandsSupported && <div className="inline-alert" role="status">{t('device.nativeDeviceCommandsUnavailable')}</div>}
@@ -1363,9 +1417,10 @@ function AreaDisplay({ snapshot, deviceToken, deviceCommandsSupported = true, na
                        <div className="queue-card__topline">
                           <span className="request-icon"><ServiceIcon iconKey={request.service.iconKey} size={17} /></span>
                           <span className="queue-card__room">{request.room.code}</span>
-                          <div className="queue-card__metadata">
-                            <span className="queue-card__created">{t('device.requestCreatedAt', { time: formatClock(new Date(request.createdAt), 'en-US', undefined, '12h') })}</span>
+                       <div className="queue-card__metadata">
+                            <span className="queue-card__created">{t('device.requestCreatedAt', { time: formatClock(new Date(request.createdAt), 'en-US', resolveDeviceTimeZone(snapshot.config.timeZone), '12h') })}</span>
                             <span className="queue-card__age">{t('device.requestElapsed', { time: formatAreaRequestAge(request.createdAt, currentTime, locale) })}</span>
+                            <span className="request-responsible">{t('request.responsible')}: {resolveResponsibleName(request.responsibleName, t('request.unassigned'))}</span>
                           </div>
                           {request.room.doNotDisturb && <span className="room-dnd-indicator" role="status"><span aria-hidden="true"><Moon size={13} strokeWidth={1.8} /></span>{t('device.doNotDisturb')}</span>}
                        </div>
@@ -1386,22 +1441,36 @@ function AreaDisplay({ snapshot, deviceToken, deviceCommandsSupported = true, na
          )}
        </section>
 
-       {pendingModalRequest !== null && (
+       {responsibleModalRequest !== null && (
          <Modal
            open
            title={t('device.pendingRequestTitle')}
-           onClose={() => dismissPendingRequest(pendingModalRequest.id)}
+           onClose={() => dismissResponsibleRequest(responsibleModalRequest.id)}
            closeLabel={t('common.closeDialog')}
            className="area-pending-confirmation-modal"
          >
-            <div className="area-pending-confirmation">
+            <form className="area-pending-confirmation" onSubmit={(event) => { event.preventDefault(); void confirmPendingRequest(); }}>
               <p className="modal-card__copy">
                 {t('device.pendingRequestCopy', {
-                  service: resolveServiceDisplayName(pendingModalRequest.service, locale),
-                  room: resolveLocalizedDisplayName(pendingModalRequest.room, locale)
+                  service: resolveServiceDisplayName(responsibleModalRequest.service, locale),
+                  room: resolveLocalizedDisplayName(responsibleModalRequest.room, locale)
                 })}
               </p>
-              {pendingToneNeedsRetry && (
+              <div className="form-field area-responsible-field">
+                <label htmlFor="area-responsible-name">{t('request.responsible')}</label>
+                <input
+                  id="area-responsible-name"
+                  className="area-responsible-input"
+                  type="text"
+                  name="responsibleName"
+                  value={responsibleName}
+                  maxLength={120}
+                  autoComplete="name"
+                  required
+                  onChange={(event) => setResponsibleName(event.target.value)}
+                />
+              </div>
+              {pendingModalRequest?.id === responsibleModalRequest.id && pendingToneNeedsRetry && (
                 <button
                   className="button button--ghost area-pending-confirmation__sound-retry"
                   type="button"
@@ -1411,15 +1480,15 @@ function AreaDisplay({ snapshot, deviceToken, deviceCommandsSupported = true, na
                   {t('device.retryPendingRequestSound')}
                 </button>
               )}
-              {pendingToneUnavailable && <p className="form-error" role="status">{t('device.pendingRequestSoundBlocked')}</p>}
+              {pendingModalRequest?.id === responsibleModalRequest.id && pendingToneUnavailable && <p className="form-error" role="status">{t('device.pendingRequestSoundBlocked')}</p>}
              {error !== null && <p className="form-error" role="alert">{error}</p>}
              <div className="form-actions">
-               <button className="button button--ghost" type="button" onClick={() => dismissPendingRequest(pendingModalRequest.id)} disabled={busyRequestId === pendingModalRequest.id}>{t('device.pendingRequestLater')}</button>
-               <button className="button button--primary" type="button" onClick={() => void confirmPendingRequest()} disabled={busyRequestId === pendingModalRequest.id || !deviceCommandsSupported || !canCommitMutation(connectionStatus)} data-autofocus>
-                 {busyRequestId === pendingModalRequest.id ? t('request.updating') : requestActionLabel(pendingModalRequest.status, locale)}
+               <button className="button button--ghost" type="button" onClick={() => dismissResponsibleRequest(responsibleModalRequest.id)} disabled={busyRequestId === responsibleModalRequest.id}>{t('device.pendingRequestLater')}</button>
+               <button className="button button--primary area-responsible-submit" type="submit" disabled={busyRequestId === responsibleModalRequest.id || !deviceCommandsSupported || !canCommitMutation(connectionStatus) || responsibleName.trim().length === 0} data-autofocus>
+                 {busyRequestId === responsibleModalRequest.id ? t('request.updating') : requestActionLabel(responsibleModalRequest.status, locale)}
                </button>
              </div>
-           </div>
+           </form>
         </Modal>
         )}
 
@@ -1451,8 +1520,8 @@ function useServerClock(serverTime: string, connectionStatus: ConnectionStatus):
   return currentTime;
 }
 
-function formatSynchronizedAt(value: string, locale: Locale = 'en', clockFormat: '12h' | '24h' = '12h'): string {
-  return formatClock(new Date(value), locale, undefined, clockFormat);
+function formatSynchronizedAt(value: string, locale: Locale = 'en', clockFormat: '12h' | '24h' = '12h', timeZone = 'UTC'): string {
+  return formatClock(new Date(value), locale, timeZone, clockFormat);
 }
 
 interface ServiceRequestDialogProps {
@@ -1603,7 +1672,7 @@ function RequestList({ requests, currentTime, emptyCopy }: { requests: RequestDT
       {requests.slice(0, 8).map((request) => (
         <article className="request-row" key={request.id}>
           <span className={`status-dot status-dot--${STATUS_CLASS[request.status]}`} aria-hidden="true" />
-          <div className="request-row__main"><strong>{resolveServiceDisplayName(request.service, locale)}</strong><span>{formatElapsedWithAgo(request.createdAt, currentTime, locale, t('common.ago'))}</span></div>
+          <div className="request-row__main"><strong>{resolveServiceDisplayName(request.service, locale)}</strong><span>{formatElapsedWithAgo(request.createdAt, currentTime, locale, t('common.ago'))}</span><span className="request-responsible">{t('request.responsible')}: {resolveResponsibleName(request.responsibleName, t('request.unassigned'))}</span></div>
           <span className={`status-label status-label--${STATUS_CLASS[request.status]}`}>{requestStatusLabel(request.status, locale)}</span>
         </article>
       ))}

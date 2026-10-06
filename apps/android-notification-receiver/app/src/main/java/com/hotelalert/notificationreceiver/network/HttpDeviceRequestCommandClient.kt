@@ -9,7 +9,9 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
-class HttpDeviceRequestCommandClient : NativeRequestCommandClient {
+class HttpDeviceRequestCommandClient(
+    private val openConnection: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }
+) : NativeRequestCommandClient {
     override suspend fun transition(
         serverOrigin: String,
         deviceId: String,
@@ -17,7 +19,7 @@ class HttpDeviceRequestCommandClient : NativeRequestCommandClient {
         request: NativeRequestTransition
     ): String = withContext(Dispatchers.IO) {
         val url = "${serverOrigin.trimEnd('/')}/api/v1/requests/${encode(request.requestId)}/${request.targetStatus.endpoint}"
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+        val connection = openConnection(URL(url)).apply {
             requestMethod = "POST"
             connectTimeout = 10_000
             readTimeout = 10_000
@@ -30,12 +32,20 @@ class HttpDeviceRequestCommandClient : NativeRequestCommandClient {
         }
         try {
             connection.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
-                writer.write(JSONObject().put("expectedVersion", request.expectedVersion).toString())
+                val body = JSONObject().put("expectedVersion", request.expectedVersion)
+                request.responsibleName?.let { body.put("responsibleName", it) }
+                writer.write(body.toString())
             }
             val responseCode = connection.responseCode
             val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
             val responseBody = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-            if (responseCode !in 200..299) throw NativeRequestCommandException(responseCode, parseErrorCode(responseBody))
+            if (responseCode !in 200..299) {
+                throw NativeRequestCommandException(
+                    responseCode,
+                    parseErrorCode(responseBody),
+                    parseServerRequestId(responseBody)
+                )
+            }
             responseBody
         } finally {
             connection.disconnect()
@@ -47,9 +57,15 @@ class HttpDeviceRequestCommandClient : NativeRequestCommandClient {
             ?.takeIf { it.matches(SAFE_ERROR_CODE_PATTERN) }
     }.getOrNull()
 
+    private fun parseServerRequestId(responseBody: String): String? = runCatching {
+        (JSONObject(responseBody).optJSONObject("error")?.opt("requestId") as? String)
+            ?.takeIf { it.matches(SAFE_REQUEST_REFERENCE_PATTERN) }
+    }.getOrNull()
+
     private fun encode(value: String): String = java.net.URLEncoder.encode(value, Charsets.UTF_8.name())
 
     companion object {
         private val SAFE_ERROR_CODE_PATTERN = Regex("[A-Z][A-Z0-9_]{0,63}")
+        private val SAFE_REQUEST_REFERENCE_PATTERN = Regex("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
     }
 }

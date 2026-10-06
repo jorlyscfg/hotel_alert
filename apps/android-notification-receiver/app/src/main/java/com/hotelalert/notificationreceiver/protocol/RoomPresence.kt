@@ -40,7 +40,11 @@ data class RoomPresenceSnapshot(
     val heartbeatIntervalMs: Long
 )
 
-class RoomPresenceException(val statusCode: Int, val errorCode: String?) :
+class RoomPresenceException(
+    val statusCode: Int,
+    val errorCode: String?,
+    val retryAfterMs: Long? = null
+) :
     IllegalStateException("The ROOM presence request failed with HTTP $statusCode.")
 
 interface RoomPresenceClient {
@@ -77,7 +81,7 @@ class RoomPresenceStatusStore(initial: RoomPresenceState = RoomPresenceState.IDL
 
 sealed class RoomPresenceCycle {
     data class Online(val heartbeatIntervalMs: Long) : RoomPresenceCycle()
-    data class Retry(val errorCode: String) : RoomPresenceCycle()
+    data class Retry(val errorCode: String, val retryAfterMs: Long? = null) : RoomPresenceCycle()
     data object Invalidated : RoomPresenceCycle()
     data object Unconfigured : RoomPresenceCycle()
 }
@@ -164,13 +168,16 @@ class RoomPresenceCoordinator(
                         if (replacementError is CancellationException) throw replacementError
                         if (replacementError.isConfirmedInvalidation()) return@withLock invalidate()
                         statusStore.update(RoomPresenceState.RETRYING)
-                        return@withLock RoomPresenceCycle.Retry(safeRoomErrorCode(replacementError))
+                        return@withLock RoomPresenceCycle.Retry(
+                            safeRoomErrorCode(replacementError),
+                            replacementError.rateLimitRetryAfterMs()
+                        )
                     }
                 }
             }
             if (error.isConfirmedInvalidation()) return@withLock invalidate()
             statusStore.update(RoomPresenceState.RETRYING)
-            RoomPresenceCycle.Retry(safeRoomErrorCode(error))
+            RoomPresenceCycle.Retry(safeRoomErrorCode(error), error.rateLimitRetryAfterMs())
         }
     }
 
@@ -209,6 +216,9 @@ class RoomPresenceCoordinator(
         else -> false
     }
 
+    private fun Throwable.rateLimitRetryAfterMs(): Long? =
+        (this as? RoomPresenceException)?.takeIf { it.statusCode == 429 }?.retryAfterMs
+
     private fun safeRoomErrorCode(error: Throwable): String =
         (error as? RoomPresenceException)?.errorCode?.takeIf { it.matches(SAFE_ERROR_CODE_PATTERN) }
             ?: if (error is RoomPresenceException) "HTTP_${error.statusCode}" else error::class.java.simpleName
@@ -220,7 +230,11 @@ class RoomPresenceCoordinator(
     }
 }
 
-fun roomPresenceRetryDelayMs(attempt: Int): Long {
+fun roomPresenceRetryDelayMs(attempt: Int, retryAfterMs: Long? = null): Long {
+    if (retryAfterMs != null) return retryAfterMs.coerceIn(MIN_RETRY_AFTER_MS, MAX_RETRY_AFTER_MS)
     val normalizedAttempt = attempt.coerceAtLeast(1)
     return (1_000L * (1L shl (normalizedAttempt - 1).coerceAtMost(6))).coerceAtMost(60_000L)
 }
+
+private const val MIN_RETRY_AFTER_MS = 1_000L
+private const val MAX_RETRY_AFTER_MS = 300_000L

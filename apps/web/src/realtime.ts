@@ -7,6 +7,7 @@ import { getOrCreateClientInstanceId } from './app-model';
 interface RealtimeConnectionOptions {
   enabled: boolean;
   hasSnapshot: boolean;
+  heartbeatEnabled?: boolean | undefined;
   deviceId?: string | undefined;
   deviceToken?: string | undefined;
   deviceConfigVersion?: number | undefined;
@@ -148,6 +149,13 @@ export function resolveHeartbeatIntervalMs(value: number | undefined): number {
   return value ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
 }
 
+export function shouldWebViewSendRestHeartbeat(input: {
+  isRoomDevice: boolean;
+  nativeRoomPresenceSupported: boolean;
+}): boolean {
+  return !input.isRoomDevice || !input.nativeRoomPresenceSupported;
+}
+
 export function resolveRealtimeStatus(input: { enabled: boolean; hasSnapshot: boolean; transportConnected: boolean; synchronized: boolean; refreshFailed?: boolean }): ConnectionStatus {
   if (!input.enabled || !input.hasSnapshot || !input.transportConnected) return 'offline';
   if (input.refreshFailed === true) return 'stale';
@@ -171,6 +179,7 @@ export function useRealtimeConnection(options: RealtimeConnectionOptions): void 
   const {
     enabled,
     hasSnapshot,
+    heartbeatEnabled = true,
     deviceId,
     deviceToken,
     deviceConfigVersion,
@@ -182,6 +191,8 @@ export function useRealtimeConnection(options: RealtimeConnectionOptions): void 
   } = options;
   const handshakeRef = useRef({ deviceConfigVersion, lastSeenEventSequence });
   handshakeRef.current = { deviceConfigVersion, lastSeenEventSequence };
+  const restHeartbeatEnabledRef = useRef(heartbeatEnabled);
+  restHeartbeatEnabledRef.current = heartbeatEnabled;
 
   useEffect(() => {
     if (!enabled) {
@@ -419,6 +430,7 @@ export function useRealtimeConnection(options: RealtimeConnectionOptions): void 
     windowTarget?.addEventListener('online', handleResume);
 
     const heartbeat = deviceToken === undefined ? undefined : setInterval(() => {
+      if (!restHeartbeatEnabledRef.current) return;
       void api.post('/device/heartbeat', {
         clientVersion: CLIENT_VERSION,
         socketConnected: socket.connected && synchronized,

@@ -39,7 +39,7 @@ class RequestBubbleActivity : Activity() {
         val accept = Button(this).apply {
             text = getString(R.string.receiver_accept_start_request)
             setOnClickListener {
-                readActionIntent(intent)?.let { sendBroadcast(it) }
+                readActionIntent(intent)?.let { startActivity(it) }
                 finish()
             }
         }

@@ -12,6 +12,7 @@ import com.hotelalert.notificationreceiver.protocol.RoomPresenceSnapshot
 import com.hotelalert.notificationreceiver.protocol.RoomPresenceState
 import com.hotelalert.notificationreceiver.protocol.RoomPresenceStatusStore
 import com.hotelalert.notificationreceiver.protocol.RoomPresenceServiceController
+import com.hotelalert.notificationreceiver.protocol.roomPresenceRetryDelayMs
 import com.hotelalert.notificationreceiver.web.ServerOriginStore
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -118,6 +119,25 @@ class RoomPresenceTest {
         assertEquals("valid-token", store.session?.token)
         assertFalse(store.invalidated)
         assertNull(store.stagedToken)
+    }
+
+    @Test
+    fun `rate limit retry metadata is preserved and takes precedence over exponential backoff`() = runTest {
+        val store = FakeRoomSessionStore().apply { session = RoomPresenceSession(configuration, "valid-token") }
+        val client = object : RoomPresenceClient {
+            override suspend fun fetchSession(serverOrigin: String, deviceId: String, token: String): RoomPresenceSnapshot {
+                throw RoomPresenceException(429, "RATE_LIMITED", retryAfterMs = 7_000L)
+            }
+
+            override suspend fun sendHeartbeat(serverOrigin: String, deviceId: String, token: String, clientVersion: String) = Unit
+        }
+
+        val result = RoomPresenceCoordinator(store, client, RoomPresenceStatusStore()).runOnce()
+
+        assertEquals(RoomPresenceCycle.Retry("RATE_LIMITED", 7_000L), result)
+        assertEquals(7_000L, roomPresenceRetryDelayMs(attempt = 1, retryAfterMs = (result as RoomPresenceCycle.Retry).retryAfterMs))
+        assertEquals(300_000L, roomPresenceRetryDelayMs(attempt = 1, retryAfterMs = 600_000L))
+        assertEquals(8_000L, roomPresenceRetryDelayMs(attempt = 4))
     }
 
     @Test

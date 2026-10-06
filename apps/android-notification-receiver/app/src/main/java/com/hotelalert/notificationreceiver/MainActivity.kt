@@ -1,6 +1,13 @@
 package com.hotelalert.notificationreceiver
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.app.role.RoleManager
 import android.content.ActivityNotFoundException
@@ -12,8 +19,12 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.util.Log
+import android.view.KeyEvent
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -38,6 +49,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.hotelalert.notificationreceiver.protocol.ReceiverConfiguration
+import com.hotelalert.notificationreceiver.protocol.notificationStartRequestId
 import com.hotelalert.notificationreceiver.admin.AndroidRoomHomePolicy
 import com.hotelalert.notificationreceiver.admin.AndroidRoomLockTaskDevicePolicy
 import com.hotelalert.notificationreceiver.admin.RoomLockTaskPreparation
@@ -74,6 +86,7 @@ class MainActivity : ComponentActivity() {
         get() = (application as HotelAlertApplication).component
     private var diagnosticsMode by mutableStateOf(false)
     private var openedEventId by mutableStateOf<String?>(null)
+    private var startRequestId by mutableStateOf<String?>(null)
     private var notificationPermissionGranted by mutableStateOf(false)
     private var roomSessionConfigured = false
     private var roomSessionReceiverRegistered = false
@@ -86,18 +99,32 @@ class MainActivity : ComponentActivity() {
     private var isDeviceOwner by mutableStateOf(false)
     private var homeRoleAvailable by mutableStateOf(false)
     private var strictModeDraft by mutableStateOf(false)
-    private var strictModeAvailable by mutableStateOf(false)
-    private var strictModeAvailabilityMessage by mutableStateOf<String?>(null)
     private var roomScreenBrightnessPreference = RoomScreenBrightnessPreference()
     private var roomScreenBrightnessDraft by mutableStateOf(RoomScreenBrightnessPreference())
+    private var strictModeAvailable by mutableStateOf(false)
+    private var strictModeAvailabilityMessage by mutableStateOf<String?>(null)
     private var strictModeStatus by mutableStateOf(RoomLockTaskStatus.INACTIVE)
     private var kioskControlMessage by mutableStateOf<String?>(null)
     private var overlayPermissionGranted by mutableStateOf(false)
     private var strictModePreference = false
-    private var lockTaskStartedByThisActivity = false
-    private val maintenanceTapGate = RoomMaintenanceTapGate()
     private var activityResumed = false
     private var roomWindowFocused = false
+    private var roomScreensaverRequested = false
+    private val roomScreensaverDisplayBlackout = mutableStateOf(false)
+    private var roomScreensaverBrightnessWasEligible = false
+    private var lastRoomScreensaverBrightnessDiagnostic: String? = null
+    private var roomScreensaverBrightnessPercent = roomScreensaverBrightnessStartPercent(DEFAULT_ROOM_SCREEN_BRIGHTNESS_PERCENT)
+    private var roomScreensaverBrightnessStepScheduled = false
+    private val roomScreensaverBrightnessHandler = Handler(Looper.getMainLooper())
+    private val roomScreensaverBrightnessStep = Runnable {
+        roomScreensaverBrightnessStepScheduled = false
+        if (isRoomScreensaverBrightnessEligible()) {
+            roomScreensaverBrightnessPercent = roomScreensaverBrightnessPercentAfterStep(roomScreensaverBrightnessPercent)
+        }
+        applyRoomWindowBrightness()
+    }
+    private var lockTaskStartedByThisActivity = false
+    private val maintenanceTapGate = RoomMaintenanceTapGate()
     private val maintenancePinStore by lazy { AndroidRoomMaintenancePinStore(applicationContext) }
     private val roomHomePolicy by lazy { AndroidRoomHomePolicy(applicationContext) }
     private val roomLockTaskPolicy by lazy { AndroidRoomLockTaskDevicePolicy(applicationContext) }
@@ -123,8 +150,6 @@ class MainActivity : ComponentActivity() {
         val maintenancePreferences = getSharedPreferences(ROOM_KIOSK_PREFERENCES, MODE_PRIVATE)
         strictModePreference = maintenancePreferences.getBoolean(STRICT_ROOM_LOCK_TASK_KEY, false)
         strictModeDraft = strictModePreference
-        val storedOrigin = component.serverOriginStore.read()
-        setContent {
         roomScreenBrightnessPreference = normalizedRoomScreenBrightnessPreference(
             manualEnabled = maintenancePreferences.getBoolean(ROOM_SCREEN_BRIGHTNESS_MANUAL_KEY, false),
             levelPercent = maintenancePreferences.getInt(
@@ -133,6 +158,9 @@ class MainActivity : ComponentActivity() {
             )
         )
         roomScreenBrightnessDraft = roomScreenBrightnessPreference
+        component.webBridge.bindRoomScreensaverStateListener(this, ::handleRoomScreensaverStateChanged)
+        val storedOrigin = component.serverOriginStore.read()
+        setContent {
             HotelAlertTheme {
                 var serverOrigin by rememberSaveable { mutableStateOf(storedOrigin) }
                 var webViewRecoveryState by remember { mutableStateOf(WebViewRecoveryState()) }
@@ -145,6 +173,7 @@ class MainActivity : ComponentActivity() {
                                 component.serverOriginStore.write(normalizedOrigin)
                                 serverOrigin = component.serverOriginStore.read() ?: normalizedOrigin
                                 webViewRecoveryState = reopenWebView(webViewRecoveryState)
+                                applyRoomWindowBrightness()
                             }.isSuccess
                         }
                     )
@@ -173,6 +202,7 @@ class MainActivity : ComponentActivity() {
                             serverOrigin = configuredOrigin,
                             bridge = component.webBridge,
                             reloadKey = webViewRecoveryState.reloadKey,
+                            startRequestId = startRequestId,
                             onMainFrameLoadFailure = {
                                 webViewRecoveryState = webViewStateAfterLoadError(
                                     currentState = webViewRecoveryState,
@@ -180,8 +210,19 @@ class MainActivity : ComponentActivity() {
                                     serverOrigin = configuredOrigin
                                 )
                             },
-                            onScreenTap = ::onRoomScreenTap
+                            onScreenTap = ::onRoomScreenTap,
+                            onScreenWakeFromBlackout = ::wakeRoomScreensaverDisplay
                         )
+                        if (roomScreensaverDisplayBlackout.value) {
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black)
+                                    .pointerInput(Unit) {
+                                        detectTapGestures { wakeRoomScreensaverDisplay() }
+                                    }
+                            )
+                        }
                         when (maintenanceRoute) {
                             RoomMaintenanceRoute.CLOSED -> Unit
                             RoomMaintenanceRoute.PIN -> RoomMaintenancePinDialog(
@@ -204,18 +245,15 @@ class MainActivity : ComponentActivity() {
                                     kioskControlMessage = kioskControlMessage,
                                     overlayPermissionRequired = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q,
                                     overlayPermissionGranted = overlayPermissionGranted,
+                                    roomBrightnessManual = roomScreenBrightnessDraft.manualEnabled,
+                                    roomBrightnessPercent = roomScreenBrightnessDraft.levelPercent,
                                     onChooseHome = ::chooseHotelAlertHome,
                                     onOpenHomeSelectionSettings = ::openHomeSelectionSettings,
                                     onClearManagedHome = ::clearManagedHome,
-                                    roomBrightnessManual = roomScreenBrightnessDraft.manualEnabled,
-                                    roomBrightnessPercent = roomScreenBrightnessDraft.levelPercent,
                                     onOpenAndroidSettings = ::openAndroidSettings,
                                     onOpenWirelessDebuggingSettings = ::openWirelessDebuggingSettings,
                                     onManageOverlayPermission = ::openOverlayPermissionSettings,
                                     onStrictModeChange = { strictModeDraft = it },
-                                    onChangePin = ::changeMaintenancePin,
-                                    onSaveAndReturn = ::saveMaintenanceAndReturn
-                                )
                                     onRoomBrightnessManualChange = {
                                         roomScreenBrightnessDraft = roomScreenBrightnessDraft.copy(manualEnabled = it)
                                         applyRoomWindowBrightness()
@@ -226,6 +264,9 @@ class MainActivity : ComponentActivity() {
                                         )
                                         applyRoomWindowBrightness()
                                     },
+                                    onChangePin = ::changeMaintenancePin,
+                                    onSaveAndReturn = ::saveMaintenanceAndReturn
+                                )
                             }
                         }
                     }
@@ -240,6 +281,33 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         applyIntent(intent)
         refreshRoomKioskState(requestHomeRoleIfNeeded = false)
+    }
+
+    // This public Activity callback must run before the focused WebView can consume ROOM keys.
+    @SuppressLint("RestrictedApi")
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (shouldInterceptRoomScreensaverButtonBeforeWebView(
+                keyCode = event.keyCode,
+                isScreensaverEligible = isRoomScreensaverBrightnessEligible()
+            )
+        ) {
+            when (roomScreensaverButtonAction(
+                keyCode = event.keyCode,
+                eventAction = event.action,
+                repeatCount = event.repeatCount,
+                isScreensaverActive = true
+            )) {
+                RoomScreensaverButtonAction.TOGGLE_DO_NOT_DISTURB ->
+                    component.webBridge.dispatchRoomScreensaverButton(RoomScreensaverButtonAction.TOGGLE_DO_NOT_DISTURB)
+                RoomScreensaverButtonAction.TOGGLE_DISPLAY_BLACKOUT -> {
+                    roomScreensaverDisplayBlackout.value = !roomScreensaverDisplayBlackout.value
+                    applyRoomWindowBrightness()
+                }
+                null -> Unit
+            }
+            return true
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -276,44 +344,67 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
+    override fun onDestroy() {
+        roomScreensaverRequested = false
+        applyRoomWindowBrightness()
+        cancelRoomScreensaverBrightnessStep()
+        component.webBridge.unbindRoomScreensaverStateListener(this)
+        super.onDestroy()
+    }
+
     override fun onResume() {
         super.onResume()
+        activityResumed = true
+        roomWindowFocused = window.decorView.hasWindowFocus()
+        applyRoomKeepScreenOn()
+        applyRoomWindowBrightness()
         setAppInForeground(true)
         notificationPermissionGranted = hasNotificationPermission()
         refreshRoomKioskState(requestHomeRoleIfNeeded = true)
-        activityResumed = true
-        roomWindowFocused = window.decorView.hasWindowFocus()
-        applyRoomWindowBrightness()
     }
 
     override fun onPause() {
+        activityResumed = false
+        roomWindowFocused = false
+        applyRoomKeepScreenOn()
+        applyRoomWindowBrightness()
         setAppInForeground(false)
         super.onPause()
     }
-        activityResumed = false
-        roomWindowFocused = false
-        applyRoomWindowBrightness()
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        roomWindowFocused = hasFocus
         if (hasFocus) updateRoomWindowMode()
+        else {
+            applyRoomKeepScreenOn()
+            applyRoomWindowBrightness()
+        }
     }
 
-        roomWindowFocused = hasFocus
+    private fun handleRoomScreensaverStateChanged(active: Boolean) {
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            roomScreensaverRequested = active
+            applyRoomWindowBrightness()
+        }
+    }
+
     private fun applyIntent(intent: Intent) {
-        else applyRoomWindowBrightness()
         diagnosticsMode = shouldShowReceiverDiagnostics(intent)
         openedEventId = intent.getStringExtra(EXTRA_EVENT_ID)
+        startRequestId = notificationStartRequestId(intent.getStringExtra(EXTRA_START_REQUEST_ID))
         notificationPermissionGranted = hasNotificationPermission()
         if (diagnosticsMode) {
+            roomScreensaverRequested = false
             maintenanceSettingsRestorePending = false
             maintenanceRoute = RoomMaintenanceRoute.CLOSED
+            strictModeDraft = strictModePreference
+            roomScreenBrightnessDraft = roomScreenBrightnessPreference
         }
         updateRoomWakeRecoverySuppression()
     }
 
-            strictModeDraft = strictModePreference
-            roomScreenBrightnessDraft = roomScreenBrightnessPreference
     private fun requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST_CODE)
@@ -340,6 +431,7 @@ class MainActivity : ComponentActivity() {
                 )
                 component.configurationStore.writeReceiverRunIntent(true)
                 HotelNotificationReceiverService.start(this@MainActivity)
+                applyRoomWindowBrightness()
             }.onFailure {
                 component.statusStore.update(com.hotelalert.notificationreceiver.protocol.ReceiverState.ERROR)
             }
@@ -378,6 +470,7 @@ class MainActivity : ComponentActivity() {
                     maintenancePinChangeMessage = null
                     kioskControlMessage = null
                     strictModeDraft = strictModePreference
+                    roomScreenBrightnessDraft = roomScreenBrightnessPreference
                 } else {
                     maintenanceRoute = RoomMaintenanceRoute.CLOSED
                     maintenancePinError = null
@@ -387,14 +480,13 @@ class MainActivity : ComponentActivity() {
             }
             if ((!roomSessionConfigured || diagnosticsMode) && maintenanceRoute != RoomMaintenanceRoute.CLOSED) {
                 maintenanceRoute = RoomMaintenanceRoute.CLOSED
-                    roomScreenBrightnessDraft = roomScreenBrightnessPreference
                 maintenancePinError = null
                 maintenancePinChangeMessage = null
+                roomScreenBrightnessDraft = roomScreenBrightnessPreference
             }
             if (!roomSessionConfigured || diagnosticsMode) maintenanceSettingsRestorePending = false
             if (!roomSessionConfigured || diagnosticsMode) {
                 val lockStatus = readRoomLockTaskStatus()
-                roomScreenBrightnessDraft = roomScreenBrightnessPreference
                 if (lockTaskStartedByThisActivity || lockStatus != RoomLockTaskStatus.INACTIVE) {
                     ensureRoomLockTaskExitedSafely()
                 }
@@ -514,11 +606,12 @@ class MainActivity : ComponentActivity() {
 
     private fun updateRoomWindowMode() {
         updateRoomWakeRecoverySuppression()
+        applyRoomWindowBrightness()
+        applyRoomKeepScreenOn()
         val immersive = shouldUseRoomImmersiveMode(
             hasRoomSession = roomSessionConfigured,
             hasServerOrigin = runCatching { component.serverOriginStore.read() != null }.getOrDefault(false),
             showDiagnostics = diagnosticsMode,
-        applyRoomWindowBrightness()
             maintenanceActive = maintenanceRoute != RoomMaintenanceRoute.CLOSED
         )
         WindowCompat.setDecorFitsSystemWindows(window, !immersive)
@@ -526,6 +619,22 @@ class MainActivity : ComponentActivity() {
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         if (immersive) controller.hide(WindowInsetsCompat.Type.systemBars())
         else controller.show(WindowInsetsCompat.Type.systemBars())
+    }
+
+    private fun applyRoomKeepScreenOn() {
+        val shouldKeepScreenOn = shouldKeepRoomScreenOn(
+            hasRoomSession = roomSessionConfigured,
+            hasServerOrigin = runCatching { component.serverOriginStore.read() != null }.getOrDefault(false),
+            activityResumed = activityResumed,
+            windowFocused = roomWindowFocused,
+            showDiagnostics = diagnosticsMode,
+            maintenanceActive = maintenanceRoute != RoomMaintenanceRoute.CLOSED || maintenanceSettingsRestorePending
+        )
+        if (shouldKeepScreenOn) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
 
     private fun onRoomScreenTap() {
@@ -536,10 +645,18 @@ class MainActivity : ComponentActivity() {
         )
         if (shouldOpenPin) {
             maintenanceSettingsRestorePending = false
+            roomScreensaverRequested = false
             maintenancePinError = null
             maintenanceRoute = RoomMaintenanceRoute.PIN
             updateRoomWindowMode()
         }
+    }
+
+    private fun wakeRoomScreensaverDisplay(): Boolean {
+        if (!roomScreensaverDisplayBlackout.value || !isRoomScreensaverBrightnessEligible()) return false
+        roomScreensaverDisplayBlackout.value = false
+        applyRoomWindowBrightness()
+        return true
     }
 
     private fun verifyMaintenancePin(pin: String) {
@@ -560,11 +677,11 @@ class MainActivity : ComponentActivity() {
                         maintenancePinChangeMessage = null
                         kioskControlMessage = null
                         strictModeDraft = strictModePreference
+                        roomScreenBrightnessDraft = roomScreenBrightnessPreference
                         maintenanceRoute = RoomMaintenanceRoute.SETTINGS
                         updateRoomWindowMode()
                         refreshMaintenanceDeviceState()
                     }
-                        roomScreenBrightnessDraft = roomScreenBrightnessPreference
                     is RoomMaintenancePinVerification.Rejected -> {
                         maintenancePinError = "El PIN es incorrecto. Quedan ${result.attemptsRemaining} intentos."
                     }
@@ -796,6 +913,10 @@ class MainActivity : ComponentActivity() {
     private fun saveMaintenanceAndReturn() {
         if (!isMaintenanceSettingsOpen()) return
         val preferences = getSharedPreferences(ROOM_KIOSK_PREFERENCES, MODE_PRIVATE)
+        val normalizedBrightnessPreference = normalizedRoomScreenBrightnessPreference(
+            manualEnabled = roomScreenBrightnessDraft.manualEnabled,
+            levelPercent = roomScreenBrightnessDraft.levelPercent
+        )
         val saveSucceeded = runCatching {
             preferences.edit()
                 .putBoolean(STRICT_ROOM_LOCK_TASK_KEY, strictModeDraft)
@@ -804,21 +925,17 @@ class MainActivity : ComponentActivity() {
                 .commit()
         }.getOrDefault(false)
         if (!saveSucceeded) {
-        val normalizedBrightnessPreference = normalizedRoomScreenBrightnessPreference(
-            manualEnabled = roomScreenBrightnessDraft.manualEnabled,
-            levelPercent = roomScreenBrightnessDraft.levelPercent
-        )
             kioskControlMessage = "No se pudo guardar la configuración. Permanece aquí y vuelve a intentarlo."
             return
         }
 
         strictModePreference = strictModeDraft
+        roomScreenBrightnessPreference = normalizedBrightnessPreference
+        roomScreenBrightnessDraft = normalizedBrightnessPreference
         if (!strictModePreference && !ensureRoomLockTaskExitedSafely()) return
 
         maintenanceSettingsRestorePending = false
         maintenanceRoute = RoomMaintenanceRoute.CLOSED
-        roomScreenBrightnessPreference = normalizedBrightnessPreference
-        roomScreenBrightnessDraft = normalizedBrightnessPreference
         maintenancePinError = null
         maintenancePinChangeMessage = null
         kioskControlMessage = null
@@ -925,56 +1042,125 @@ class MainActivity : ComponentActivity() {
     private fun isMaintenanceSettingsOpen(): Boolean =
         maintenanceRoute == RoomMaintenanceRoute.SETTINGS && roomSessionConfigured
 
-    private fun closeMaintenance() {
-        maintenanceSettingsRestorePending = false
-        maintenanceRoute = RoomMaintenanceRoute.CLOSED
-        maintenancePinError = null
     private fun applyRoomWindowBrightness() {
+        val hasServerOrigin = hasConfiguredServerOrigin()
+        val isScreensaverBrightnessEligible = isRoomScreensaverBrightnessEligible(hasServerOrigin)
         val brightnessPreference = if (maintenanceRoute == RoomMaintenanceRoute.SETTINGS) {
             roomScreenBrightnessDraft
         } else {
             roomScreenBrightnessPreference
         }
+        synchronizeRoomScreensaverBrightnessStep(
+            isEligible = isScreensaverBrightnessEligible,
+            configuredBrightnessPercent = brightnessPreference.levelPercent
+        )
         val brightness = roomWindowBrightnessOverride(
             preference = brightnessPreference,
-            isForeground = activityResumed && roomWindowFocused
+            isForeground = activityResumed && roomWindowFocused,
+            isRoomScreensaverActive = isScreensaverBrightnessEligible,
+            screensaverBrightnessPercent = roomScreensaverBrightnessPercent,
+            isRoomScreensaverDisplayBlack = roomScreensaverDisplayBlackout.value
         )
         val attributes = window.attributes
         if (attributes.screenBrightness != brightness) {
             attributes.screenBrightness = brightness
             window.attributes = attributes
         }
+        val maintenanceActive = maintenanceRoute != RoomMaintenanceRoute.CLOSED || maintenanceSettingsRestorePending
+        val diagnostic = "request=$roomScreensaverRequested eligible=$isScreensaverBrightnessEligible " +
+            "resumed=$activityResumed focused=$roomWindowFocused sessionConfigured=$roomSessionConfigured " +
+            "diagnostics=$diagnosticsMode maintenance=$maintenanceActive serverOrigin=$hasServerOrigin " +
+            "blackout=${roomScreensaverDisplayBlackout.value} override=$brightness assigned=${window.attributes.screenBrightness}"
+        if (diagnostic != lastRoomScreensaverBrightnessDiagnostic) {
+            Log.i(TAG, "ROOM_SAVER_BRIGHTNESS $diagnostic")
+            lastRoomScreensaverBrightnessDiagnostic = diagnostic
+        }
     }
 
+    private fun isRoomScreensaverBrightnessEligible(
+        hasServerOrigin: Boolean = hasConfiguredServerOrigin()
+    ): Boolean = shouldApplyRoomScreensaverBrightness(
+        requestedByWebView = roomScreensaverRequested,
+        readiness = RoomScreensaverBrightnessReadiness(
+            activityResumed = activityResumed,
+            windowFocused = roomWindowFocused,
+            diagnosticsMode = diagnosticsMode,
+            maintenanceActive = maintenanceRoute != RoomMaintenanceRoute.CLOSED || maintenanceSettingsRestorePending,
+            hasServerOrigin = hasServerOrigin
+        )
+    )
+
+    private fun hasConfiguredServerOrigin(): Boolean =
+        runCatching { component.serverOriginStore.read() != null }.getOrDefault(false)
+
+    private fun synchronizeRoomScreensaverBrightnessStep(isEligible: Boolean, configuredBrightnessPercent: Int) {
+        if (!isEligible) {
+            cancelRoomScreensaverBrightnessStep()
+            roomScreensaverBrightnessPercent = roomScreensaverBrightnessStartPercent(configuredBrightnessPercent)
+            roomScreensaverDisplayBlackout.value = false
+            roomScreensaverBrightnessWasEligible = false
+            return
+        }
+        if (!roomScreensaverBrightnessWasEligible) {
+            roomScreensaverBrightnessPercent = roomScreensaverBrightnessStartPercent(configuredBrightnessPercent)
+            roomScreensaverDisplayBlackout.value = false
+            roomScreensaverBrightnessWasEligible = true
+        }
+        if (!roomScreensaverBrightnessStepScheduled &&
+            roomScreensaverBrightnessPercent > ROOM_SCREENSAVER_BRIGHTNESS_FLOOR_PERCENT
+        ) {
+            roomScreensaverBrightnessStepScheduled = roomScreensaverBrightnessHandler.postDelayed(
+                roomScreensaverBrightnessStep,
+                ROOM_SCREENSAVER_BRIGHTNESS_STEP_DELAY_MILLIS
+            )
+        }
+    }
+
+    private fun cancelRoomScreensaverBrightnessStep() {
+        roomScreensaverBrightnessHandler.removeCallbacks(roomScreensaverBrightnessStep)
+        roomScreensaverBrightnessStepScheduled = false
+    }
+
+    private fun closeMaintenance() {
+        maintenanceSettingsRestorePending = false
+        maintenanceRoute = RoomMaintenanceRoute.CLOSED
+        maintenancePinError = null
         maintenancePinChangeMessage = null
         kioskControlMessage = null
         strictModeDraft = strictModePreference
+        roomScreenBrightnessDraft = roomScreenBrightnessPreference
         updateRoomWindowMode()
     }
 
     companion object {
-        roomScreenBrightnessDraft = roomScreenBrightnessPreference
         const val EXTRA_EVENT_ID = "eventId"
         const val EXTRA_REQUEST_ID = "requestId"
+        const val EXTRA_START_REQUEST_ID = "startRequestId"
         const val EXTRA_AREA_ID = "areaId"
         const val EXTRA_SHOW_DIAGNOSTICS = "showDiagnostics"
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
         private const val ROOM_KIOSK_PREFERENCES = "hotel_alert_room_kiosk"
         private const val HOME_ROLE_REQUEST_ATTEMPTED_KEY = "home_role_request_attempted"
         private const val STRICT_ROOM_LOCK_TASK_KEY = "strict_room_lock_task_requested"
+        private const val ROOM_SCREEN_BRIGHTNESS_MANUAL_KEY = "room_screen_brightness_manual"
+        private const val ROOM_SCREEN_BRIGHTNESS_LEVEL_PERCENT_KEY = "room_screen_brightness_level_percent"
         private const val STATE_MAINTENANCE_SETTINGS_OPEN_KEY = "room_maintenance_settings_open"
         private const val TAG = "HotelAlertMainActivity"
 
         @Volatile
         private var appInForeground = false
-        private const val ROOM_SCREEN_BRIGHTNESS_MANUAL_KEY = "room_screen_brightness_manual"
-        private const val ROOM_SCREEN_BRIGHTNESS_LEVEL_PERCENT_KEY = "room_screen_brightness_level_percent"
         @Volatile
         private var activityVisible = false
         @Volatile
         private var maintenanceActiveForWakeRecovery = false
         @Volatile
         private var diagnosticsModeForWakeRecovery = false
+
+        fun startRequestIntent(context: Context, requestId: String): Intent =
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra(EXTRA_START_REQUEST_ID, notificationStartRequestId(requestId))
+            }
 
         internal fun isAppInForeground(): Boolean = appInForeground
         internal fun isActivityVisible(): Boolean = activityVisible

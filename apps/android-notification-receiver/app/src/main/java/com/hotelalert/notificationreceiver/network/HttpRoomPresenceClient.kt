@@ -8,6 +8,10 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.ParsePosition
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 
 class HttpRoomPresenceClient internal constructor(
     private val openConnection: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }
@@ -65,7 +69,15 @@ class HttpRoomPresenceClient internal constructor(
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val response = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-            if (status !in 200..299) throw RoomPresenceException(status, parseErrorCode(response))
+            if (status !in 200..299) throw RoomPresenceException(
+                status,
+                parseErrorCode(response),
+                if (status == 429) {
+                    parseRoomPresenceRetryAfterMs(connection.getHeaderField("Retry-After"))
+                } else {
+                    null
+                }
+            )
             return response
         } finally {
             connection.disconnect()
@@ -108,3 +120,27 @@ class HttpRoomPresenceClient internal constructor(
         private val SAFE_ERROR_CODE_PATTERN = Regex("[A-Z][A-Z0-9_]{0,63}")
     }
 }
+
+internal fun parseRoomPresenceRetryAfterMs(value: String?, nowMillis: Long = System.currentTimeMillis()): Long? {
+    val header = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    val delayMs = if (DELTA_SECONDS_PATTERN.matches(header)) {
+        val seconds = header.toLongOrNull() ?: return MAX_SERVER_RETRY_DELAY_MS
+        seconds.coerceAtMost(MAX_SERVER_RETRY_DELAY_MS / 1_000L) * 1_000L
+    } else {
+        val parser = SimpleDateFormat(HTTP_DATE_PATTERN, Locale.US).apply {
+            isLenient = false
+            timeZone = TimeZone.getTimeZone("GMT")
+        }
+        val position = ParsePosition(0)
+        val retryAt = parser.parse(header, position)?.time
+            ?.takeIf { position.index == header.length }
+            ?: return null
+        (retryAt - nowMillis).coerceAtLeast(0L)
+    }
+    return delayMs.coerceIn(MIN_SERVER_RETRY_DELAY_MS, MAX_SERVER_RETRY_DELAY_MS)
+}
+
+private const val HTTP_DATE_PATTERN = "EEE, dd MMM yyyy HH:mm:ss zzz"
+private const val MIN_SERVER_RETRY_DELAY_MS = 1_000L
+private const val MAX_SERVER_RETRY_DELAY_MS = 300_000L
+private val DELTA_SECONDS_PATTERN = Regex("[0-9]+")

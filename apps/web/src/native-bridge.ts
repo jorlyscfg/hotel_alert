@@ -18,6 +18,19 @@ export interface NativePairingPayload {
 export type NativeRoomSessionPayload = NativePairingPayload;
 
 export type NativeRoomPresenceState = 'IDLE' | 'STARTING' | 'CONNECTING' | 'ONLINE' | 'RETRYING' | 'INVALIDATED' | 'STOPPED';
+export type NativeRoomScreensaverButtonAction = 'TOGGLE_DO_NOT_DISTURB';
+export type NativeRoomScreensaverSignalResult =
+  | 'window-unavailable'
+  | 'bridge-unavailable'
+  | 'method-unavailable'
+  | 'accepted'
+  | 'rejected'
+  | 'invalid-acknowledgment'
+  | 'call-failed-typeerror'
+  | 'call-failed-error'
+  | 'call-failed-unknown';
+
+export const NATIVE_ROOM_SCREENSAVER_BUTTON_EVENT = 'hotel-alert-room-screensaver-button';
 
 export interface NativeWebViewBridge {
   getCapabilities: () => string;
@@ -29,6 +42,7 @@ export interface NativeWebViewBridge {
   stageRoomSessionToken?: (token: string) => string;
   clearRoomSession?: () => string;
   getRoomPresenceState?: () => string;
+  setRoomScreensaverActive?: (active: boolean) => boolean;
   transitionRequest?: (payload: string) => string;
   getCommandStatus?: (requestId: string) => string;
 }
@@ -44,12 +58,23 @@ export interface NativeRequestTransitionPayload {
   targetStatus: 'ACCEPTED' | 'IN_PROGRESS' | 'COMPLETED';
   expectedVersion: number;
   idempotencyKey: string;
+  responsibleName?: string;
 }
 
 export interface NativeCommandOptions {
   wait?: (milliseconds: number) => Promise<void>;
   pollIntervalMs?: number;
   maxAttempts?: number;
+}
+
+export class NativeRequestCommandError extends Error {
+  readonly serverRequestId: string | undefined;
+
+  constructor(errorCode: string, serverRequestId: unknown) {
+    super(errorCode);
+    this.name = 'NativeRequestCommandError';
+    this.serverRequestId = isSafeServerRequestId(serverRequestId) ? serverRequestId : undefined;
+  }
 }
 
 declare global {
@@ -63,6 +88,37 @@ export function getNativeWebViewBridge(): NativeWebViewBridge | null {
   const bridge = window.HotelAlertNative;
   if (bridge === undefined || !hasBridgeMethods(bridge)) return null;
   return isSupportedCapabilities(bridge.getCapabilities()) ? bridge : null;
+}
+
+export function setNativeRoomScreensaverActive(active: boolean): NativeRoomScreensaverSignalResult {
+  if (typeof window === 'undefined') return 'window-unavailable';
+  const bridge = window.HotelAlertNative;
+  if (bridge === undefined) return 'bridge-unavailable';
+  try {
+    if (typeof bridge.setRoomScreensaverActive !== 'function') return 'method-unavailable';
+    // Keep the bridge as the receiver for Android's injected JavaScript-interface method.
+    const acknowledgment: unknown = bridge.setRoomScreensaverActive(active);
+    if (acknowledgment === true) return 'accepted';
+    if (acknowledgment === false) return 'rejected';
+    return 'invalid-acknowledgment';
+  } catch (error) {
+    if (error instanceof TypeError) return 'call-failed-typeerror';
+    if (error instanceof Error) return 'call-failed-error';
+    return 'call-failed-unknown';
+  }
+}
+
+export function subscribeToNativeRoomScreensaverButtons(
+  onButton: (action: NativeRoomScreensaverButtonAction) => void
+): () => void {
+  if (typeof window === 'undefined') return () => undefined;
+
+  const listener = (event: Event): void => {
+    const action: unknown = (event as CustomEvent<unknown>).detail;
+    if (action === 'TOGGLE_DO_NOT_DISTURB') onButton(action);
+  };
+  window.addEventListener(NATIVE_ROOM_SCREENSAVER_BUTTON_EVENT, listener);
+  return () => window.removeEventListener(NATIVE_ROOM_SCREENSAVER_BUTTON_EVENT, listener);
 }
 
 export function readNativeSnapshot(bridge: NativeWebViewBridge): DeviceSyncSnapshot | null {
@@ -151,6 +207,12 @@ export async function transitionNativeRequest(
   payload: NativeRequestTransitionPayload,
   options: NativeCommandOptions = {}
 ): Promise<void> {
+  if (payload.targetStatus === 'IN_PROGRESS') {
+    const responsibleName = payload.responsibleName?.trim();
+    if (responsibleName === undefined || responsibleName.length === 0 || responsibleName.length > 120) {
+      throw new Error('RESPONSIBLE_NAME_REQUIRED');
+    }
+  }
   if (typeof bridge.transitionRequest !== 'function' || typeof bridge.getCommandStatus !== 'function') {
     throw new Error('NATIVE_DEVICE_COMMANDS_UNAVAILABLE');
   }
@@ -170,7 +232,10 @@ export async function transitionNativeRequest(
     }
     if (status['state'] === 'SUCCEEDED') return;
     if (status['state'] === 'FAILED') {
-      throw new Error(isNonEmptyString(status['errorCode']) ? status['errorCode'] : 'NATIVE_REQUEST_COMMAND_FAILED');
+      throw new NativeRequestCommandError(
+        isNonEmptyString(status['errorCode']) ? status['errorCode'] : 'NATIVE_REQUEST_COMMAND_FAILED',
+        status['serverRequestId']
+      );
     }
     if (status['state'] !== 'PENDING') throw new Error('INVALID_NATIVE_REQUEST_COMMAND_STATUS');
     await wait(pollIntervalMs);
@@ -223,4 +288,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+function isSafeServerRequestId(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
 }

@@ -10,7 +10,8 @@ data class NativeRequestTransition(
     val requestId: String,
     val targetStatus: NativeRequestTargetStatus,
     val expectedVersion: Int,
-    val idempotencyKey: String
+    val idempotencyKey: String,
+    val responsibleName: String? = null
 ) {
     companion object {
         private val ID_PATTERN = Regex("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
@@ -25,7 +26,13 @@ data class NativeRequestTransition(
             require(expectedVersion > 0) { "The request version is invalid." }
             val idempotencyKey = json.optString("idempotencyKey").trim()
             require(ID_PATTERN.matches(idempotencyKey)) { "The idempotency key is invalid." }
-            return NativeRequestTransition(requestId, targetStatus, expectedVersion, idempotencyKey)
+            val responsibleName = json.optString("responsibleName", "").trim().takeIf { it.isNotEmpty() }
+            if (targetStatus == NativeRequestTargetStatus.IN_PROGRESS) {
+                require(!responsibleName.isNullOrEmpty() && responsibleName.length <= 120) {
+                    "A responsible name is required when starting a request."
+                }
+            }
+            return NativeRequestTransition(requestId, targetStatus, expectedVersion, idempotencyKey, responsibleName)
         }
     }
 }
@@ -43,8 +50,15 @@ enum class NativeRequestTargetStatus(val endpoint: String) {
 
 class NativeRequestCommandException(
     val statusCode: Int,
-    val errorCode: String?
-) : IllegalStateException("The native request command failed with HTTP $statusCode.")
+    val errorCode: String?,
+    serverRequestId: String? = null
+) : IllegalStateException("The native request command failed with HTTP $statusCode.") {
+    val serverRequestId: String? = serverRequestId?.takeIf { it.matches(SAFE_REQUEST_REFERENCE_PATTERN) }
+
+    private companion object {
+        val SAFE_REQUEST_REFERENCE_PATTERN = Regex("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+    }
+}
 
 interface NativeRequestCommandClient {
     suspend fun transition(
@@ -57,7 +71,7 @@ interface NativeRequestCommandClient {
 
 sealed class NativeRequestCommandResult {
     data class Success(val responseJson: String) : NativeRequestCommandResult()
-    data class Failure(val errorCode: String) : NativeRequestCommandResult()
+    data class Failure(val errorCode: String, val serverRequestId: String? = null) : NativeRequestCommandResult()
 }
 
 class NativeRequestCommandCoordinator(
@@ -82,7 +96,12 @@ class NativeRequestCommandCoordinator(
             client.transition(configuration.serverOrigin, configuration.deviceId, token, request)
         }.fold(
             onSuccess = { NativeRequestCommandResult.Success(it) },
-            onFailure = { error -> NativeRequestCommandResult.Failure(commandErrorCode(error)) }
+            onFailure = { error ->
+                NativeRequestCommandResult.Failure(
+                    commandErrorCode(error),
+                    (error as? NativeRequestCommandException)?.serverRequestId
+                )
+            }
         )
     }
 

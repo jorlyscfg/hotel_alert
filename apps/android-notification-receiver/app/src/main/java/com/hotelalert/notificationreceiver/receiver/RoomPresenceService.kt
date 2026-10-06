@@ -96,7 +96,7 @@ class RoomPresenceService : Service() {
                 is RoomPresenceCycle.Retry -> {
                     retryAttempt += 1
                     Log.w(TAG, "ROOM presence retry scheduled (${cycle.errorCode}).")
-                    delay(roomPresenceRetryDelayMs(retryAttempt))
+                    delay(roomPresenceRetryDelayMs(retryAttempt, cycle.retryAfterMs))
                 }
                 RoomPresenceCycle.Invalidated -> {
                     Log.i(TAG, "ROOM assignment was invalidated; local credentials were cleared.")

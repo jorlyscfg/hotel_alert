@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { io, type Socket } from 'socket.io-client';
 import type * as React from 'react';
 import { ApiError, api } from '../../apps/web/src/api';
-import type { ConnectionStatus, RealtimeRefreshResult } from '../../apps/web/src/realtime';
+import { shouldWebViewSendRestHeartbeat, type ConnectionStatus, type RealtimeRefreshResult } from '../../apps/web/src/realtime';
 
 const hookState = vi.hoisted(() => ({ cleanup: undefined as (() => void) | undefined }));
 
@@ -44,6 +44,12 @@ describe('web realtime connection lifecycle', () => {
     vi.mocked(io).mockReset();
     Reflect.deleteProperty(globalThis, 'document');
     Reflect.deleteProperty(globalThis, 'localStorage');
+  });
+
+  it('keeps exactly one REST heartbeat producer for native ROOM presence while preserving browser fallback', () => {
+    expect(shouldWebViewSendRestHeartbeat({ isRoomDevice: true, nativeRoomPresenceSupported: true })).toBe(false);
+    expect(shouldWebViewSendRestHeartbeat({ isRoomDevice: true, nativeRoomPresenceSupported: false })).toBe(true);
+    expect(shouldWebViewSendRestHeartbeat({ isRoomDevice: false, nativeRoomPresenceSupported: true })).toBe(true);
   });
 
   it('publishes offline to mounted snapshot views after a synchronized socket disconnects', () => {
@@ -211,7 +217,7 @@ describe('web realtime connection lifecycle', () => {
 
   it('treats an inactive-device heartbeat response as an authentication failure', async () => {
     const onAuthFailure = vi.fn<() => void>();
-    vi.spyOn(api, 'post').mockRejectedValue(new ApiError(403, { error: { code: 'DEVICE_INACTIVE' } }));
+    const post = vi.spyOn(api, 'post').mockRejectedValue(new ApiError(403, { error: { code: 'DEVICE_INACTIVE' } }));
     Object.defineProperty(globalThis, 'document', {
       configurable: true,
       value: {
@@ -231,7 +237,36 @@ describe('web realtime connection lifecycle', () => {
 
     await vi.advanceTimersByTimeAsync(10);
 
+    expect(post).toHaveBeenCalledOnce();
     expect(onAuthFailure).toHaveBeenCalledOnce();
+  });
+
+  it('suppresses only REST heartbeats when native presence owns ROOM heartbeat delivery', async () => {
+    const post = vi.spyOn(api, 'post').mockRejectedValue(new ApiError(503, { error: { code: 'SERVICE_UNAVAILABLE' } }));
+    Object.defineProperty(globalThis, 'document', {
+      configurable: true,
+      value: {
+        visibilityState: 'visible',
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined
+      }
+    });
+    const socket = mountRealtime({
+      onEvent: async () => ({ synchronized: true }),
+      onAuthFailure: () => undefined,
+      onStatus: () => undefined,
+      deviceToken: 'device-token',
+      heartbeatIntervalMs: 10,
+      heartbeatEnabled: false
+    });
+
+    socket.trigger('connect');
+    socket.trigger('connection.ready', { sync: 'UP_TO_DATE' });
+    await vi.advanceTimersByTimeAsync(150);
+    await vi.advanceTimersByTimeAsync(20);
+
+    expect(post).not.toHaveBeenCalled();
+    expect(socket.emittedEvents).toContain('device.heartbeat');
   });
 
   it('asks a disconnected socket to reconnect on visible lifecycle resume without refreshing while hidden', () => {
@@ -302,6 +337,7 @@ interface RealtimeTestOptions {
   onStatus: (status: ConnectionStatus) => void;
   deviceToken?: string;
   heartbeatIntervalMs?: number;
+  heartbeatEnabled?: boolean;
 }
 
 function mountRealtime(options: RealtimeTestOptions): FakeSocket {
@@ -314,7 +350,8 @@ function mountRealtime(options: RealtimeTestOptions): FakeSocket {
     onAuthFailure: options.onAuthFailure,
     onStatus: options.onStatus,
     ...(options.deviceToken === undefined ? {} : { deviceToken: options.deviceToken }),
-    ...(options.heartbeatIntervalMs === undefined ? {} : { heartbeatIntervalMs: options.heartbeatIntervalMs })
+    ...(options.heartbeatIntervalMs === undefined ? {} : { heartbeatIntervalMs: options.heartbeatIntervalMs }),
+    ...(options.heartbeatEnabled === undefined ? {} : { heartbeatEnabled: options.heartbeatEnabled })
   });
   return socket;
 }
@@ -329,6 +366,7 @@ type FakeHandler = (...args: unknown[]) => void;
 class FakeSocket {
   public connected = false;
   public connectCalls = 0;
+  public readonly emittedEvents: string[] = [];
   public auth: unknown;
   public onEmit: ((eventName: string, args: unknown[]) => void) | undefined;
   private anyHandler: ((eventName: string, payload: unknown) => void) | undefined;
@@ -345,6 +383,7 @@ class FakeSocket {
   }
 
   public emit(eventName: string, ...args: unknown[]): void {
+    this.emittedEvents.push(eventName);
     this.onEmit?.(eventName, args);
   }
 

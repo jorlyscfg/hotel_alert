@@ -7,6 +7,20 @@ internal fun shouldUseRoomImmersiveMode(
     maintenanceActive: Boolean = false
 ): Boolean = hasRoomSession && hasServerOrigin && !showDiagnostics && !maintenanceActive
 
+internal fun shouldKeepRoomScreenOn(
+    hasRoomSession: Boolean,
+    hasServerOrigin: Boolean,
+    activityResumed: Boolean,
+    windowFocused: Boolean,
+    showDiagnostics: Boolean,
+    maintenanceActive: Boolean = false
+): Boolean = shouldUseRoomImmersiveMode(
+    hasRoomSession = hasRoomSession,
+    hasServerOrigin = hasServerOrigin,
+    showDiagnostics = showDiagnostics,
+    maintenanceActive = maintenanceActive
+) && activityResumed && windowFocused
+
 internal fun shouldRequestHomeRole(
     apiLevel: Int,
     hasRoomSession: Boolean,

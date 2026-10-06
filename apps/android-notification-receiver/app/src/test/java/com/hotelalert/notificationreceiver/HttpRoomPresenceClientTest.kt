@@ -1,6 +1,7 @@
 package com.hotelalert.notificationreceiver
 
 import com.hotelalert.notificationreceiver.network.HttpRoomPresenceClient
+import com.hotelalert.notificationreceiver.network.parseRoomPresenceRetryAfterMs
 import com.hotelalert.notificationreceiver.protocol.RoomPresenceException
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -31,6 +32,36 @@ class HttpRoomPresenceClientTest {
         assertEquals(false, connection.redirectTargetReached)
         assertNull(connection.redirectTargetAuthorization)
     }
+
+    @Test
+    fun `parses delta seconds and HTTP dates into a bounded retry delay`() {
+        assertEquals(7_000L, parseRoomPresenceRetryAfterMs("7", nowMillis = 1_000L))
+        assertEquals(9_000L, parseRoomPresenceRetryAfterMs("Thu, 01 Jan 1970 00:00:10 GMT", nowMillis = 1_000L))
+        assertEquals(1_000L, parseRoomPresenceRetryAfterMs("0", nowMillis = 1_000L))
+        assertEquals(300_000L, parseRoomPresenceRetryAfterMs("999999", nowMillis = 1_000L))
+        assertNull(parseRoomPresenceRetryAfterMs("not-a-delay", nowMillis = 1_000L))
+    }
+
+    @Test
+    fun `attaches Retry After only to rate limited ROOM responses`() = runTest {
+        val limited = try {
+            HttpRoomPresenceClient { ErrorResponseConnection(it, 429, "7") }
+                .fetchSession("http://hotel.test", "room-device", "room-secret")
+            throw AssertionError("Expected a rate-limit response")
+        } catch (expected: RoomPresenceException) {
+            expected
+        }
+        val unavailable = try {
+            HttpRoomPresenceClient { ErrorResponseConnection(it, 503, "7") }
+                .fetchSession("http://hotel.test", "room-device", "room-secret")
+            throw AssertionError("Expected an unavailable response")
+        } catch (expected: RoomPresenceException) {
+            expected
+        }
+
+        assertEquals(7_000L, limited.retryAfterMs)
+        assertNull(unavailable.retryAfterMs)
+    }
 }
 
 private class RedirectingConnection(url: URL) : HttpURLConnection(url) {
@@ -56,5 +87,27 @@ private class RedirectingConnection(url: URL) : HttpURLConnection(url) {
 
     override fun getErrorStream(): InputStream = ByteArrayInputStream(
         """{"error":{"code":"REDIRECT_BLOCKED"}}""".toByteArray(Charsets.UTF_8)
+    )
+}
+
+private class ErrorResponseConnection(
+    url: URL,
+    private val statusCode: Int,
+    private val retryAfter: String
+) : HttpURLConnection(url) {
+    override fun connect() = Unit
+
+    override fun disconnect() = Unit
+
+    override fun usingProxy(): Boolean = false
+
+    override fun getResponseCode(): Int = statusCode
+
+    override fun getHeaderField(name: String): String? =
+        if (name.equals("Retry-After", ignoreCase = true)) retryAfter else null
+
+    override fun getErrorStream(): InputStream = ByteArrayInputStream(
+        """{"error":{"code":"${if (statusCode == 429) "RATE_LIMITED" else "SERVICE_UNAVAILABLE"}"}}"""
+            .toByteArray(Charsets.UTF_8)
     )
 }

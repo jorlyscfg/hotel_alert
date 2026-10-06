@@ -1,7 +1,9 @@
 # Android ROOM boot-visible launch recovery
 
 ## Objective
-Make the configured Hotel Alert ROOM station attempt to reopen its ROOM activity after Android finishes booting, match FreeKiosk's explicit non-Device-Owner auto-launch path while keeping background presence restoration, and report Android's actual resolved HOME launcher truthfully.
+Make the configured Hotel Alert ROOM station attempt to reopen its ROOM activity after Android finishes booting, keep background presence restoration, and report Android's actual resolved HOME launcher truthfully.
+
+> **Supersession:** Hotel Alert's APK owns the ROOM display and in-app screensaver lifecycle. FreeKiosk comparisons in this task are historical evidence only; no separate app, configuration, API key, or integration is required.
 
 ## Problem and why
 After a power interruption the device returned to the vendor app instead of Hotel Alert. Code inspection confirms `RoomPresenceRestoreReceiver` currently starts only `RoomPresenceService`; it never explicitly launches `MainActivity`. FreeKiosk separately attempts a delayed explicit launch from its boot receiver when Auto Launch is enabled, including its legacy path without Device Owner. A second, related issue is that native HOME status trusts the RoleManager role before checking the concrete HOME Activity resolved by Android, so it can report Hotel Alert even when the resolved launcher is Akubela.
@@ -35,7 +37,7 @@ After a power interruption the device returned to the vendor app instead of Hote
 - A valid ROOM session on supported boot/package-replacement broadcasts triggers an explicit best-effort launch attempt for the ROOM UI as well as restoring heartbeat presence.
 - No visible launch is attempted for non-ROOM/unconfigured installations or unsupported broadcasts.
 - If Android resolves a concrete HOME app other than Hotel Alert, native maintenance must not report Hotel Alert as the default merely because RoleManager reports its role held.
-- Android/OEM restrictions and FreeKiosk's separate auto-launch path are accurately documented; tests do not claim physical boot success.
+- Android/OEM launch restrictions are accurately documented; tests do not claim physical boot success or depend on third-party kiosk behavior.
 - Gradle checks and `git diff --check` results are recorded; device install/physical cold boot are marked pending if the authorized endpoint is unavailable.
 
 ## Route and evidence

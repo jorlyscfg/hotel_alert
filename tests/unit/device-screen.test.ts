@@ -14,6 +14,7 @@ import {
   formatRoomRequestAge,
   formatClock,
   formatRoomScreensaverDate,
+  resolveDeviceTimeZone,
   groupRoomServicesByArea,
   resolveRoomAreaOverflow,
   resolveRoomServicePageSize,
@@ -21,7 +22,8 @@ import {
   resolveDeviceConnectionMessage,
   resolveInformationCarouselTiming,
   resolvePendingAlertIntervalMs,
-  resolveRoomBackgroundStyle
+  resolveRoomBackgroundStyle,
+  performRoomDoNotDisturbToggle
 } from '../../apps/web/src/features/device/DeviceScreen';
 import { RoomScreensaver } from '../../apps/web/src/features/device/RoomScreensaver';
 import { ApiError, isDeviceAuthFailure, isDeviceInvalidationError } from '../../apps/web/src/api';
@@ -178,6 +180,47 @@ describe('device pending alert helpers', () => {
   it('formats the authoritative server clock for the station header', () => {
     expect(formatClock(new Date('2026-08-31T09:05:00.000Z'), 'en-US', 'UTC')).toBe('9:05 AM');
     expect(formatClock(new Date('2026-08-31T09:05:00.000Z'), 'en-US', 'UTC', '24h')).toBe('09:05');
+  });
+
+  it('keeps the configured clock cycle independent of locale hour-cycle preferences', () => {
+    const noon = new Date('2026-10-04T17:12:00.000Z');
+    const midnight = new Date('2026-10-05T05:12:00.000Z');
+
+    expect(formatClock(noon, 'es-u-hc-h11', 'America/Cancun', '12h')).toBe('12:12 p. m.');
+    expect(formatClock(noon, 'en-US', 'America/Cancun', '12h')).toBe('12:12 PM');
+    expect(formatClock(noon, 'es-u-hc-h11', 'America/Cancun', '24h')).toBe('12:12');
+    expect(formatClock(midnight, 'es-u-hc-h11', 'America/Cancun', '24h')).toBe('00:12');
+  });
+
+  it('formats ROOM and AREA display times in the configured shared zone without changing UTC instants', () => {
+    const authoritativeTime = new Date('2026-10-01T02:15:00.000Z');
+    const timeZone = resolveDeviceTimeZone('America/Cancun');
+
+    expect(formatClock(authoritativeTime, 'en-US', timeZone)).toBe('9:15 PM');
+    expect(formatRoomScreensaverDate(authoritativeTime, 'en', timeZone)).toContain('September 30, 2026');
+    expect(authoritativeTime.toISOString()).toBe('2026-10-01T02:15:00.000Z');
+
+    const snapshot = createAreaSnapshot();
+    snapshot.serverTime = authoritativeTime.toISOString();
+    snapshot.config.timeZone = timeZone;
+    for (const request of snapshot.activeRequests) request.createdAt = authoritativeTime.toISOString();
+    const markup = renderToStaticMarkup(createElement(DeviceScreen, {
+      snapshot,
+      deviceToken: 'device-token',
+      connectionStatus: 'online',
+      onRefresh: async () => undefined,
+      onOpenAdmin: () => undefined,
+      onAuthFailure: () => undefined
+    }));
+
+    expect(markup).toContain('>9:15 PM</time>');
+    expect(markup).toContain('Last synchronized at 9:15 PM.');
+    expect(markup).toContain('Created: 9:15 PM');
+  });
+
+  it('uses deterministic UTC for a cached device snapshot without a timezone', () => {
+    expect(resolveDeviceTimeZone(undefined)).toBe('UTC');
+    expect(formatClock(new Date('2026-10-01T02:15:00.000Z'), 'en-US', resolveDeviceTimeZone(undefined))).toBe('2:15 AM');
   });
 
   it('renders localized screensaver date and clock with no fabricated sensor readings', () => {
@@ -825,6 +868,61 @@ describe('device pending alert helpers', () => {
     expect(activeMarkup).toContain('room-dnd-button--active');
   });
 
+  it('toggles room DND online, refreshes the snapshot, and reports offline/auth failures', async () => {
+    const update = vi.fn(async (_deviceToken: string, _enabled: boolean) => undefined);
+    const onRefresh = vi.fn(async () => undefined);
+    const onAuthFailure = vi.fn();
+    const onError = vi.fn();
+
+    await performRoomDoNotDisturbToggle({
+      enabled: false,
+      deviceToken: 'device-token',
+      connectionStatus: 'online',
+      onRefresh,
+      onAuthFailure,
+      onError,
+      actionPausedMessage: 'paused',
+      getFailureMessage: () => 'failed',
+      update
+    });
+
+    expect(update).toHaveBeenCalledWith('device-token', true);
+    expect(onRefresh).toHaveBeenCalledOnce();
+    expect(onError).not.toHaveBeenCalled();
+
+    update.mockClear();
+    await performRoomDoNotDisturbToggle({
+      enabled: false,
+      deviceToken: 'device-token',
+      connectionStatus: 'offline',
+      onRefresh,
+      onAuthFailure,
+      onError,
+      actionPausedMessage: 'paused',
+      getFailureMessage: () => 'failed',
+      update
+    });
+    expect(update).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenLastCalledWith('paused');
+
+    const authFailure = new ApiError(401, { error: { code: 'DEVICE_TOKEN_REVOKED' } });
+    update.mockRejectedValue(authFailure);
+    await performRoomDoNotDisturbToggle({
+      enabled: false,
+      deviceToken: 'device-token',
+      connectionStatus: 'online',
+      onRefresh,
+      onAuthFailure,
+      onError,
+      actionPausedMessage: 'paused',
+      getFailureMessage: () => 'failed',
+      update
+    });
+    expect(onAuthFailure).toHaveBeenCalledWith(authFailure);
+    expect(onError).toHaveBeenLastCalledWith('failed');
+    expect(onRefresh).toHaveBeenCalledOnce();
+  });
+
   it('keeps non-online ROOM service content free of visible alerts with an accessible status fallback', () => {
     const markup = renderToStaticMarkup(createElement(DeviceScreen, {
       snapshot: createRoomSnapshot(),
@@ -895,7 +993,7 @@ describe('device pending alert helpers', () => {
 
     expect(cardMarkup).toContain('queue-card__room');
     expect(cardMarkup).toContain('>101</span>');
-    expect(cardMarkup).toContain(`Creada: ${formatClock(new Date(createdAt), 'en-US', undefined, '12h')}`);
+    expect(cardMarkup).toContain(`Creada: ${formatClock(new Date(createdAt), 'en-US', 'UTC', '12h')}`);
     expect(cardMarkup).toContain('Lleva: 2 min');
     expect(cardMarkup).toContain('room-dnd-indicator');
     expect(cardMarkup).not.toContain('Room 101');

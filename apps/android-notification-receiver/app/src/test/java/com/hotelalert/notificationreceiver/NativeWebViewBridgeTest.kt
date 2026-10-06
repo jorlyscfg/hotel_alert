@@ -1,14 +1,21 @@
 package com.hotelalert.notificationreceiver
 
+import com.hotelalert.notificationreceiver.ui.roomScreensaverButtonEventScript
 import com.hotelalert.notificationreceiver.protocol.DeviceSessionSnapshot
 import com.hotelalert.notificationreceiver.protocol.DeviceSnapshotClient
 import com.hotelalert.notificationreceiver.protocol.NativePairingCoordinator
+import com.hotelalert.notificationreceiver.protocol.NativeRequestCommandClient
+import com.hotelalert.notificationreceiver.protocol.NativeRequestCommandCoordinator
+import com.hotelalert.notificationreceiver.protocol.NativeRequestCommandException
+import com.hotelalert.notificationreceiver.protocol.NativeRequestTransition
 import com.hotelalert.notificationreceiver.protocol.PairingStateRollback
 import com.hotelalert.notificationreceiver.protocol.PairingStateStore
 import com.hotelalert.notificationreceiver.protocol.ReceiverConfiguration
+import com.hotelalert.notificationreceiver.protocol.ReceiverConfigurationStore
 import com.hotelalert.notificationreceiver.protocol.ReceiverServiceController
 import com.hotelalert.notificationreceiver.receiver.NativeReceiverSnapshotStore
 import com.hotelalert.notificationreceiver.receiver.ReceiverStatusStore
+import com.hotelalert.notificationreceiver.storage.DeviceTokenStore
 import com.hotelalert.notificationreceiver.web.HotelAlertWebBridge
 import com.hotelalert.notificationreceiver.web.ServerOriginStore
 import kotlinx.coroutines.CoroutineScope
@@ -73,9 +80,83 @@ class NativeWebViewBridgeTest {
         )
     }
 
+    @Test
+    fun `forwards saver phase changes and clears the active state when the web view is released`() = runTest {
+        val bridge = createBridge(this)
+        val owner = Any()
+        val states = mutableListOf<Boolean>()
+        bridge.bindRoomScreensaverStateListener(owner, states::add)
+
+        assertTrue(bridge.setRoomScreensaverActive(true))
+        bridge.clearRoomScreensaverState()
+
+        assertEquals(listOf(true, false), states)
+        bridge.unbindRoomScreensaverStateListener(owner)
+        assertFalse(bridge.setRoomScreensaverActive(true))
+    }
+
+    @Test
+    fun `routes left-button DND through the active WebView listener without delivering blackout twice`() = runTest {
+        val bridge = createBridge(this)
+        val owner = Any()
+        val received = mutableListOf<RoomScreensaverButtonAction>()
+        bridge.bindRoomScreensaverButtonListener(owner, received::add)
+
+        assertTrue(bridge.dispatchRoomScreensaverButton(RoomScreensaverButtonAction.TOGGLE_DO_NOT_DISTURB))
+        assertFalse(bridge.dispatchRoomScreensaverButton(RoomScreensaverButtonAction.TOGGLE_DISPLAY_BLACKOUT))
+        bridge.unbindRoomScreensaverButtonListener(Any())
+        assertTrue(bridge.dispatchRoomScreensaverButton(RoomScreensaverButtonAction.TOGGLE_DO_NOT_DISTURB))
+        bridge.unbindRoomScreensaverButtonListener(owner)
+
+        assertEquals(
+            listOf(RoomScreensaverButtonAction.TOGGLE_DO_NOT_DISTURB, RoomScreensaverButtonAction.TOGGLE_DO_NOT_DISTURB),
+            received
+        )
+        assertFalse(bridge.dispatchRoomScreensaverButton(RoomScreensaverButtonAction.TOGGLE_DO_NOT_DISTURB))
+        assertEquals(
+            "window.dispatchEvent(new CustomEvent('hotel-alert-room-screensaver-button', {detail: 'TOGGLE_DO_NOT_DISTURB', bubbles: false}));",
+            roomScreensaverButtonEventScript(RoomScreensaverButtonAction.TOGGLE_DO_NOT_DISTURB)
+        )
+    }
+
+    @Test
+    fun `exposes server request id separately from the native command request id`() = runTest {
+        val snapshotStore = NativeReceiverSnapshotStore().also { it.update("{\"config\":{\"mode\":\"AREA\"}}") }
+        val commandCoordinator = NativeRequestCommandCoordinator(
+            configurationStore = object : ReceiverConfigurationStore {
+                override fun read() = ReceiverConfiguration("https://hotel.test", "device-1", "client-1", "0.1.0")
+                override fun write(configuration: ReceiverConfiguration) = Unit
+            },
+            tokenStore = object : DeviceTokenStore {
+                override suspend fun read() = "device-token"
+                override suspend fun write(token: String) = Unit
+                override suspend fun clear() = Unit
+            },
+            snapshotStore = snapshotStore,
+            client = object : NativeRequestCommandClient {
+                override suspend fun transition(serverOrigin: String, deviceId: String, token: String, request: NativeRequestTransition): String {
+                    throw NativeRequestCommandException(500, "INTERNAL_ERROR", "server-request-12345678")
+                }
+            }
+        )
+        val bridge = createBridge(this, snapshotStore, commandCoordinator)
+        val accepted = JSONObject(bridge.transitionRequest(
+            """{"requestId":"request-1","targetStatus":"IN_PROGRESS","expectedVersion":2,"idempotencyKey":"transition-1","responsibleName":"Taylor Morgan"}"""
+        ))
+        advanceUntilIdle()
+
+        val status = JSONObject(bridge.getCommandStatus(accepted.getString("requestId")))
+        assertEquals(accepted.getString("requestId"), status.getString("requestId"))
+        assertEquals("FAILED", status.getString("state"))
+        assertEquals("INTERNAL_ERROR", status.getString("errorCode"))
+        assertEquals("server-request-12345678", status.getString("serverRequestId"))
+        assertFalse(status.has("responsibleName"))
+    }
+
     private fun createBridge(
         scope: CoroutineScope,
-        snapshotStore: NativeReceiverSnapshotStore = NativeReceiverSnapshotStore()
+        snapshotStore: NativeReceiverSnapshotStore = NativeReceiverSnapshotStore(),
+        commandCoordinator: NativeRequestCommandCoordinator? = null
     ): HotelAlertWebBridge {
         val stateStore = FakePairingStateStore()
         val coordinator = NativePairingCoordinator(
@@ -87,7 +168,7 @@ class NativeWebViewBridgeTest {
             clientVersion = "0.1.0",
             onSnapshot = snapshotStore::update
         )
-        return HotelAlertWebBridge(scope, coordinator, snapshotStore, ReceiverStatusStore())
+        return HotelAlertWebBridge(scope, coordinator, snapshotStore, ReceiverStatusStore(), commandCoordinator)
     }
 
     private class FixedOriginStore : ServerOriginStore {

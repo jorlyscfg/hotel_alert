@@ -1,6 +1,7 @@
 package com.hotelalert.notificationreceiver.web
 
 import android.webkit.JavascriptInterface
+import com.hotelalert.notificationreceiver.RoomScreensaverButtonAction
 import com.hotelalert.notificationreceiver.protocol.NativePairingCoordinator
 import com.hotelalert.notificationreceiver.protocol.NativePairingRequest
 import com.hotelalert.notificationreceiver.protocol.NativePairingResult
@@ -35,11 +36,17 @@ class HotelAlertWebBridge(
     }
 
     private val pairingStates = linkedMapOf<String, PairingState>()
+    private val roomScreensaverListenerLock = Any()
+    private var roomScreensaverListenerOwner: Any? = null
+    private var roomScreensaverStateListener: ((Boolean) -> Unit)? = null
+    private val roomScreensaverButtonListenerLock = Any()
+    private var roomScreensaverButtonListenerOwner: Any? = null
+    private var roomScreensaverButtonListener: ((RoomScreensaverButtonAction) -> Unit)? = null
 
     private sealed class CommandState {
         data object Pending : CommandState()
         data class Succeeded(val responseJson: String) : CommandState()
-        data class Failed(val errorCode: String) : CommandState()
+        data class Failed(val errorCode: String, val serverRequestId: String? = null) : CommandState()
     }
 
     private val commandStates = linkedMapOf<String, CommandState>()
@@ -106,7 +113,7 @@ class HotelAlertWebBridge(
                 requestId,
                 when (result) {
                     is NativeRequestCommandResult.Success -> CommandState.Succeeded(result.responseJson)
-                    is NativeRequestCommandResult.Failure -> CommandState.Failed(result.errorCode)
+                    is NativeRequestCommandResult.Failure -> CommandState.Failed(result.errorCode, result.serverRequestId)
                 }
             )
         }
@@ -149,6 +156,58 @@ class HotelAlertWebBridge(
 
     @JavascriptInterface
     fun getRoomPresenceState(): String = roomPresenceStatusStore?.state?.name ?: RoomPresenceState.IDLE.name
+
+    @JavascriptInterface
+    fun setRoomScreensaverActive(active: Boolean): Boolean {
+        val listener = synchronized(roomScreensaverListenerLock) { roomScreensaverStateListener }
+            ?: return false
+        listener(active)
+        return true
+    }
+
+    fun bindRoomScreensaverStateListener(owner: Any, listener: (Boolean) -> Unit) {
+        synchronized(roomScreensaverListenerLock) {
+            roomScreensaverListenerOwner = owner
+            roomScreensaverStateListener = listener
+        }
+    }
+
+    fun unbindRoomScreensaverStateListener(owner: Any) {
+        val listener = synchronized(roomScreensaverListenerLock) {
+            if (roomScreensaverListenerOwner !== owner) return
+            roomScreensaverListenerOwner = null
+            roomScreensaverStateListener.also { roomScreensaverStateListener = null }
+        }
+        listener?.invoke(false)
+    }
+
+    fun clearRoomScreensaverState() {
+        val listener = synchronized(roomScreensaverListenerLock) { roomScreensaverStateListener }
+        listener?.invoke(false)
+    }
+
+    internal fun dispatchRoomScreensaverButton(action: RoomScreensaverButtonAction): Boolean {
+        if (action != RoomScreensaverButtonAction.TOGGLE_DO_NOT_DISTURB) return false
+        val listener = synchronized(roomScreensaverButtonListenerLock) { roomScreensaverButtonListener }
+            ?: return false
+        listener(action)
+        return true
+    }
+
+    internal fun bindRoomScreensaverButtonListener(owner: Any, listener: (RoomScreensaverButtonAction) -> Unit) {
+        synchronized(roomScreensaverButtonListenerLock) {
+            roomScreensaverButtonListenerOwner = owner
+            roomScreensaverButtonListener = listener
+        }
+    }
+
+    internal fun unbindRoomScreensaverButtonListener(owner: Any) {
+        synchronized(roomScreensaverButtonListenerLock) {
+            if (roomScreensaverButtonListenerOwner !== owner) return
+            roomScreensaverButtonListenerOwner = null
+            roomScreensaverButtonListener = null
+        }
+    }
 
     private val isEnabled: Boolean
         get() = scope != null && pairingCoordinator != null && snapshotStore != null && statusStore != null
@@ -213,7 +272,10 @@ class HotelAlertWebBridge(
             when (state) {
                 CommandState.Pending -> put("state", "PENDING")
                 is CommandState.Succeeded -> put("state", "SUCCEEDED").put("responseJson", state.responseJson)
-                is CommandState.Failed -> put("state", "FAILED").put("errorCode", state.errorCode)
+                is CommandState.Failed -> {
+                    put("state", "FAILED").put("errorCode", state.errorCode)
+                    state.serverRequestId?.let { put("serverRequestId", it) }
+                }
             }
         }
         .toString()

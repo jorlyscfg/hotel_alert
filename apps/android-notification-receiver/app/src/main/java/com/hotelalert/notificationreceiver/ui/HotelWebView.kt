@@ -16,6 +16,7 @@ import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import com.hotelalert.notificationreceiver.RoomScreensaverButtonAction
 import com.hotelalert.notificationreceiver.web.NativeWebViewBridgeContract
 import com.hotelalert.notificationreceiver.web.HotelAlertWebBridge
 import com.hotelalert.notificationreceiver.web.WebViewNavigationPolicy
@@ -29,20 +30,32 @@ fun HotelWebView(
     serverOrigin: String,
     bridge: HotelAlertWebBridge = HotelAlertWebBridge(),
     reloadKey: Int = 0,
+    startRequestId: String? = null,
     onMainFrameLoadFailure: () -> Unit = {},
     onScreenTap: () -> Unit = {},
+    onScreenWakeFromBlackout: () -> Boolean = { false },
     modifier: Modifier = Modifier.fillMaxSize()
 ) {
     val context = LocalContext.current
-    key(serverOrigin, reloadKey) {
+    key(serverOrigin, reloadKey, startRequestId) {
         AndroidView(
             factory = {
-                createRestrictedWebView(context, serverOrigin, bridge, onMainFrameLoadFailure)
+                createRestrictedWebView(context, serverOrigin, bridge, onMainFrameLoadFailure, startRequestId).also { webView ->
+                    bridge.bindRoomScreensaverButtonListener(webView) { action ->
+                        webView.post {
+                            if (webView.isAttachedToWindow) {
+                                webView.evaluateJavascript(roomScreensaverButtonEventScript(action), null)
+                            }
+                        }
+                    }
+                }
             },
             modifier = modifier,
-            update = { webView -> installTapObserver(webView, context, onScreenTap) },
+            update = { webView -> installTapObserver(webView, context, onScreenTap, onScreenWakeFromBlackout) },
             onRelease = { webView ->
                 webView.stopLoading()
+                bridge.unbindRoomScreensaverButtonListener(webView)
+                bridge.clearRoomScreensaverState()
                 webView.removeJavascriptInterface(NativeWebViewBridgeContract.name)
                 webView.destroy()
             }
@@ -50,15 +63,32 @@ fun HotelWebView(
     }
 }
 
-private fun installTapObserver(webView: WebView, context: Context, onScreenTap: () -> Unit) {
+private fun installTapObserver(
+    webView: WebView,
+    context: Context,
+    onScreenTap: () -> Unit,
+    onScreenWakeFromBlackout: () -> Boolean
+) {
     val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     var downX = 0f
     var downY = 0f
     var downAtMillis = 0L
     var isTap = false
+    var consumeWakeGesture = false
     webView.setOnTouchListener { _, event ->
+        if (consumeWakeGesture) {
+            if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                consumeWakeGesture = false
+            }
+            return@setOnTouchListener true
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                if (onScreenWakeFromBlackout()) {
+                    consumeWakeGesture = true
+                    isTap = false
+                    return@setOnTouchListener true
+                }
                 downX = event.x
                 downY = event.y
                 downAtMillis = event.eventTime
@@ -80,6 +110,9 @@ private fun installTapObserver(webView: WebView, context: Context, onScreenTap: 
     }
 }
 
+internal fun roomScreensaverButtonEventScript(action: RoomScreensaverButtonAction): String =
+    "window.dispatchEvent(new CustomEvent('hotel-alert-room-screensaver-button', {detail: '${action.name}', bubbles: false}));"
+
 private const val TAP_MAX_DURATION_MILLIS = 500L
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -87,17 +120,13 @@ internal fun createRestrictedWebView(
     context: Context,
     serverOrigin: String,
     bridge: HotelAlertWebBridge = HotelAlertWebBridge(),
-    onMainFrameLoadFailure: () -> Unit = {}
+    onMainFrameLoadFailure: () -> Unit = {},
+    startRequestId: String? = null
 ): WebView {
     val policy = WebViewNavigationPolicy(serverOrigin)
     return WebView(context).apply {
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
-        // The console is served from a development LAN origin in kiosk deployments. Do not
-        // let WebView reuse an old HTML/module graph after the server has been updated.
-        settings.cacheMode = WebSettings.LOAD_NO_CACHE
-        clearCache(true)
-        clearHistory()
         settings.allowFileAccess = false
         settings.allowContentAccess = false
         settings.allowFileAccessFromFileURLs = false
@@ -110,14 +139,20 @@ internal fun createRestrictedWebView(
         setDownloadListener { _, _, _, _, _ -> }
         webViewClient = restrictedWebViewClient(policy, onMainFrameLoadFailure)
         loadUrl(
-            webViewEntryUrl(serverOrigin, UUID.randomUUID().toString()),
+            webViewEntryUrl(serverOrigin, UUID.randomUUID().toString(), startRequestId),
             mapOf("Cache-Control" to "no-cache", "Pragma" to "no-cache")
         )
     }
 }
 
-internal fun webViewEntryUrl(serverOrigin: String, cacheBust: String): String =
-    "${serverOrigin.trim().trimEnd('/')}/?__hotel_alert_webview_reload=${URLEncoder.encode(cacheBust, StandardCharsets.UTF_8.name())}"
+internal fun webViewEntryUrl(serverOrigin: String, cacheBust: String, startRequestId: String? = null): String {
+    val startRequestQuery = startRequestId
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?.let { "&startRequestId=${URLEncoder.encode(it, StandardCharsets.UTF_8.name())}" }
+        .orEmpty()
+    return "${serverOrigin.trim().trimEnd('/')}/?__hotel_alert_webview_reload=${URLEncoder.encode(cacheBust, StandardCharsets.UTF_8.name())}$startRequestQuery"
+}
 
 private fun restrictedWebViewClient(
     policy: WebViewNavigationPolicy,
