@@ -48,9 +48,9 @@ interface TestElement {
     csrfToken?: string;
     installationId?: string | null;
     connectionStatus?: ConnectionStatus;
-    onRetry?: () => void;
-    onChangePassword?: (currentPassword: string, newPassword: string) => Promise<void>;
-    error?: string | null;
+  onRetry?: () => void;
+  onChangePassword?: (currentPassword: string, newPassword: string) => Promise<void>;
+  error?: string | null;
   };
 }
 
@@ -230,6 +230,7 @@ vi.mock('../../apps/web/src/i18n', () => ({
 }));
 
 vi.mock('../../apps/web/src/realtime', () => ({
+  shouldWebViewSendRestHeartbeat: (input: { isRoomDevice: boolean; nativeRoomPresenceSupported: boolean }) => !input.isRoomDevice || !input.nativeRoomPresenceSupported,
   useRealtimeConnection: (options: unknown) => {
     hookHarness.realtimeOptions = options;
   }

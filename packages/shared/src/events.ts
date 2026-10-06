@@ -27,6 +27,7 @@ export interface RequestUpdatedPayload {
     to: RequestStatus;
     actorType: ActorType;
     actorId: string | null;
+    responsibleName?: string;
   };
 }
 

@@ -12,6 +12,10 @@ import type { Actor } from '../../apps/server/src/security/principal';
 const systemActor: Actor = { actorType: 'SYSTEM', actorId: null };
 const adminPassword = 'correct-horse-battery-staple';
 
+function removeMigrationSeededAdmin(database: SqliteDatabase): void {
+  database.prepare("DELETE FROM admins WHERE username = 'admin' AND must_change_password = 1").run();
+}
+
 describe('Information image HTTP API', () => {
   let database: SqliteDatabase;
   let temporaryDirectory: string;
@@ -32,6 +36,7 @@ describe('Information image HTTP API', () => {
     });
     database = openDatabase(config);
     runMigrations(database);
+    removeMigrationSeededAdmin(database);
     service = new HotelService(database, config);
     service.createAdmin({ username: 'admin', password: adminPassword }, systemActor, 'setup-admin');
     app = createApp(service, config);
@@ -162,55 +167,10 @@ describe('Information image HTTP API', () => {
       .then((response) => expect(isWebp(response.body as Buffer)).toBe(true));
   });
 
-  it('lets a ROOM device toggle the FreeKiosk screensaver through the server', async () => {
-    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
-    const roomDevice = service.bootstrapDevice({ installationId: 'room-101', displayName: 'Room 101 tablet', assignmentMode: 'ROOM', roomId: room.id }, systemActor, 'setup-room-device');
-    const authenticated = service.authenticateDeviceToken(roomDevice.deviceToken);
-    service.recordHeartbeat(authenticated.principal, {}, '192.168.1.20', 'test-agent');
-    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
-      expect(String(input)).toBe('http://192.168.1.20:8080/api/screensaver/off');
-      expect(init?.method).toBe('POST');
-      return new Response(JSON.stringify({ success: true, data: { executed: true, command: 'screenSaverOff' } }), { status: 200 });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    const response = await request(app)
-      .post('/api/v1/device/information/screensaver/off')
-      .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
-      .expect(200);
-
-    expect(response.body.data).toEqual({ command: 'screenSaverOff', executed: true });
-    expect(fetchMock).toHaveBeenCalledOnce();
-  });
-
-  it.each(['off', 'on'] as const)('rate limits the authenticated screensaver-%s mutation per device', async (command) => {
-    const room = service.createRoom({ code: `10${command === 'off' ? '1' : '2'}`, displayName: `Room ${command}` }, systemActor, `setup-room-${command}`);
-    const roomDevice = service.bootstrapDevice({ installationId: `room-${command}`, displayName: `Room ${command} tablet`, assignmentMode: 'ROOM', roomId: room.id }, systemActor, `setup-device-${command}`);
-    const authenticated = service.authenticateDeviceToken(roomDevice.deviceToken);
-    service.recordHeartbeat(authenticated.principal, {}, '192.168.1.20', 'test-agent');
-    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
-      success: true,
-      data: { executed: true, command: command === 'off' ? 'screenSaverOff' : 'screenSaverOn' }
-    }), { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
-    const routeApp = createApp(service, config);
-    const route = `/api/v1/device/information/screensaver/${command}`;
-
-    for (let attempt = 0; attempt < 120; attempt += 1) {
-      await request(routeApp)
-        .post(route)
-        .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
-        .expect(200);
-    }
-
-    const limited = await request(routeApp)
-      .post(route)
-      .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
-      .expect(429);
-
-    expect(limited.headers['retry-after']).toBeDefined();
-    expect(limited.body.error.code).toBe('RATE_LIMITED');
-    expect(fetchMock).toHaveBeenCalledTimes(120);
+  it('does not expose external kiosk control endpoints', async () => {
+    await request(app).post('/api/v1/device/information/screensaver/off').expect(404);
+    await request(app).post('/api/v1/device/information/screensaver/on').expect(404);
+    await request(app).post('/api/v1/devices/room-101/audio/beep').expect(404);
   });
 
   it('creates square and horizontal assets from one source and serves the same artwork for both languages', async () => {

@@ -36,7 +36,7 @@ describe('request history retention migration', () => {
     expect(config.requestHistoryRetentionDays).toBe(365);
     expect(JSON.parse(setting.value_json)).toBe(365);
     expect(service.getSettings()['requests.historyRetentionDays']).toBe(365);
-    expect(LATEST_MIGRATION_VERSION).toBe(14);
+    expect(LATEST_MIGRATION_VERSION).toBe(19);
   });
 
   it('upgrades a version 13 database to 365 days once and leaves later admin changes intact', () => {

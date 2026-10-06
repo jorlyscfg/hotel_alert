@@ -16,6 +16,10 @@ const adminPassword = 'correct-horse-battery-staple';
 const ffmpegAvailable = requireFfmpeg();
 const describeFfmpeg = ffmpegAvailable ? describe : describe.skip;
 
+function removeMigrationSeededAdmin(database: SqliteDatabase): void {
+  database.prepare("DELETE FROM admins WHERE username = 'admin' AND must_change_password = 1").run();
+}
+
 describeFfmpeg('ROOM background HTTP API', () => {
   let database: SqliteDatabase;
   let temporaryDirectory: string;
@@ -36,6 +40,7 @@ describeFfmpeg('ROOM background HTTP API', () => {
     });
     database = openDatabase(config);
     runMigrations(database);
+    removeMigrationSeededAdmin(database);
     service = new HotelService(database, config);
     service.createAdmin({ username: 'admin', password: adminPassword }, systemActor, 'setup-admin');
     app = createApp(service, config);

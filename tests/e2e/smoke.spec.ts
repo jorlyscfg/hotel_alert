@@ -23,7 +23,7 @@ test('serves the health endpoint and initial station setup screen', async ({ pag
 test('keeps the Admin locale in Spanish without a language selector', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByLabel('Usuario')).toBeVisible();
-  await page.getByLabel('Usuario').fill('admin');
+  await page.getByLabel('Usuario').fill('e2e-admin');
   await page.getByLabel('Contraseña', { exact: true }).fill('correct-horse-battery-staple');
   const loginResponsePromise = page.waitForResponse((response) => response.url().endsWith('/api/v1/auth/admin/login') && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Iniciar sesión' }).click();
@@ -110,7 +110,7 @@ test('preserves an unsaved hotel name when switching System Configuration carous
 
   await page.goto('/');
   await expect(page.getByLabel('Usuario')).toBeVisible();
-  await page.getByLabel('Usuario').fill('admin');
+  await page.getByLabel('Usuario').fill('e2e-admin');
   await page.getByLabel('Contraseña', { exact: true }).fill('correct-horse-battery-staple');
   await page.getByRole('button', { name: 'Iniciar sesión' }).click();
   await expect(page.locator('.topbar--admin')).toBeVisible();
@@ -136,7 +136,7 @@ test('preserves an unsaved hotel name when switching System Configuration carous
 test('opens Information settings in a modal and closes after a successful save', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByLabel('Usuario')).toBeVisible();
-  await page.getByLabel('Usuario').fill('admin');
+  await page.getByLabel('Usuario').fill('e2e-admin');
   await page.getByLabel('Contraseña', { exact: true }).fill('correct-horse-battery-staple');
   await page.getByRole('button', { name: 'Iniciar sesión' }).click();
   await expect(page.locator('.topbar--admin')).toBeVisible();
@@ -181,7 +181,7 @@ test('keeps the InformationPanel variant upload modal responsive at narrow viewp
   await page.setViewportSize({ width: 320, height: 640 });
   await page.goto('/');
   await expect(page.getByLabel('Usuario')).toBeVisible();
-  await page.getByLabel('Usuario').fill('admin');
+  await page.getByLabel('Usuario').fill('e2e-admin');
   await page.getByLabel('Contraseña', { exact: true }).fill('correct-horse-battery-staple');
   await page.getByRole('button', { name: 'Iniciar sesión' }).click();
   await expect(page.locator('.topbar--admin')).toBeVisible();
@@ -213,7 +213,7 @@ test('keeps the InformationPanel variant upload modal responsive at narrow viewp
 test('keeps device registration fields readable in the Stations modal', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByLabel('Usuario')).toBeVisible();
-  await page.getByLabel('Usuario').fill('admin');
+  await page.getByLabel('Usuario').fill('e2e-admin');
   await page.getByLabel('Contraseña', { exact: true }).fill('correct-horse-battery-staple');
   await page.getByRole('button', { name: 'Iniciar sesión' }).click();
   await expect(page.locator('.topbar--admin')).toBeVisible();
@@ -257,7 +257,7 @@ test('keeps device registration fields readable in the Stations modal', async ({
 test('keeps the ROOM kiosk readable at the PS52 480x480 viewport', async ({ page, request }) => {
   const suffix = randomUUID().slice(0, 8);
   const adminPassword = 'correct-horse-battery-staple';
-  const login = await request.post('/api/v1/auth/admin/login', { data: { username: 'admin', password: adminPassword } });
+  const login = await request.post('/api/v1/auth/admin/login', { data: { username: 'e2e-admin', password: adminPassword } });
   expect(login.ok()).toBe(true);
   const loginBody = await login.json() as { data: { csrfToken: string } };
   const mutationHeaders = { 'X-CSRF-Token': loginBody.data.csrfToken };
@@ -519,9 +519,45 @@ test('keeps the ROOM kiosk readable at the PS52 480x480 viewport', async ({ page
   await expect(page.locator('.modal-card')).toHaveCount(0);
   await expect(languageTrigger).toHaveAttribute('aria-expanded', 'false');
   await expect(languageSelector.getByRole('listbox')).toHaveCount(0);
+
   await languageTrigger.click();
-  await languageSelector.getByRole('option', { name: 'English' }).click();
+  const spanishOption = languageSelector.getByRole('option', { name: 'Español', exact: true });
+  const spanishOptionBox = await spanishOption.boundingBox();
+  expect(spanishOptionBox).not.toBeNull();
+  const optionCenter = spanishOptionBox === null
+    ? { x: 0, y: 0 }
+    : { x: spanishOptionBox.x + spanishOptionBox.width / 2, y: spanishOptionBox.y + spanishOptionBox.height / 2 };
+  const optionOverlapsAreaButton = await page.evaluate(({ x, y }) => {
+    const menu = document.querySelector<HTMLElement>('.touch-select__menu');
+    const backdrop = document.querySelector<HTMLElement>('.touch-select__backdrop');
+    if (menu === null || backdrop === null) return false;
+    const previousMenuVisibility = menu.style.visibility;
+    const previousBackdropVisibility = backdrop.style.visibility;
+    menu.style.visibility = 'hidden';
+    backdrop.style.visibility = 'hidden';
+    const underlyingButton = document.elementFromPoint(x, y)?.closest('.room-area-card');
+    menu.style.visibility = previousMenuVisibility;
+    backdrop.style.visibility = previousBackdropVisibility;
+    return underlyingButton !== null && underlyingButton !== undefined;
+  }, optionCenter);
+  expect(optionOverlapsAreaButton).toBe(true);
+
+  await spanishOption.click();
   await expect(page.locator('.touch-select__backdrop')).toHaveCount(0);
+  await expect(languageTrigger).toHaveAttribute('aria-expanded', 'false');
+  await expect(languageSelector.locator('.touch-select__value')).toHaveText('ES');
+  await expect(areaCard).toHaveAttribute('aria-expanded', 'false');
+  await expect(areaModal).toHaveCount(0);
+
+  await areaCard.click();
+  await expect(areaModal).toBeVisible();
+  await areaModal.locator('.modal-card__close').click();
+  await expect(areaModal).toHaveCount(0);
+
+  await languageTrigger.click();
+  await languageSelector.getByRole('option', { name: 'English', exact: true }).click();
+  await expect(languageTrigger).toHaveAttribute('aria-expanded', 'false');
+  await expect(languageSelector.locator('.touch-select__value')).toHaveText('EN');
 
   await areaCard.click();
   await expect(areaModal).toBeVisible();
@@ -566,7 +602,7 @@ test('queues a room request during a network failure and flushes it after recove
   const installationId = `install-${suffix}`;
   const adminPassword = 'correct-horse-battery-staple';
 
-  const login = await request.post('/api/v1/auth/admin/login', { data: { username: 'admin', password: adminPassword } });
+  const login = await request.post('/api/v1/auth/admin/login', { data: { username: 'e2e-admin', password: adminPassword } });
   expect(login.ok()).toBe(true);
   const loginBody = await login.json() as { data: { csrfToken: string } };
   const mutationHeaders = { 'X-CSRF-Token': loginBody.data.csrfToken };
@@ -666,7 +702,7 @@ test('claims and acknowledges a pending device token rotation after reconnecting
   const installationId = `rotation-install-${suffix}`;
   const adminPassword = 'correct-horse-battery-staple';
 
-  const login = await request.post('/api/v1/auth/admin/login', { data: { username: 'admin', password: adminPassword } });
+  const login = await request.post('/api/v1/auth/admin/login', { data: { username: 'e2e-admin', password: adminPassword } });
   expect(login.ok()).toBe(true);
   const loginBody = await login.json() as { data: { csrfToken: string } };
   const mutationHeaders = { ...{ 'X-CSRF-Token': loginBody.data.csrfToken } };

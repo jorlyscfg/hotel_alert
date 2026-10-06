@@ -70,17 +70,9 @@ curl http://localhost:3000/api/v1/system/health
 
 Set `APP_ORIGIN` to the exact browser origin used by room devices. Override the host port with `HOTEL_APP_PORT` when port `3000` is already occupied. Do not mount the repository's `data/` directory over `/app/data` unless its permissions and backup policy are controlled; never commit `.env` or SQLite files.
 
-### FreeKiosk REST control
+### ROOM screensaver and alerts
 
-The optional backend control route uses the device's most recent private LAN heartbeat address to call FreeKiosk's `POST /api/audio/beep` endpoint. Configure it only when FreeKiosk REST is enabled on the kiosk:
-
-```dotenv
-FREEKIOSK_API_PORT=8080
-FREEKIOSK_API_KEY=replace-with-the-kiosk-api-key
-FREEKIOSK_API_TIMEOUT_MS=3000
-```
-
-The API key is required outside test mode. FreeKiosk REST and the Hotel Local App must remain on a private LAN or VPN; do not publish either service to the internet.
+The Hotel Alert Android APK owns the ROOM display and its in-app transition from guest information to the custom screensaver. No separate kiosk-control API or API key is required. The APK's audible fallback remains scoped to request notifications.
 
 Production deployment and recovery procedures are in [`docs/deployment.md`](docs/deployment.md) and [`docs/operations-runbook.md`](docs/operations-runbook.md).
 

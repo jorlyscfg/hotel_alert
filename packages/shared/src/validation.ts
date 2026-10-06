@@ -160,6 +160,10 @@ export const rotationClaimSchema = z.object({ rotationId: boundedId }).strict();
 
 export const requestCreateSchema = z.object({ serviceId: boundedId }).strict();
 export const requestTransitionSchema = z.object({ expectedVersion: z.number().int().positive() }).strict();
+export const requestStartSchema = z.object({
+  expectedVersion: z.number().int().positive(),
+  responsibleName: boundedName
+}).strict();
 
 export const heartbeatSchema = z.object({
   clientVersion: z.string().trim().max(64).optional(),
@@ -194,3 +198,4 @@ export type DeviceRebindInput = z.infer<typeof deviceRebindSchema>;
 export type DeviceAssignmentInput = z.infer<typeof deviceAssignmentSchema>;
 export type RequestCreateInput = z.infer<typeof requestCreateSchema>;
 export type RequestTransitionInput = z.infer<typeof requestTransitionSchema>;
+export type RequestStartInput = z.infer<typeof requestStartSchema>;

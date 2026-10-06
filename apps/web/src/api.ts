@@ -1,5 +1,5 @@
 import { createTranslator, type Locale, type MessageKey } from './i18n';
-import { type ClaimedTokenResult, type InformationImageDTO, type InformationImageVariant } from '@hotel/shared';
+import { type ClaimedTokenResult, type DeviceWeatherDTO, type InformationImageDTO, type InformationImageLanguage, type InformationImageVariant } from '@hotel/shared';
 
 export interface ApiEnvelope<T> {
   data: T;
@@ -34,10 +34,6 @@ const API_ERROR_MESSAGE_KEYS: Record<string, MessageKey> = {
   AUTH_LOCKED: 'errors.authLocked',
   FORBIDDEN_ASSIGNMENT: 'errors.forbiddenAssignment',
   DEVICE_INACTIVE: 'errors.deviceInactive',
-  DEVICE_CONTROL_NOT_CONFIGURED: 'errors.serviceUnavailable',
-  DEVICE_CONTROL_UNAVAILABLE: 'errors.serviceUnavailable',
-  DEVICE_CONTROL_REJECTED: 'errors.internal',
-  DEVICE_CONTROL_INVALID_RESPONSE: 'errors.internal',
   DEVICE_TOKEN_REVOKED: 'errors.deviceTokenRevoked',
   AUTH_AMBIGUOUS_CREDENTIALS: 'errors.authInvalid',
   INACTIVE_DEPENDENCY: 'errors.inactiveDependency',
@@ -107,8 +103,11 @@ export function isDeviceAuthFailure(error: unknown): error is ApiError {
 }
 
 export function getSafeRequestReference(error: unknown): string | null {
-  if (!(error instanceof ApiError)) return null;
-  return getSafeRequestId(error.requestId);
+  if (error instanceof ApiError) return getSafeRequestId(error.requestId);
+  if (error instanceof Error && 'serverRequestId' in error) {
+    return shortSafeRequestId((error as Error & { serverRequestId?: unknown }).serverRequestId);
+  }
+  return null;
 }
 
 export function getSafeRequestId(value: unknown): string | null {
@@ -206,8 +205,8 @@ export function getDeviceInformationImages(token: string, options: RequestOption
   return api.get<InformationImageDTO[]>('/device/information/images', { ...options, token });
 }
 
-export function setDeviceInformationScreensaver(enabled: boolean, token: string, options: RequestOptions = {}): Promise<ApiEnvelope<{ command: 'screenSaverOff' | 'screenSaverOn'; executed: true }>> {
-  return api.post(`/device/information/screensaver/${enabled ? 'on' : 'off'}`, undefined, { ...options, token });
+export function getDeviceWeather(token: string, options: RequestOptions = {}): Promise<ApiEnvelope<DeviceWeatherDTO | null>> {
+  return api.get<DeviceWeatherDTO | null>('/device/weather', { ...options, token });
 }
 
 export interface InformationImageContentOptions extends RequestOptions {
@@ -269,9 +268,10 @@ export function errorMessage(error: unknown, fallback = 'Something went wrong. T
   if (error instanceof Error) {
     if (locale !== undefined) {
       const key = NATIVE_ERROR_MESSAGE_KEYS[error.message];
-      if (key !== undefined) return createTranslator(locale)(key);
+      if (key !== undefined) return appendRequestReference(createTranslator(locale)(key), error, locale);
+      return appendRequestReference(fallback, error, locale);
     }
-    return fallback;
+    return appendRequestReference(fallback, error, 'en');
   }
   return fallback;
 }

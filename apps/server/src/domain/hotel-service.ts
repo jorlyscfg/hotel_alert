@@ -11,7 +11,6 @@ import type {
   CompactArea,
   CompactRoom,
   DeviceBootstrapResult,
-  DeviceControlResult,
   DeviceConfig,
   DeviceDTO,
   DevicePresence,
@@ -161,6 +160,7 @@ interface RequestRow {
   responsible_area_id: string;
   status: RequestStatus;
   version: number;
+  responsible_name: string | null;
   created_by_actor_type: ActorType;
   created_by_actor_id: string | null;
   room_code_snapshot: string;
@@ -189,6 +189,7 @@ interface HistoryRow {
   actor_id: string | null;
   request_version: number;
   metadata_json: string | null;
+  responsible_name: string | null;
   created_at: string;
 }
 
@@ -231,7 +232,6 @@ interface StoredRebindResult {
 }
 
 const REQUEST_PAGE_SIZE_CAP = 100;
-const DEVICE_BEEP_OPERATION = 'device.audioBeep';
 
 interface RequestCursor {
   version: 1;
@@ -329,11 +329,6 @@ export interface AreaRequestsResult {
 export interface DeviceAssignmentResult {
   device: DeviceDTO;
   configurationRevision: number;
-}
-
-export interface DeviceControlTarget {
-  deviceId: string;
-  lastIp: string;
 }
 
 export class HotelService {
@@ -1650,43 +1645,6 @@ export class HotelService {
     });
   }
 
-  public getDeviceControlTarget(deviceId: string): DeviceControlTarget {
-    const device = this.getDeviceRow(deviceId);
-    if (device.retired_at !== null || !device.active) {
-      throw new AppError('DEVICE_INACTIVE', 'This device is inactive.', 409);
-    }
-    if (device.last_ip === null || device.last_ip.trim() === '') {
-      throw new AppError('DEVICE_CONTROL_UNAVAILABLE', 'The device has not reported a network address.', 409);
-    }
-    if (device.last_heartbeat_at === null) {
-      throw new AppError('DEVICE_CONTROL_UNAVAILABLE', 'The device has not reported a recent heartbeat.', 409);
-    }
-    const lastHeartbeatAt = new Date(device.last_heartbeat_at).getTime();
-    if (!Number.isFinite(lastHeartbeatAt) || Date.now() - lastHeartbeatAt >= this.config.deviceOfflineAfterMs) {
-      throw new AppError('DEVICE_CONTROL_UNAVAILABLE', 'The device heartbeat is too old for remote control.', 409);
-    }
-    return { deviceId: device.id, lastIp: device.last_ip };
-  }
-
-  public getDeviceControlReplay(principal: AdminPrincipal, deviceId: string, idempotencyKey: string | undefined): DeviceControlResult | undefined {
-    const actor: Actor = { actorType: 'ADMIN', actorId: principal.adminId };
-    const key = validateIdempotencyKey(idempotencyKey);
-    return this.getIdempotentResult<DeviceControlResult>(actor, key, DEVICE_BEEP_OPERATION, hashJson({ deviceId }));
-  }
-
-  public storeDeviceControlResult(principal: AdminPrincipal, deviceId: string, idempotencyKey: string | undefined, result: DeviceControlResult): void {
-    const actor: Actor = { actorType: 'ADMIN', actorId: principal.adminId };
-    const key = validateIdempotencyKey(idempotencyKey);
-    const requestHash = hashJson({ deviceId });
-    this.mutate(() => {
-      this.storeIdempotency(actor, key, DEVICE_BEEP_OPERATION, requestHash, result, 200, deviceId);
-    });
-  }
-
-  public recordDeviceControl(principal: AdminPrincipal, deviceId: string, command: 'audioBeep', outcome: 'SUCCEEDED' | 'FAILED', requestId: string): void {
-    this.audit({ actorType: 'ADMIN', actorId: principal.adminId }, 'DEVICE_CONTROL_BEEP', 'DEVICE', deviceId, requestId, { command, outcome });
-  }
-
   public getDeviceSnapshot(principal: DevicePrincipal): DeviceSyncSnapshot {
     const readSnapshot = this.db.transaction(() => {
       const sequenceRow = this.db.prepare('SELECT COALESCE(MAX(id), 0) AS sequence FROM outbox_events').get() as { sequence: number };
@@ -1807,7 +1765,7 @@ export class HotelService {
     });
   }
 
-  public transitionRequest(principal: Principal, requestIdValue: string, targetStatus: RequestStatus, expectedVersion: number, idempotencyKey: string | undefined, requestId: string): MutationResult<RequestDTO> {
+  public transitionRequest(principal: Principal, requestIdValue: string, targetStatus: RequestStatus, expectedVersion: number, idempotencyKey: string | undefined, requestId: string, responsibleNameValue?: string): MutationResult<RequestDTO> {
     const key = validateIdempotencyKey(idempotencyKey);
     const request = this.getRequestRow(requestIdValue);
     const scope = requestScope(request);
@@ -1820,7 +1778,10 @@ export class HotelService {
     const actor: Actor = principal.kind === 'ADMIN'
       ? { actorType: 'ADMIN', actorId: principal.adminId }
       : { actorType: 'DEVICE', actorId: principal.deviceId };
-    const requestHash = hashJson({ expectedVersion });
+    const responsibleName = targetStatus === 'IN_PROGRESS' ? validateResponsibleName(responsibleNameValue) : undefined;
+    const requestHash = targetStatus === 'IN_PROGRESS'
+      ? hashJson({ expectedVersion, responsibleName })
+      : hashJson({ expectedVersion });
     return this.mutate(() => {
       const replay = this.getIdempotentResult<RequestDTO>(actor, key, `request.transition.${targetStatus}`, requestHash);
       if (replay !== undefined) {
@@ -1833,16 +1794,35 @@ export class HotelService {
       assertLegalRequestTransition(current.status, targetStatus);
       const now = new Date().toISOString();
       const timestampColumn = targetStatus === 'ACCEPTED' ? 'accepted_at' : targetStatus === 'IN_PROGRESS' ? 'in_progress_at' : 'completed_at';
-      this.db.prepare(`UPDATE requests SET status = ?, version = version + 1, ${timestampColumn} = ?, updated_at = ? WHERE id = ? AND version = ?`).run(
-        targetStatus, now, now, requestIdValue, expectedVersion
-      );
+      if (targetStatus === 'IN_PROGRESS') {
+        this.db.prepare('UPDATE requests SET status = ?, version = version + 1, in_progress_at = ?, responsible_name = ?, updated_at = ? WHERE id = ? AND version = ?').run(
+          targetStatus, now, responsibleName, now, requestIdValue, expectedVersion
+        );
+      } else {
+        this.db.prepare(`UPDATE requests SET status = ?, version = version + 1, ${timestampColumn} = ?, updated_at = ? WHERE id = ? AND version = ?`).run(
+          targetStatus, now, now, requestIdValue, expectedVersion
+        );
+      }
       const committed = this.getRequestRow(requestIdValue);
-      this.db.prepare('INSERT INTO request_status_history(id, request_id, from_status, to_status, actor_type, actor_id, request_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
-        createId('hist'), requestIdValue, current.status, targetStatus, actor.actorType, actor.actorId, committed.version, now
+      this.db.prepare('INSERT INTO request_status_history(id, request_id, from_status, to_status, actor_type, actor_id, request_version, responsible_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+        createId('hist'), requestIdValue, current.status, targetStatus, actor.actorType, actor.actorId, committed.version, responsibleName ?? null, now
       );
-      this.audit(actor, 'REQUEST_STATUS_CHANGED', 'REQUEST', requestIdValue, requestId, { fromStatus: current.status, toStatus: targetStatus });
+      this.audit(actor, 'REQUEST_STATUS_CHANGED', 'REQUEST', requestIdValue, requestId, {
+        fromStatus: current.status,
+        toStatus: targetStatus,
+        ...(responsibleName === undefined ? {} : { responsibleName })
+      });
       const data = this.mapRequest(committed);
-      this.appendOutbox('request.updated', 'REQUEST', requestIdValue, committed.version, { request: data, transition: { from: current.status, to: targetStatus, actorType: actor.actorType, actorId: actor.actorId } });
+      this.appendOutbox('request.updated', 'REQUEST', requestIdValue, committed.version, {
+        request: data,
+        transition: {
+          from: current.status,
+          to: targetStatus,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          ...(responsibleName === undefined ? {} : { responsibleName })
+        }
+      });
       this.storeIdempotency(actor, key, `request.transition.${targetStatus}`, requestHash, data, 200, requestIdValue);
       return { data, idempotentReplay: false };
     });
@@ -1954,7 +1934,17 @@ export class HotelService {
       throw new AppError('FORBIDDEN_ASSIGNMENT', 'This principal cannot read request history.', 403);
     }
     const rows = this.db.prepare('SELECT * FROM request_status_history WHERE request_id = ? ORDER BY created_at').all(requestIdValue) as HistoryRow[];
-    return rows.map((row) => ({ id: row.id, requestId: row.request_id, fromStatus: row.from_status, toStatus: row.to_status, actorType: row.actor_type, actorId: row.actor_id, requestVersion: row.request_version, createdAt: row.created_at }));
+    return rows.map((row) => ({
+      id: row.id,
+      requestId: row.request_id,
+      fromStatus: row.from_status,
+      toStatus: row.to_status,
+      actorType: row.actor_type,
+      actorId: row.actor_id,
+      requestVersion: row.request_version,
+      createdAt: row.created_at,
+      responsibleName: row.responsible_name
+    }));
   }
 
   public updateSettings(principal: AdminPrincipal, changes: Record<string, unknown>, requestId: string): SettingDTO[] {
@@ -2000,7 +1990,7 @@ export class HotelService {
       if (services.some((service) => service.active && !areas.some((area) => area.id === service.areaId && area.active))) warnings.push('ACTIVE_SERVICE_WITHOUT_AREA');
       if (rooms.some((room) => room.active && services.every((service) => !service.active))) warnings.push('ACTIVE_ROOM_WITHOUT_SERVICE');
       if (devices.some((device) => device.active && ((device.assignmentMode === 'ROOM' && !rooms.some((room) => room.id === device.roomId && room.active)) || (device.assignmentMode === 'AREA' && !areas.some((area) => area.id === device.areaId && area.active))))) warnings.push('INVALID_ACTIVE_DEVICE_ASSIGNMENT');
-      return { configurationRevision: this.getConfigurationRevision(), rooms, areas, services, devices, requests, admins, settings, auditLog, outboxBacklog: this.getOutboxBacklog(), warnings, informationImages };
+      return { configurationRevision: this.getConfigurationRevision(), rooms, areas, services, devices, requests, admins, settings, auditLog, outboxBacklog: this.getOutboxBacklog(), warnings, activeDoNotDisturbRooms: this.listActiveDoNotDisturbRooms(), informationImages };
     }).deferred();
   }
 
@@ -2181,6 +2171,7 @@ export class HotelService {
       hotelLogo: settings.hotelLogo,
       roomBackground: settings.roomBackground,
       clockFormat: settings.clockFormat,
+      timeZone: settings.timeZone,
       offlineQueueTtlHours: settings['client.offlineQueueTtlHours'],
       heartbeatIntervalMs: settings['heartbeat.intervalMs'],
       heartbeatStaleAfterMs: settings['heartbeat.staleAfterMs'],
@@ -2359,6 +2350,7 @@ export class HotelService {
       },
       status: row.status,
       version: row.version,
+      responsibleName: row.responsible_name,
       createdAt: row.created_at,
       acceptedAt: row.accepted_at,
       inProgressAt: row.in_progress_at,
@@ -2658,6 +2650,17 @@ function serializeLocalizedTextVariants(variants: LocalizedTextVariants | undefi
 
 function requestScope(row: Pick<RequestRow, 'room_id' | 'responsible_area_id' | 'status'>): RequestScope {
   return { roomId: row.room_id, responsibleAreaId: row.responsible_area_id, status: row.status };
+}
+
+function validateResponsibleName(value: string | undefined): string {
+  if (typeof value !== 'string') {
+    throw validationError('A responsible name is required when starting a request.');
+  }
+  const responsibleName = value.trim();
+  if (responsibleName.length === 0 || responsibleName.length > 120) {
+    throw validationError('A responsible name must contain between 1 and 120 characters.');
+  }
+  return responsibleName;
 }
 
 function isReplayEventVisible(event: OutboxRow, principal: Principal): boolean {

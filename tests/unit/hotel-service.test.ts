@@ -57,6 +57,60 @@ describe('HotelService request access', () => {
     expect(service.getRequestHistory(principal, created.id)).toHaveLength(1);
   });
 
+  it('requires a valid responsible name for IN_PROGRESS and persists it with history and realtime data', () => {
+    const area = service.createArea({ code: 'responsible-area', displayName: 'Housekeeping' }, systemActor, 'responsible-area');
+    const room = service.createRoom({ code: 'responsible-101', displayName: 'Room 101' }, systemActor, 'responsible-room');
+    const catalogService = service.createService({ code: 'responsible-towels', displayName: 'Fresh towels', areaId: area.id }, systemActor, 'responsible-service');
+    const roomDevice = service.bootstrapDevice({ installationId: 'responsible-room-device', displayName: 'Room 101 tablet', assignmentMode: 'ROOM', roomId: room.id }, systemActor, 'responsible-room-device');
+    const areaDevice = service.bootstrapDevice({ installationId: 'responsible-area-device', displayName: 'Housekeeping tablet', assignmentMode: 'AREA', areaId: area.id }, systemActor, 'responsible-area-device');
+    const roomPrincipal = service.authenticateDeviceToken(roomDevice.deviceToken).principal;
+    const areaPrincipal = service.authenticateDeviceToken(areaDevice.deviceToken).principal;
+
+    for (const [index, responsibleName] of [undefined, '   ', 'x'.repeat(121)].entries()) {
+      const pending = service.createRequest(roomPrincipal, catalogService.id, `responsible-invalid-${index}`, `responsible-invalid-${index}`).data;
+      let error: unknown;
+      try {
+        service.transitionRequest(areaPrincipal, pending.id, 'IN_PROGRESS', pending.version, `responsible-invalid-start-${index}`, `responsible-invalid-start-${index}`, responsibleName);
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toMatchObject({ code: 'VALIDATION_ERROR', statusCode: 422 });
+      expect(database.prepare('SELECT status, version, responsible_name FROM requests WHERE id = ?').get(pending.id)).toEqual({
+        status: 'PENDING',
+        version: 1,
+        responsible_name: null
+      });
+      expect((database.prepare('SELECT COUNT(*) AS count FROM request_status_history WHERE request_id = ?').get(pending.id) as { count: number }).count).toBe(1);
+    }
+
+    const pending = service.createRequest(roomPrincipal, catalogService.id, 'responsible-valid', 'responsible-valid').data;
+    expect(pending.responsibleName).toBeNull();
+
+    const started = service.transitionRequest(areaPrincipal, pending.id, 'IN_PROGRESS', pending.version, 'responsible-valid-start', 'responsible-valid-start', '  Ana López  ');
+    const replay = service.transitionRequest(areaPrincipal, pending.id, 'IN_PROGRESS', pending.version, 'responsible-valid-start', 'responsible-valid-replay', 'Ana López');
+    const changedNameReplay = () => service.transitionRequest(areaPrincipal, pending.id, 'IN_PROGRESS', pending.version, 'responsible-valid-start', 'responsible-valid-different', 'Bea');
+
+    expect(started.data).toMatchObject({ status: 'IN_PROGRESS', responsibleName: 'Ana López' });
+    expect(replay).toMatchObject({ idempotentReplay: true, data: started.data });
+    expect(changedNameReplay).toThrowError(expect.objectContaining({ statusCode: 409 }));
+    expect(service.getRequestHistory(areaPrincipal, pending.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        toStatus: 'IN_PROGRESS',
+        responsibleName: 'Ana López',
+        actorType: 'DEVICE',
+        actorId: areaDevice.device.id
+      })
+    ]));
+    const event = JSON.parse((database.prepare("SELECT payload_json FROM outbox_events WHERE event_name = 'request.updated' AND aggregate_id = ?").get(pending.id) as { payload_json: string }).payload_json) as {
+      request: { responsibleName: string | null };
+      transition: { responsibleName?: string; actorType: string; actorId: string };
+    };
+    expect(event.request.responsibleName).toBe('Ana López');
+    expect(event.transition).toMatchObject({ responsibleName: 'Ana López', actorType: 'DEVICE', actorId: areaDevice.device.id });
+    expect((database.prepare('SELECT responsible_name FROM requests WHERE id = ?').get(pending.id) as { responsible_name: string }).responsible_name).toBe('Ana López');
+  });
+
   it('rejects new requests while do-not-disturb is active and preserves successful idempotent replays', () => {
     const area = service.createArea({ code: 'dnd-housekeeping', displayName: 'Housekeeping' }, systemActor, 'dnd-setup-area');
     const room = service.createRoom({ code: 'dnd-101', displayName: 'Room 101' }, systemActor, 'dnd-setup-room');
@@ -480,6 +534,10 @@ describe('HotelService request access', () => {
     setPersistedSetting(database, 'hotelLogo', 'data:image/png;base64,AAAA', admin.id);
     setPersistedSetting(database, 'roomBackground', 'data:image/webp;base64,AAAA', admin.id);
     setPersistedSetting(database, 'clockFormat', '24h', admin.id);
+    setPersistedSetting(database, 'timeZone', 'America/Cancun', admin.id);
+    setPersistedSetting(database, 'weatherLocationName', 'Playa del Carmen', admin.id);
+    setPersistedSetting(database, 'weatherLatitude', 20.6275, admin.id);
+    setPersistedSetting(database, 'weatherLongitude', -87.0799, admin.id);
     setPersistedSetting(database, 'information.idleTimeoutSeconds', 12, admin.id);
     setPersistedSetting(database, 'information.slideIntervalSeconds', 18, admin.id);
     database.prepare('UPDATE devices SET last_seen_at = ?, last_heartbeat_at = ? WHERE id = ?').run(
@@ -501,9 +559,13 @@ describe('HotelService request access', () => {
       hotelLogo: 'data:image/png;base64,AAAA',
       roomBackground: 'data:image/webp;base64,AAAA',
       clockFormat: '24h',
+      timeZone: 'America/Cancun',
       informationIdleTimeoutSeconds: 12,
       informationSlideIntervalSeconds: 18
     });
+    expect(snapshot.config).not.toHaveProperty('weatherLocationName');
+    expect(snapshot.config).not.toHaveProperty('weatherLatitude');
+    expect(snapshot.config).not.toHaveProperty('weatherLongitude');
   });
 
   it('includes only active areas that own returned services in device snapshots', () => {
@@ -536,6 +598,8 @@ describe('HotelService request access', () => {
     expect(roomSnapshot.config.services.every((candidate) => roomAreaIds.has(candidate.areaId))).toBe(true);
     expect(areaSnapshot.config.areas).toEqual([expect.objectContaining({ id: serviceArea.id, displayName: 'Service area' })]);
     expect(areaSnapshot.config.services.map((candidate) => candidate.id)).toEqual([catalogService.id]);
+    expect(roomSnapshot.config.timeZone).toBe('America/Cancun');
+    expect(areaSnapshot.config.timeZone).toBe('America/Cancun');
   });
 
   it('includes active do-not-disturb rooms only in AREA snapshots, in stable order', () => {
@@ -583,11 +647,16 @@ describe('HotelService request access', () => {
     const areaSnapshot = service.getDeviceSnapshot(service.authenticateDeviceToken(areaDevice.deviceToken).principal) as {
       activeDoNotDisturbRooms?: Array<{ code: string; displayName: string }>;
     };
+    const adminSnapshot = service.getAdminSnapshot() as ReturnType<typeof service.getAdminSnapshot> & {
+      activeDoNotDisturbRooms?: Array<{ code: string; displayName: string }>;
+    };
     const roomSnapshot = service.getDeviceSnapshot(service.authenticateDeviceToken(roomDevice.deviceToken).principal);
 
     expect(areaSnapshot.activeDoNotDisturbRooms?.map((room) => room.code)).toEqual(['101', '305']);
     expect(areaSnapshot.activeDoNotDisturbRooms?.map((room) => room.displayName)).toEqual(['Room 101', 'Room 305']);
     expect(areaSnapshot.activeDoNotDisturbRooms?.some((room) => room.code === unassignedRoom.code)).toBe(false);
+    expect(adminSnapshot.activeDoNotDisturbRooms?.map((room) => room.code)).toEqual(['101', '305']);
+    expect(adminSnapshot.activeDoNotDisturbRooms?.map((room) => room.displayName)).toEqual(['Room 101', 'Room 305']);
     expect(roomSnapshot).not.toHaveProperty('activeDoNotDisturbRooms');
     expect(firstRoom.id).not.toBe(secondRoom.id);
   });
@@ -616,6 +685,8 @@ describe('HotelService request access', () => {
       'realtime.replayMaxEvents': 200000,
       'requests.pageSizeDefault': 25,
       'requests.historyRetentionDays': 45,
+      'requests.pendingDelayWarningMinutes': 3,
+      'requests.inProgressDelayWarningMinutes': 15,
       'idempotency.retentionHours': 96,
       'client.offlineQueueTtlHours': 48,
       'audit.retentionDays': 365,
@@ -624,6 +695,10 @@ describe('HotelService request access', () => {
       hotelLogo: null,
       roomBackground: null,
       clockFormat: '12h',
+      timeZone: 'America/Cancun',
+      weatherLocationName: '',
+      weatherLatitude: null,
+      weatherLongitude: null,
       'information.idleTimeoutSeconds': 5,
       'information.slideIntervalSeconds': 5
     });

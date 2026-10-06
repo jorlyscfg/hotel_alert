@@ -134,6 +134,8 @@ export interface RequestDTO {
   inProgressAt: string | null;
   completedAt: string | null;
   updatedAt: string;
+  /** Optional for request data cached before responsible-name tracking was added; null means unassigned. */
+  responsibleName?: string | null;
   createdByDeviceId?: string;
 }
 
@@ -158,6 +160,8 @@ export interface RequestHistoryDTO {
   actorId: string | null;
   requestVersion: number;
   createdAt: string;
+  /** Optional for history cached before responsible-name tracking was added; null means no name was recorded. */
+  responsibleName?: string | null;
 }
 
 export interface AuditLogDTO {
@@ -185,6 +189,8 @@ export interface DeviceConfig {
   hotelLogo: string | null;
   roomBackground: RoomBackgroundValue;
   clockFormat: '12h' | '24h';
+  /** Optional for compatibility with cached snapshots created before a shared server time zone was added. */
+  timeZone?: string;
   offlineQueueTtlHours: number;
   heartbeatIntervalMs: number;
   heartbeatStaleAfterMs: number;
@@ -216,17 +222,30 @@ export interface DeviceSyncSnapshot {
   pendingTokenRotation: PendingTokenRotation | null;
 }
 
+export const DEVICE_WEATHER_CONDITIONS = [
+  'clear',
+  'partly-cloudy',
+  'cloudy',
+  'fog',
+  'rain',
+  'sleet',
+  'snow',
+  'thunderstorm'
+] as const;
+
+export type DeviceWeatherCondition = (typeof DEVICE_WEATHER_CONDITIONS)[number];
+
+export interface DeviceWeatherDTO {
+  temperatureC: number | null;
+  relativeHumidity: number | null;
+  condition: DeviceWeatherCondition | null;
+}
+
 export interface MutationResponse<T> {
   data: T;
   requestId: string;
   configurationRevision?: number;
   idempotentReplay?: boolean;
-}
-
-export interface DeviceControlResult {
-  deviceId: string;
-  command: 'audioBeep' | 'screenSaverOff' | 'screenSaverOn';
-  executed: true;
 }
 
 export interface BootstrapState {
@@ -247,6 +266,8 @@ export interface AdminSystemSnapshot {
   auditLog: AuditLogDTO[];
   outboxBacklog: number;
   warnings: AdminWarningCode[];
+  /** Optional for older clients and snapshots; current servers always include eligible active rooms. */
+  activeDoNotDisturbRooms?: CompactRoom[];
   informationImages?: InformationImageDTO[];
 }
 

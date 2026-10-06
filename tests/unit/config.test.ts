@@ -10,9 +10,7 @@ const originalWorkingDirectory = process.cwd();
   delete process.env['SOCKET_EVENT_REPLAY_MAX_EVENTS'];
   delete process.env['DATABASE_PATH'];
   delete process.env['BACKUP_DIRECTORY'];
-   delete process.env['FREEKIOSK_API_PORT'];
-   delete process.env['FREEKIOSK_API_KEY'];
-   delete process.env['FREEKIOSK_API_TIMEOUT_MS'];
+  delete process.env['GEOAPIFY_API_KEY'];
   delete process.env['LOGIN_RATE_LIMIT_MAX_REQUESTS'];
   process.chdir(originalWorkingDirectory);
 });
@@ -53,16 +51,12 @@ describe('server configuration', () => {
     expect(config.backupDirectory).toBe(path.join(REPOSITORY_ROOT, 'data', 'from-root-backups'));
   });
 
-  it('loads bounded FreeKiosk REST settings without exposing a default credential', () => {
-    const config = loadConfig({
-      nodeEnv: 'test',
-      sessionSecret: 'test-session-secret',
-      tokenPepper: 'test-token-pepper'
-    });
+  it('loads Geoapify credentials only from an explicit server runtime value', () => {
+    process.env['GEOAPIFY_API_KEY'] = '';
+    expect(loadConfig({ nodeEnv: 'test' }).geoapifyApiKey).toBeUndefined();
 
-    expect(config.freeKioskApiPort).toBe(8080);
-    expect(config.freeKioskApiTimeoutMs).toBe(3000);
-    expect(config.freeKioskApiKey).toBeUndefined();
+    process.env['GEOAPIFY_API_KEY'] = 'unit-test-geoapify-key';
+    expect(loadConfig({ nodeEnv: 'test' }).geoapifyApiKey).toBe('unit-test-geoapify-key');
   });
 
   it('keeps the admin login rate-limit default while allowing an explicit test override', () => {
@@ -72,8 +66,4 @@ describe('server configuration', () => {
     expect(loadConfig({ nodeEnv: 'test' }).loginRateLimitMaxRequests).toBe(100);
   });
 
-  it('rejects unsafe FreeKiosk port and timeout settings', () => {
-    expect(() => loadConfig({ nodeEnv: 'test', freeKioskApiPort: 65536 })).toThrow(/FREEKIOSK_API_PORT/);
-    expect(() => loadConfig({ nodeEnv: 'test', freeKioskApiTimeoutMs: 99 })).toThrow(/FREEKIOSK_API_TIMEOUT_MS/);
-  });
 });

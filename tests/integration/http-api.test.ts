@@ -31,7 +31,8 @@ describe('HTTP API', () => {
       nodeEnv: 'test',
       databasePath: path.join(databaseDirectory, 'hotel.sqlite'),
       sessionSecret: 'session-secret',
-      tokenPepper: 'token-pepper'
+      tokenPepper: 'token-pepper',
+      geoapifyApiKey: ''
     });
     database = openDatabase(config);
     runMigrations(database);
@@ -51,6 +52,60 @@ describe('HTTP API', () => {
   afterEach(() => {
     closeDatabase(database);
     fs.rmSync(databaseDirectory, { recursive: true, force: true });
+  });
+
+  it('keeps city search admin-only and persists only the selected result through settings', async () => {
+    await request(app).get('/api/v1/settings/location-search/availability').expect(401);
+    const unavailable = await adminClient.get('/api/v1/settings/location-search/availability').expect(200);
+    expect(unavailable.body.data).toEqual({ available: false });
+    await adminClient.get('/api/v1/settings/location-search').query({ text: 'Cancun' }).expect(503);
+
+    const providerFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      results: [{ place_id: 'geo-place-tulum', formatted: 'Tulum, Quintana Roo, Mexico', lat: 20.2114567, lon: -87.4653456 }]
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const geoapifyConfig = { ...config, geoapifyApiKey: 'integration-test-geoapify-key' };
+    const geoapifyApp = createApp(service, geoapifyConfig, { geoapifyFetch: providerFetch });
+    const geoapifyAdmin = request.agent(geoapifyApp);
+    const login = await geoapifyAdmin.post('/api/v1/auth/admin/login').send({ username: 'admin', password: adminPassword }).expect(200);
+    const selectedCsrfToken = login.body.data.csrfToken as string;
+
+    const availability = await geoapifyAdmin.get('/api/v1/settings/location-search/availability').expect(200);
+    expect(availability.body.data).toEqual({ available: true });
+    const search = await geoapifyAdmin.get('/api/v1/settings/location-search').query({ text: 'Tulum' }).expect(200);
+    expect(search.body.data).toEqual([
+      { id: 'geo-place-tulum', displayName: 'Tulum, Quintana Roo, Mexico', latitude: 20.2115, longitude: -87.4653 }
+    ]);
+    expect(JSON.stringify(search.body)).not.toContain('integration-test-geoapify-key');
+    expect(providerFetch).toHaveBeenCalledTimes(1);
+
+    const saved = await geoapifyAdmin.patch('/api/v1/settings')
+      .set('X-CSRF-Token', selectedCsrfToken)
+      .set('Idempotency-Key', 'settings-location-search-101')
+      .send({ changes: {
+        timeZone: 'America/Cancun',
+        weatherLocationName: search.body.data[0].displayName,
+        weatherLatitude: search.body.data[0].latitude,
+        weatherLongitude: search.body.data[0].longitude
+      } })
+      .expect(200);
+    expect(saved.body.data).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: 'weatherLocationName', value: 'Tulum, Quintana Roo, Mexico' }),
+      expect.objectContaining({ key: 'weatherLatitude', value: 20.2115 }),
+      expect.objectContaining({ key: 'weatherLongitude', value: -87.4653 })
+    ]));
+  });
+
+  it('reports Geoapify outages without leaking provider response details', async () => {
+    const providerFetch = vi.fn<typeof fetch>().mockRejectedValue(new Error('upstream unavailable'));
+    const geoapifyConfig = { ...config, geoapifyApiKey: 'integration-test-geoapify-key' };
+    const geoapifyApp = createApp(service, geoapifyConfig, { geoapifyFetch: providerFetch });
+    const geoapifyAdmin = request.agent(geoapifyApp);
+    await geoapifyAdmin.post('/api/v1/auth/admin/login').send({ username: 'admin', password: adminPassword }).expect(200);
+
+    const unavailable = await geoapifyAdmin.get('/api/v1/settings/location-search').query({ text: 'Cancun' }).expect(503);
+    expect(unavailable.body.error).toMatchObject({ code: 'LOCATION_SEARCH_UNAVAILABLE', message: 'City search is temporarily unavailable.' });
+    expect(JSON.stringify(unavailable.body)).not.toContain('integration-test-geoapify-key');
+    expect(JSON.stringify(unavailable.body)).not.toContain('upstream unavailable');
   });
 
   it('keeps bootstrap state minimal and supports protected device bootstrap', async () => {
@@ -460,55 +515,6 @@ describe('HTTP API', () => {
     await secondAdminClient.get('/api/v1/auth/admin/me').expect(401);
     await adminClient.get('/api/v1/auth/admin/me').expect(200);
   });
-
-
-  it('sends an audio beep to an active device through the authenticated admin route', async () => {
-    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
-    const device = service.bootstrapDevice({
-      installationId: 'installation-101',
-      displayName: 'Room 101 tablet',
-      assignmentMode: 'ROOM',
-      roomId: room.id
-    }, systemActor, 'setup-device');
-    const authenticated = service.authenticateDeviceToken(device.deviceToken);
-    service.recordHeartbeat(authenticated.principal, {}, '192.168.1.20', 'test-agent');
-
-    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
-      expect(String(input)).toBe('http://192.168.1.20:8080/api/audio/beep');
-      expect(init?.method).toBe('POST');
-      return new Response(JSON.stringify({ success: true, data: { executed: true, command: 'audioBeep' } }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' }
-      });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    try {
-      const response = await adminClient
-        .post(`/api/v1/devices/${device.device.id}/audio/beep`)
-        .set('X-CSRF-Token', csrfToken)
-        .set('Idempotency-Key', 'beep-101')
-        .send({})
-        .expect(200);
-
-      expect(response.body.data).toEqual({ deviceId: device.device.id, command: 'audioBeep', executed: true });
-      expect(fetchMock).toHaveBeenCalledOnce();
-
-      const replay = await adminClient
-        .post(`/api/v1/devices/${device.device.id}/audio/beep`)
-        .set('X-CSRF-Token', csrfToken)
-        .set('Idempotency-Key', 'beep-101')
-        .send({})
-        .expect(200);
-
-      expect(replay.body.data).toEqual(response.body.data);
-      expect(replay.body.idempotentReplay).toBe(true);
-      expect(fetchMock).toHaveBeenCalledOnce();
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
   it('rate limits device token rotation claims per device', async () => {
     const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
     const device = service.bootstrapDevice({
@@ -573,85 +579,6 @@ describe('HTTP API', () => {
     expect(limited.headers['retry-after']).toBeDefined();
     expect(limited.body.error.code).toBe('RATE_LIMITED');
     expect((database.prepare('SELECT state FROM device_token_rotations WHERE id = ?').get(rotation.rotationId) as { state: string }).state).toBe('ACKNOWLEDGED');
-  });
-
-  it('keeps device control admin-only and requires a recent device address', async () => {
-    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
-    const device = service.bootstrapDevice({
-      installationId: 'installation-101',
-      displayName: 'Room 101 tablet',
-      assignmentMode: 'ROOM',
-      roomId: room.id
-    }, systemActor, 'setup-device');
-    const route = `/api/v1/devices/${device.device.id}/audio/beep`;
-
-    await request(app)
-      .post(route)
-      .set('Authorization', `Bearer ${device.deviceToken}`)
-      .set('Idempotency-Key', 'beep-device')
-      .send({})
-      .expect(401);
-
-    const missingKey = await adminClient
-      .post(route)
-      .set('X-CSRF-Token', csrfToken)
-      .send({})
-      .expect(422);
-    expect(missingKey.body.error.code).toBe('VALIDATION_ERROR');
-
-    const missingAddress = await adminClient
-      .post(route)
-      .set('X-CSRF-Token', csrfToken)
-      .set('Idempotency-Key', 'beep-no-address')
-      .send({})
-      .expect(409);
-    expect(missingAddress.body.error.code).toBe('DEVICE_CONTROL_UNAVAILABLE');
-
-    database.prepare('UPDATE devices SET last_ip = ?, last_heartbeat_at = ? WHERE id = ?').run(
-      '192.168.1.20',
-      new Date(Date.now() - config.deviceOfflineAfterMs - 1).toISOString(),
-      device.device.id
-    );
-    const staleAddress = await adminClient
-      .post(route)
-      .set('X-CSRF-Token', csrfToken)
-      .set('Idempotency-Key', 'beep-stale-address')
-      .send({})
-      .expect(409);
-    expect(staleAddress.body.error.code).toBe('DEVICE_CONTROL_UNAVAILABLE');
-  });
-
-  it('returns a safe device-reported failure and records the failed control', async () => {
-    const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
-    const device = service.bootstrapDevice({
-      installationId: 'installation-101',
-      displayName: 'Room 101 tablet',
-      assignmentMode: 'ROOM',
-      roomId: room.id
-    }, systemActor, 'setup-device');
-    const authenticated = service.authenticateDeviceToken(device.deviceToken);
-    service.recordHeartbeat(authenticated.principal, {}, '192.168.1.20', 'test-agent');
-    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ error: 'sensitive upstream detail' }), { status: 503 }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    try {
-      const response = await adminClient
-        .post(`/api/v1/devices/${device.device.id}/audio/beep`)
-        .set('X-CSRF-Token', csrfToken)
-        .set('Idempotency-Key', 'beep-failure')
-        .send({})
-        .expect(502);
-
-      expect(response.body.error.code).toBe('DEVICE_CONTROL_REJECTED');
-      expect(JSON.stringify(response.body)).not.toContain('sensitive upstream detail');
-      expect(fetchMock).toHaveBeenCalledOnce();
-
-      const audit = database.prepare('SELECT action, metadata_json FROM audit_log ORDER BY id DESC LIMIT 1').get() as { action: string; metadata_json: string };
-      expect(audit.action).toBe('DEVICE_CONTROL_BEEP');
-      expect(JSON.parse(audit.metadata_json) as unknown).toEqual({ command: 'audioBeep', outcome: 'FAILED' });
-    } finally {
-      vi.unstubAllGlobals();
-    }
   });
 
   it('persists legacy and responsive local room backgrounds through device snapshots', async () => {
@@ -784,6 +711,68 @@ describe('HTTP API', () => {
       roomId: room.id,
       room: { id: room.id, doNotDisturb: false }
     });
+  });
+
+  it('requires and persists a responsible name on request start while retaining station history identity', async () => {
+    const area = service.createArea({ code: 'responsible-housekeeping', displayName: 'Housekeeping' }, systemActor, 'responsible-area');
+    const room = service.createRoom({ code: 'responsible-101', displayName: 'Room 101' }, systemActor, 'responsible-room');
+    const catalogService = service.createService({ code: 'responsible-towels', displayName: 'Fresh towels', areaId: area.id }, systemActor, 'responsible-service');
+    const roomDevice = service.bootstrapDevice({ installationId: 'responsible-room-device', displayName: 'Room 101 tablet', assignmentMode: 'ROOM', roomId: room.id }, systemActor, 'responsible-room-device');
+    const areaDevice = service.bootstrapDevice({ installationId: 'responsible-area-device', displayName: 'Housekeeping tablet', assignmentMode: 'AREA', areaId: area.id }, systemActor, 'responsible-area-device');
+    const created = await request(app)
+      .post('/api/v1/requests')
+      .set('Authorization', `Bearer ${roomDevice.deviceToken}`)
+      .set('Idempotency-Key', 'responsible-request-create')
+      .send({ serviceId: catalogService.id })
+      .expect(201);
+    const startPath = `/api/v1/requests/${created.body.data.id as string}/start`;
+    const invalidStarts: Array<Record<string, unknown>> = [
+      { expectedVersion: created.body.data.version },
+      { expectedVersion: created.body.data.version, responsibleName: '   ' },
+      { expectedVersion: created.body.data.version, responsibleName: 'x'.repeat(121) }
+    ];
+
+    for (const [index, body] of invalidStarts.entries()) {
+      await request(app)
+        .post(startPath)
+        .set('Authorization', `Bearer ${areaDevice.deviceToken}`)
+        .set('Idempotency-Key', `responsible-start-invalid-${index}`)
+        .send(body)
+        .expect(422);
+    }
+
+    const started = await request(app)
+      .post(startPath)
+      .set('Authorization', `Bearer ${areaDevice.deviceToken}`)
+      .set('Idempotency-Key', 'responsible-start-valid')
+      .send({ expectedVersion: created.body.data.version, responsibleName: '  Ana López  ' })
+      .expect(200);
+    const replay = await request(app)
+      .post(startPath)
+      .set('Authorization', `Bearer ${areaDevice.deviceToken}`)
+      .set('Idempotency-Key', 'responsible-start-valid')
+      .send({ expectedVersion: created.body.data.version, responsibleName: 'Ana López' })
+      .expect(200);
+
+    expect(created.body.data.responsibleName).toBeNull();
+    expect(started.body.data).toMatchObject({ status: 'IN_PROGRESS', responsibleName: 'Ana López' });
+    expect(replay.body).toMatchObject({ idempotentReplay: true, data: started.body.data });
+    await request(app)
+      .post(startPath)
+      .set('Authorization', `Bearer ${areaDevice.deviceToken}`)
+      .set('Idempotency-Key', 'responsible-start-valid')
+      .send({ expectedVersion: created.body.data.version, responsibleName: 'Bea' })
+      .expect(409);
+
+    const history = await adminClient.get(`/api/v1/requests/${created.body.data.id as string}/history`).expect(200);
+    expect(history.body.data).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        toStatus: 'IN_PROGRESS',
+        responsibleName: 'Ana López',
+        actorType: 'DEVICE',
+        actorId: areaDevice.device.id
+      })
+    ]));
   });
 
   it('rate limits device request mutations per device principal', async () => {

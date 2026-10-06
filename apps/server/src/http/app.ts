@@ -20,6 +20,7 @@ import {
   informationImageReorderSchema,
   requestCreateSchema,
   requestStatusSchema,
+  requestStartSchema,
   requestTransitionSchema,
   rotationClaimSchema,
   roomCreateSchema,
@@ -37,7 +38,8 @@ import {
 import type { ServerConfig } from '../config/env';
 import type { HotelService, InformationImageUpload, RequestFilters, RotationTokenPrincipal } from '../domain/hotel-service';
 import { AppError, isAppError, notFound, validationError } from '../errors';
-import { createFreeKioskClient, type FreeKioskBeepResult, type FreeKioskScreensaverResult } from '../integrations/freekiosk-client';
+import { createGeoapifyClient } from '../integrations/geoapify-client';
+import { createMetNorwayWeatherClient, type WeatherUnavailableReason } from '../integrations/met-norway-weather-client';
 import { hashJson } from '../security/crypto';
 import { actorForPrincipal, type AdminPrincipal, type Principal } from '../security/principal';
 import { ImageProcessingError, MAX_IMAGE_INPUT_BYTES } from '../images/image-processor';
@@ -47,6 +49,19 @@ import { createRateLimiter, principalKey, sourceIpKey } from './rate-limit';
 
 const ADMIN_SESSION_COOKIE = 'hotel_admin_session';
 const JSON_BODY_LIMIT = '64kb';
+
+export interface AppDependencies {
+  geoapifyFetch?: typeof fetch;
+  metNorwayFetch?: typeof fetch;
+  weatherLog?: (record: WeatherUnavailableLogRecord) => void;
+}
+
+export interface WeatherUnavailableLogRecord {
+  event: 'device.weather.unavailable';
+  severity: 'warn';
+  requestId: string;
+  reason: WeatherUnavailableReason | 'location_not_configured';
+}
 
 declare global {
   // Express request context is populated by the first middleware.
@@ -60,7 +75,7 @@ declare global {
   }
 }
 
-export function createApp(service: HotelService, config: ServerConfig): Application {
+export function createApp(service: HotelService, config: ServerConfig, dependencies: AppDependencies = {}): Application {
   const app = express();
   const api = Router();
   const admin = requireAdmin(service);
@@ -71,8 +86,11 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
   const bootstrapStateRateLimit = createRateLimiter({ name: 'bootstrap-state', limit: 30, windowMs: 60_000, key: sourceIpKey });
   const principalMutationRateLimit = createRateLimiter({ name: 'authenticated-mutation', limit: 120, windowMs: 60_000, key: principalKey });
   const adminOperationRateLimit = createRateLimiter({ name: 'admin-operation', limit: 10, windowMs: 60_000, key: principalKey });
+  const citySearchRateLimit = createRateLimiter({ name: 'city-search', limit: 30, windowMs: 60_000, key: principalKey });
   const heartbeatRateLimit = createRateLimiter({ name: 'device-heartbeat', limit: 6, windowMs: 60_000, key: principalKey });
-  const freeKioskClient = createFreeKioskClient(config);
+  const geoapifyClient = createGeoapifyClient(config, dependencies.geoapifyFetch);
+  const metNorwayWeatherClient = createMetNorwayWeatherClient(config, dependencies.metNorwayFetch);
+  const weatherLog = dependencies.weatherLog ?? writeWeatherUnavailableLog;
   const informationImageUpload = express.raw({
     limit: `${config.informationImageMaxBytes * 4 + 128 * 1024}b`,
     type: (req) => {
@@ -163,6 +181,34 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     sendData(res, 200, service.getDeviceSnapshot(getDevicePrincipal(req)), req.requestId);
   }));
 
+  api.get('/device/weather', device, asyncHandler(async (req, res) => {
+    const principal = getDevicePrincipal(req);
+    if (principal.assignmentMode !== 'ROOM' || principal.roomId === null) {
+      throw new AppError('FORBIDDEN_ASSIGNMENT', 'Weather forecast is available only to ROOM devices.', 403);
+    }
+    const settings = service.getSettings();
+    const { weatherLatitude, weatherLongitude } = settings;
+    if (weatherLatitude === null || weatherLongitude === null) {
+      reportWeatherUnavailable(weatherLog, {
+        event: 'device.weather.unavailable',
+        severity: 'warn',
+        requestId: req.requestId,
+        reason: 'location_not_configured'
+      });
+      sendData(res, 200, null, req.requestId);
+      return;
+    }
+    const weather = await metNorwayWeatherClient.getWeather(weatherLatitude, weatherLongitude, (reason) => {
+      reportWeatherUnavailable(weatherLog, {
+        event: 'device.weather.unavailable',
+        severity: 'warn',
+        requestId: req.requestId,
+        reason
+      });
+    });
+    sendData(res, 200, weather, req.requestId);
+  }));
+
   api.post('/device/heartbeat', [device, heartbeatRateLimit], asyncHandler(async (req, res) => {
     const input = parseBody(heartbeatSchema, req.body);
     service.recordHeartbeat(getDevicePrincipal(req), {
@@ -232,8 +278,17 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     { path: '/requests/:requestId/complete', status: 'COMPLETED' as const }
   ]) {
     api.post(transition.path, requestMutation, asyncHandler(async (req, res) => {
+      const principal = getPrincipal(req);
+      const requestId = routeParam(req.params['requestId'], 'requestId');
+      const idempotencyKey = requireMutationKey(req);
+      if (transition.status === 'IN_PROGRESS') {
+        const input = parseBody(requestStartSchema, req.body);
+        const result = service.transitionRequest(principal, requestId, transition.status, input.expectedVersion, idempotencyKey, req.requestId, input.responsibleName);
+        sendData(res, 200, result.data, req.requestId, { idempotentReplay: result.idempotentReplay });
+        return;
+      }
       const input = parseBody(requestTransitionSchema, req.body);
-      const result = service.transitionRequest(getPrincipal(req), routeParam(req.params['requestId'], 'requestId'), transition.status, input.expectedVersion, requireMutationKey(req), req.requestId);
+      const result = service.transitionRequest(principal, requestId, transition.status, input.expectedVersion, idempotencyKey, req.requestId);
       sendData(res, 200, result.data, req.requestId, { idempotentReplay: result.idempotentReplay });
     }));
   }
@@ -328,38 +383,6 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
     const result = service.retireDevice(getAdminPrincipal(req), routeParam(req.params['id'], 'id'), requireMutationKey(req), req.requestId);
     sendData(res, 200, result.data, req.requestId, { configurationRevision: result.configurationRevision, idempotentReplay: result.idempotentReplay });
   }));
-  api.post('/devices/:id/audio/beep', adminSensitiveMutation, asyncHandler(async (req, res) => {
-    const idempotencyKey = requireMutationKey(req);
-    const principal = getAdminPrincipal(req);
-    const deviceId = routeParam(req.params['id'], 'id');
-    const replay = service.getDeviceControlReplay(principal, deviceId, idempotencyKey);
-    if (replay !== undefined) {
-      sendData(res, 200, replay, req.requestId, { idempotentReplay: true });
-      return;
-    }
-    const target = service.getDeviceControlTarget(deviceId);
-    let result: FreeKioskBeepResult;
-    try {
-      result = await freeKioskClient.beep(target.lastIp);
-    } catch (error) {
-      service.recordDeviceControl(principal, deviceId, 'audioBeep', 'FAILED', req.requestId);
-      throw error;
-    }
-    const response = { deviceId, ...result };
-    service.storeDeviceControlResult(principal, deviceId, idempotencyKey, response);
-    service.recordDeviceControl(principal, deviceId, result.command, 'SUCCEEDED', req.requestId);
-    sendData(res, 200, response, req.requestId, { idempotentReplay: false });
-  }));
-  const deviceScreensaver = (enabled: boolean) => [device, principalMutationRateLimit, asyncHandler(async (req, res) => {
-    const principal = getDevicePrincipal(req);
-    service.assertInformationCarouselAccess(principal);
-    const target = service.getDeviceControlTarget(principal.deviceId);
-    const result: FreeKioskScreensaverResult = await freeKioskClient.setScreensaver(target.lastIp, enabled);
-    sendData(res, 200, result, req.requestId);
-  })] as RequestHandler[];
-  api.post('/device/information/screensaver/off', deviceScreensaver(false));
-  api.post('/device/information/screensaver/on', deviceScreensaver(true));
-
   api.get('/device/information/images', device, asyncHandler(async (req, res) => {
     sendList(res, service.listInformationImagesForDevice(getDevicePrincipal(req)), req.requestId);
   }));
@@ -437,6 +460,16 @@ export function createApp(service: HotelService, config: ServerConfig): Applicat
   }));
   api.get('/settings', admin, asyncHandler(async (req, res) => {
     sendList(res, service.listSettings(), req.requestId);
+  }));
+  api.get('/settings/location-search/availability', admin, asyncHandler(async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    sendData(res, 200, { available: geoapifyClient.isConfigured() }, req.requestId);
+  }));
+  api.get('/settings/location-search', [admin, citySearchRateLimit], asyncHandler(async (req, res) => {
+    const query = parseRequiredQuery(req.query['text'], 'text', 120);
+    const results = await geoapifyClient.searchCities(query);
+    res.set('Cache-Control', 'no-store');
+    sendData(res, 200, results, req.requestId);
   }));
   api.patch('/settings', adminMutation, asyncHandler(async (req, res) => {
     const idempotencyKey = requireMutationKey(req);
@@ -561,6 +594,21 @@ function requestContext(req: Request, res: Response, next: NextFunction): void {
   req.requestId = `http_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
   res.setHeader('X-Request-Id', req.requestId);
   next();
+}
+
+function reportWeatherUnavailable(
+  sink: (record: WeatherUnavailableLogRecord) => void,
+  record: WeatherUnavailableLogRecord
+): void {
+  try {
+    sink(record);
+  } catch {
+    // Weather is optional; diagnostic failures must not break the device endpoint.
+  }
+}
+
+function writeWeatherUnavailableLog(record: WeatherUnavailableLogRecord): void {
+  console.warn(JSON.stringify(record));
 }
 
 function requireAdmin(service: HotelService, allowPasswordChangeRequired = false): RequestHandler {
@@ -723,9 +771,16 @@ function getSessionExpiry(service: HotelService, principal: AdminPrincipal): str
 function parseBody<T>(schema: z.ZodType<T>, body: unknown): T {
   const result = schema.safeParse(body);
   if (!result.success) {
-    throw validationError('Request body failed validation.', result.error.flatten());
+    throw createBodyValidationError(result.error);
   }
   return result.data;
+}
+
+/** @internal Exposed so the request-validation log mapping can be unit tested. */
+export function createBodyValidationError(error: z.ZodError): AppError {
+  const appError = validationError('Request body failed validation.', error.flatten());
+  validationLogMetadataByError.set(appError, summarizeValidationIssues(error.issues));
+  return appError;
 }
 
 type ParsedInformationImageUpload = InformationImageUpload & { contentType?: string };
@@ -937,7 +992,7 @@ function optionalQuery(value: unknown, maxLength: number): string | undefined {
 
 function routeParam(value: unknown, name: string): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 128) {
-    throw validationError(`${name} is required.`);
+    throw validationError(name === 'requestId' ? REQUEST_ID_REQUIRED_MESSAGE : `${name} is required.`);
   }
   return value;
 }
@@ -1008,7 +1063,7 @@ function parseDateFilter(value: string, name: string, endExclusive: boolean): st
 function requireMutationKey(req: Request): string {
   const value = req.get('idempotency-key');
   if (value === undefined || value.length < 1 || value.length > 128) {
-    throw new AppError('VALIDATION_ERROR', 'Idempotency-Key must contain 1 to 128 characters.', 422);
+    throw new AppError('VALIDATION_ERROR', MUTATION_KEY_VALIDATION_MESSAGE, 422);
   }
   return value;
 }
@@ -1082,26 +1137,187 @@ function asyncHandler(handler: (req: Request, res: Response, next: NextFunction)
   };
 }
 
-const errorHandler: ErrorRequestHandler = (error: unknown, req, res, _next) => {
-  const requestId = req.requestId;
-  if (isAppError(error)) {
-    res.status(error.statusCode).json({ error: { code: error.code, message: error.message, details: error.details, requestId } });
-    return;
-  }
-  if (error instanceof z.ZodError) {
-    res.status(422).json({ error: { code: 'VALIDATION_ERROR', message: 'Request validation failed.', details: error.flatten(), requestId } });
-    return;
-  }
-  if (isPayloadTooLargeError(error)) {
-    res.status(413).json({ error: { code: 'VALIDATION_ERROR', message: 'Request body is too large.', requestId } });
-    return;
-  }
-  if (error instanceof SyntaxError) {
-    res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Request body contains invalid JSON.', requestId } });
-    return;
-  }
-  res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'An unexpected server error occurred.', requestId } });
+export interface HttpErrorLogRecord {
+  event: 'http.error';
+  requestId: string;
+  method: string;
+  route: string;
+  status: number;
+  code: string;
+  errorClass: 'AppError' | 'ZodError' | 'PayloadTooLargeError' | 'SyntaxError' | 'TypeError' | 'Error' | 'NonErrorThrown';
+  severity: 'warn' | 'error';
+  validation?: HttpValidationLogMetadata;
+}
+
+interface HttpValidationLogMetadata {
+  issueCount: number;
+  omittedIssueCount: number;
+  issues: Array<{
+    fieldPath: 'requestBody' | 'unlistedField' | 'expectedVersion' | 'responsibleName' | 'headers.idempotency-key' | 'routeParams.requestId';
+    code: string;
+    category: 'type' | 'minimum' | 'maximum' | 'unknown_fields' | 'custom' | 'invalid_value' | 'required' | 'constraint' | 'other';
+  }>;
+}
+
+const MUTATION_KEY_VALIDATION_MESSAGE = 'Idempotency-Key must contain 1 to 128 characters.';
+const REQUEST_ID_REQUIRED_MESSAGE = 'requestId is required.';
+const RESPONSIBLE_NAME_REQUIRED_MESSAGE = 'A responsible name is required when starting a request.';
+const RESPONSIBLE_NAME_LENGTH_MESSAGE = 'A responsible name must contain between 1 and 120 characters.';
+const MAX_LOGGED_VALIDATION_ISSUES = 12;
+const SAFE_VALIDATION_FIELD_PATHS = new Set(['expectedVersion', 'responsibleName']);
+const SAFE_ZOD_ISSUE_CATEGORIES: Readonly<Record<string, HttpValidationLogMetadata['issues'][number]['category']>> = {
+  invalid_type: 'type',
+  too_small: 'minimum',
+  too_big: 'maximum',
+  unrecognized_keys: 'unknown_fields',
+  custom: 'custom',
+  invalid_literal: 'invalid_value',
+  invalid_enum_value: 'invalid_value',
+  invalid_union: 'invalid_value',
+  invalid_union_discriminator: 'invalid_value',
+  invalid_string: 'invalid_value',
+  invalid_date: 'invalid_value',
+  not_multiple_of: 'invalid_value'
 };
+const validationLogMetadataByError = new WeakMap<AppError, HttpValidationLogMetadata>();
+
+type HttpErrorLogSink = (record: HttpErrorLogRecord) => void;
+
+const errorHandler = createHttpErrorHandler();
+
+export function createHttpErrorHandler(logError: HttpErrorLogSink = writeHttpErrorLog): ErrorRequestHandler {
+  return (error: unknown, req, res, _next) => {
+    const requestId = req.requestId;
+    const response = describeHttpError(error);
+    const record: HttpErrorLogRecord = {
+      event: 'http.error',
+      requestId,
+      method: req.method,
+      route: getRouteTemplate(req),
+      status: response.statusCode,
+      code: response.code,
+      errorClass: getSafeErrorClass(error),
+      severity: response.statusCode >= 500 ? 'error' : 'warn'
+    };
+    const validation = getValidationLogMetadata(error);
+    if (validation !== undefined) record.validation = validation;
+    try {
+      logError(record);
+    } catch {
+      // Diagnostics must not prevent the original HTTP error response.
+    }
+
+    if (isAppError(error)) {
+      res.status(error.statusCode).json({ error: { code: error.code, message: error.message, details: error.details, requestId } });
+      return;
+    }
+    if (error instanceof z.ZodError) {
+      res.status(422).json({ error: { code: 'VALIDATION_ERROR', message: 'Request validation failed.', details: error.flatten(), requestId } });
+      return;
+    }
+    if (isPayloadTooLargeError(error)) {
+      res.status(413).json({ error: { code: 'VALIDATION_ERROR', message: 'Request body is too large.', requestId } });
+      return;
+    }
+    if (error instanceof SyntaxError) {
+      res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Request body contains invalid JSON.', requestId } });
+      return;
+    }
+    res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'An unexpected server error occurred.', requestId } });
+  };
+}
+
+function describeHttpError(error: unknown): { statusCode: number; code: string } {
+  if (isAppError(error)) return { statusCode: error.statusCode, code: error.code };
+  if (error instanceof z.ZodError || error instanceof SyntaxError) return { statusCode: error instanceof SyntaxError ? 400 : 422, code: 'VALIDATION_ERROR' };
+  if (isPayloadTooLargeError(error)) return { statusCode: 413, code: 'VALIDATION_ERROR' };
+  return { statusCode: 500, code: 'INTERNAL_ERROR' };
+}
+
+function getValidationLogMetadata(error: unknown): HttpValidationLogMetadata | undefined {
+  if (error instanceof z.ZodError) return summarizeValidationIssues(error.issues);
+  if (isAppError(error)) {
+    return validationLogMetadataByError.get(error) ?? getKnownAppValidationMetadata(error);
+  }
+  return undefined;
+}
+
+function getKnownAppValidationMetadata(error: AppError): HttpValidationLogMetadata | undefined {
+  if (error.code !== 'VALIDATION_ERROR') return undefined;
+  switch (error.message) {
+    case MUTATION_KEY_VALIDATION_MESSAGE:
+      return createSingleValidationMetadata('headers.idempotency-key', 'length_1_to_128', 'constraint');
+    case REQUEST_ID_REQUIRED_MESSAGE:
+      return createSingleValidationMetadata('routeParams.requestId', 'required', 'required');
+    case RESPONSIBLE_NAME_REQUIRED_MESSAGE:
+      return createSingleValidationMetadata('responsibleName', 'required', 'required');
+    case RESPONSIBLE_NAME_LENGTH_MESSAGE:
+      return createSingleValidationMetadata('responsibleName', 'length_1_to_120', 'constraint');
+    default:
+      return undefined;
+  }
+}
+
+function createSingleValidationMetadata(
+  fieldPath: 'responsibleName' | 'headers.idempotency-key' | 'routeParams.requestId',
+  code: string,
+  category: 'required' | 'constraint'
+): HttpValidationLogMetadata {
+  return {
+    issueCount: 1,
+    omittedIssueCount: 0,
+    issues: [{ fieldPath, code, category }]
+  };
+}
+
+function summarizeValidationIssues(issues: readonly z.ZodIssue[]): HttpValidationLogMetadata {
+  const loggedIssues = issues.slice(0, MAX_LOGGED_VALIDATION_ISSUES).map((issue) => {
+    const category = Object.prototype.hasOwnProperty.call(SAFE_ZOD_ISSUE_CATEGORIES, issue.code)
+      ? SAFE_ZOD_ISSUE_CATEGORIES[issue.code] ?? 'other'
+      : 'other';
+    return {
+      fieldPath: getSafeValidationFieldPath(issue.path),
+      code: category === 'other' ? 'other' : issue.code,
+      category
+    };
+  });
+  return {
+    issueCount: issues.length,
+    omittedIssueCount: Math.max(0, issues.length - loggedIssues.length),
+    issues: loggedIssues
+  };
+}
+
+function getSafeValidationFieldPath(path: readonly PropertyKey[]): HttpValidationLogMetadata['issues'][number]['fieldPath'] {
+  if (path.length === 0) return 'requestBody';
+  const root = path[0];
+  if (typeof root === 'string' && SAFE_VALIDATION_FIELD_PATHS.has(root)) {
+    return root as 'expectedVersion' | 'responsibleName';
+  }
+  return 'unlistedField';
+}
+
+function getSafeErrorClass(error: unknown): HttpErrorLogRecord['errorClass'] {
+  if (isAppError(error)) return 'AppError';
+  if (error instanceof z.ZodError) return 'ZodError';
+  if (isPayloadTooLargeError(error)) return 'PayloadTooLargeError';
+  if (error instanceof SyntaxError) return 'SyntaxError';
+  if (error instanceof TypeError) return 'TypeError';
+  return error instanceof Error ? 'Error' : 'NonErrorThrown';
+}
+
+function getRouteTemplate(req: Request): string {
+  const route = req.route?.path;
+  if (typeof route === 'string') return route;
+  if (Array.isArray(route)) return route.join('|');
+  return 'unmatched';
+}
+
+function writeHttpErrorLog(record: HttpErrorLogRecord): void {
+  const line = JSON.stringify(record);
+  if (record.severity === 'error') console.error(line);
+  else console.warn(line);
+}
 
 function isPayloadTooLargeError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'type' in error && error.type === 'entity.too.large';

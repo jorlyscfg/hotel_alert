@@ -1,6 +1,7 @@
 import {
   areaCreateSchema,
   areaPatchSchema,
+  AMERICA_TIME_ZONES,
   DEFAULT_SETTINGS,
   isLegalRequestTransition,
   SETTING_KEYS,
@@ -10,8 +11,37 @@ import {
 } from '@hotel/shared';
 
 describe('shared domain contracts', () => {
+  it('bundles the complete static America timezone catalog and defaults to Cancun', () => {
+    expect(DEFAULT_SETTINGS.timeZone).toBe('America/Cancun');
+    expect(AMERICA_TIME_ZONES).toHaveLength(169);
+    expect(new Set(AMERICA_TIME_ZONES).size).toBe(AMERICA_TIME_ZONES.length);
+    expect([...AMERICA_TIME_ZONES].sort()).toEqual(AMERICA_TIME_ZONES);
+    expect(AMERICA_TIME_ZONES).toContain('America/Cancun');
+    expect(AMERICA_TIME_ZONES.every((timeZone) => timeZone.startsWith('America/'))).toBe(true);
+    for (const timeZone of AMERICA_TIME_ZONES) {
+      expect(() => new Intl.DateTimeFormat('en-US', { timeZone })).not.toThrow();
+    }
+  });
+
   it('defaults request history retention to one year', () => {
     expect(DEFAULT_SETTINGS['requests.historyRetentionDays']).toBe(365);
+  });
+
+  it('defaults Admin queue delay warnings and validates their minute bounds', () => {
+    const pendingKey = 'requests.pendingDelayWarningMinutes';
+    const inProgressKey = 'requests.inProgressDelayWarningMinutes';
+    const defaults = DEFAULT_SETTINGS as Record<string, unknown>;
+
+    expect(SETTING_KEYS).toEqual(expect.arrayContaining([pendingKey, inProgressKey]));
+    expect(defaults[pendingKey]).toBe(3);
+    expect(defaults[inProgressKey]).toBe(15);
+    expect(validateSettings({ [pendingKey]: 1, [inProgressKey]: 1440 }, DEFAULT_SETTINGS).ok).toBe(true);
+
+    for (const [key, value] of [[pendingKey, 0], [pendingKey, 1441], [inProgressKey, 0], [inProgressKey, 1441], [inProgressKey, 1.5]] as const) {
+      const result = validateSettings({ [key]: value }, DEFAULT_SETTINGS);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.errors.map((error) => error.key)).toContain(key);
+    }
   });
 
   it('validates optional English and Spanish catalog variants while rejecting unsupported locale keys', () => {
@@ -93,6 +123,41 @@ describe('shared domain contracts', () => {
     expect(validateSettings({ hotelName: 'Hotel Aurora' }, DEFAULT_SETTINGS)).toMatchObject({
       ok: false,
       errors: expect.arrayContaining([expect.objectContaining({ key: 'hotelNameEn' })])
+    });
+  });
+
+  it('validates a shared IANA time zone and a complete rounded weather location', () => {
+    expect(SETTING_KEYS).toEqual(expect.arrayContaining(['timeZone', 'weatherLocationName', 'weatherLatitude', 'weatherLongitude']));
+
+    const result = validateSettings({
+      timeZone: ' America/Cancun ',
+      weatherLocationName: '  Playa del Carmen  ',
+      weatherLatitude: 20.627_456,
+      weatherLongitude: -87.079_876
+    }, DEFAULT_SETTINGS);
+
+    expect(result).toEqual({
+      ok: true,
+      values: {
+        ...DEFAULT_SETTINGS,
+        timeZone: 'America/Cancun',
+        weatherLocationName: 'Playa del Carmen',
+        weatherLatitude: 20.6275,
+        weatherLongitude: -87.0799
+      }
+    });
+
+    expect(validateSettings({ timeZone: 'Not/A_Time_Zone' }, DEFAULT_SETTINGS)).toMatchObject({
+      ok: false,
+      errors: expect.arrayContaining([expect.objectContaining({ key: 'timeZone' })])
+    });
+    expect(validateSettings({ weatherLocationName: 'Cancún', weatherLatitude: 21 }, DEFAULT_SETTINGS)).toMatchObject({
+      ok: false,
+      errors: expect.arrayContaining([expect.objectContaining({ key: 'weatherLongitude' })])
+    });
+    expect(validateSettings({ weatherLocationName: 'Cancún', weatherLatitude: 91, weatherLongitude: -87 }, DEFAULT_SETTINGS)).toMatchObject({
+      ok: false,
+      errors: expect.arrayContaining([expect.objectContaining({ key: 'weatherLatitude' })])
     });
   });
 

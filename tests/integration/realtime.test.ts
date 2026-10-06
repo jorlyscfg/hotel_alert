@@ -128,6 +128,51 @@ describe('Socket.IO realtime transport', () => {
     expect(event.payload.request).toMatchObject({ id: created.id, roomId: room.id, serviceId: catalogService.id });
   });
 
+  it('publishes the responsible name with a started request without replacing the station actor', async () => {
+    const area = service.createArea({ code: 'responsible-housekeeping', displayName: 'Housekeeping' }, systemActor, 'responsible-area');
+    const room = service.createRoom({ code: 'responsible-101', displayName: 'Room 101' }, systemActor, 'responsible-room');
+    const catalogService = service.createService({ code: 'responsible-towels', displayName: 'Fresh towels', areaId: area.id }, systemActor, 'responsible-service');
+    const roomDevice = service.bootstrapDevice({ installationId: 'responsible-room-device', displayName: 'Room 101 tablet', assignmentMode: 'ROOM', roomId: room.id }, systemActor, 'responsible-room-device');
+    const areaDevice = service.bootstrapDevice({ installationId: 'responsible-area-device', displayName: 'Housekeeping tablet', assignmentMode: 'AREA', areaId: area.id }, systemActor, 'responsible-area-device');
+    const areaPrincipal = service.authenticateDeviceToken(areaDevice.deviceToken).principal;
+    const roomPrincipal = service.authenticateDeviceToken(roomDevice.deviceToken).principal;
+    const created = service.createRequest(roomPrincipal, catalogService.id, 'responsible-request', 'responsible-request').data;
+    const cursor = service.getReplayPlan(undefined, areaDevice.device.deviceConfigVersion, areaPrincipal).currentEventSequence;
+
+    await listen(httpServer);
+    const address = httpServer.address();
+    if (address === null || typeof address === 'string') throw new Error('Realtime test server did not expose a TCP address.');
+    socket = connectSocket(`http://127.0.0.1:${address.port}/realtime`, {
+      transports: ['websocket'],
+      timeout: 2000,
+      auth: {
+        deviceId: areaDevice.device.id,
+        deviceToken: areaDevice.deviceToken,
+        clientInstanceId: 'responsible-area-client',
+        lastSeenEventSequence: cursor,
+        deviceConfigVersion: areaDevice.device.deviceConfigVersion,
+        clientVersion: '0.1.0'
+      }
+    });
+    await onceEvent<{ sync: string }>(socket, 'connection.ready');
+
+    const updatedEvent = onceEvent<{
+      payload: {
+        request: { responsibleName: string | null };
+        transition: { responsibleName?: string; actorType: string; actorId: string };
+      };
+    }>(socket, 'request.updated');
+    service.transitionRequest(areaPrincipal, created.id, 'IN_PROGRESS', created.version, 'responsible-realtime-start', 'responsible-realtime-start', '  Ana López  ');
+    realtime.publishPendingEvents();
+
+    await expect(updatedEvent).resolves.toMatchObject({
+      payload: {
+        request: { responsibleName: 'Ana López' },
+        transition: { responsibleName: 'Ana López', actorType: 'DEVICE', actorId: areaDevice.device.id }
+      }
+    });
+  });
+
   it('limits device heartbeats to six events per minute across sockets for one device', async () => {
     const room = service.createRoom({ code: '101', displayName: 'Room 101' }, systemActor, 'setup-room');
     const bootstrap = service.bootstrapDevice({

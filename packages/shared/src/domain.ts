@@ -1,3 +1,175 @@
+/** Bundled IANA America/* identifiers for offline timezone selection. */
+export const AMERICA_TIME_ZONES = [
+  'America/Adak',
+  'America/Anchorage',
+  'America/Anguilla',
+  'America/Antigua',
+  'America/Araguaina',
+  'America/Argentina/Buenos_Aires',
+  'America/Argentina/Catamarca',
+  'America/Argentina/ComodRivadavia',
+  'America/Argentina/Cordoba',
+  'America/Argentina/Jujuy',
+  'America/Argentina/La_Rioja',
+  'America/Argentina/Mendoza',
+  'America/Argentina/Rio_Gallegos',
+  'America/Argentina/Salta',
+  'America/Argentina/San_Juan',
+  'America/Argentina/San_Luis',
+  'America/Argentina/Tucuman',
+  'America/Argentina/Ushuaia',
+  'America/Aruba',
+  'America/Asuncion',
+  'America/Atikokan',
+  'America/Atka',
+  'America/Bahia',
+  'America/Bahia_Banderas',
+  'America/Barbados',
+  'America/Belem',
+  'America/Belize',
+  'America/Blanc-Sablon',
+  'America/Boa_Vista',
+  'America/Bogota',
+  'America/Boise',
+  'America/Buenos_Aires',
+  'America/Cambridge_Bay',
+  'America/Campo_Grande',
+  'America/Cancun',
+  'America/Caracas',
+  'America/Catamarca',
+  'America/Cayenne',
+  'America/Cayman',
+  'America/Chicago',
+  'America/Chihuahua',
+  'America/Ciudad_Juarez',
+  'America/Coral_Harbour',
+  'America/Cordoba',
+  'America/Costa_Rica',
+  'America/Coyhaique',
+  'America/Creston',
+  'America/Cuiaba',
+  'America/Curacao',
+  'America/Danmarkshavn',
+  'America/Dawson',
+  'America/Dawson_Creek',
+  'America/Denver',
+  'America/Detroit',
+  'America/Dominica',
+  'America/Edmonton',
+  'America/Eirunepe',
+  'America/El_Salvador',
+  'America/Ensenada',
+  'America/Fort_Nelson',
+  'America/Fort_Wayne',
+  'America/Fortaleza',
+  'America/Glace_Bay',
+  'America/Godthab',
+  'America/Goose_Bay',
+  'America/Grand_Turk',
+  'America/Grenada',
+  'America/Guadeloupe',
+  'America/Guatemala',
+  'America/Guayaquil',
+  'America/Guyana',
+  'America/Halifax',
+  'America/Havana',
+  'America/Hermosillo',
+  'America/Indiana/Indianapolis',
+  'America/Indiana/Knox',
+  'America/Indiana/Marengo',
+  'America/Indiana/Petersburg',
+  'America/Indiana/Tell_City',
+  'America/Indiana/Vevay',
+  'America/Indiana/Vincennes',
+  'America/Indiana/Winamac',
+  'America/Indianapolis',
+  'America/Inuvik',
+  'America/Iqaluit',
+  'America/Jamaica',
+  'America/Jujuy',
+  'America/Juneau',
+  'America/Kentucky/Louisville',
+  'America/Kentucky/Monticello',
+  'America/Knox_IN',
+  'America/Kralendijk',
+  'America/La_Paz',
+  'America/Lima',
+  'America/Los_Angeles',
+  'America/Louisville',
+  'America/Lower_Princes',
+  'America/Maceio',
+  'America/Managua',
+  'America/Manaus',
+  'America/Marigot',
+  'America/Martinique',
+  'America/Matamoros',
+  'America/Mazatlan',
+  'America/Mendoza',
+  'America/Menominee',
+  'America/Merida',
+  'America/Metlakatla',
+  'America/Mexico_City',
+  'America/Miquelon',
+  'America/Moncton',
+  'America/Monterrey',
+  'America/Montevideo',
+  'America/Montreal',
+  'America/Montserrat',
+  'America/Nassau',
+  'America/New_York',
+  'America/Nipigon',
+  'America/Nome',
+  'America/Noronha',
+  'America/North_Dakota/Beulah',
+  'America/North_Dakota/Center',
+  'America/North_Dakota/New_Salem',
+  'America/Nuuk',
+  'America/Ojinaga',
+  'America/Panama',
+  'America/Pangnirtung',
+  'America/Paramaribo',
+  'America/Phoenix',
+  'America/Port-au-Prince',
+  'America/Port_of_Spain',
+  'America/Porto_Acre',
+  'America/Porto_Velho',
+  'America/Puerto_Rico',
+  'America/Punta_Arenas',
+  'America/Rainy_River',
+  'America/Rankin_Inlet',
+  'America/Recife',
+  'America/Regina',
+  'America/Resolute',
+  'America/Rio_Branco',
+  'America/Rosario',
+  'America/Santa_Isabel',
+  'America/Santarem',
+  'America/Santiago',
+  'America/Santo_Domingo',
+  'America/Sao_Paulo',
+  'America/Scoresbysund',
+  'America/Shiprock',
+  'America/Sitka',
+  'America/St_Barthelemy',
+  'America/St_Johns',
+  'America/St_Kitts',
+  'America/St_Lucia',
+  'America/St_Thomas',
+  'America/St_Vincent',
+  'America/Swift_Current',
+  'America/Tegucigalpa',
+  'America/Thule',
+  'America/Thunder_Bay',
+  'America/Tijuana',
+  'America/Toronto',
+  'America/Tortola',
+  'America/Vancouver',
+  'America/Virgin',
+  'America/Whitehorse',
+  'America/Winnipeg',
+  'America/Yakutat',
+  'America/Yellowknife',
+] as const;
 export const APP_MODES = ['ROOM', 'AREA', 'ADMIN'] as const;
 export type AppMode = (typeof APP_MODES)[number];
 
@@ -43,6 +215,8 @@ export interface SettingValues {
   'realtime.replayMaxEvents': number;
   'requests.pageSizeDefault': number;
   'requests.historyRetentionDays': number;
+  'requests.pendingDelayWarningMinutes': number;
+  'requests.inProgressDelayWarningMinutes': number;
   'idempotency.retentionHours': number;
   'client.offlineQueueTtlHours': number;
   'audit.retentionDays': number;
@@ -52,6 +226,10 @@ export interface SettingValues {
   hotelLogo: string | null;
   roomBackground: RoomBackgroundValue;
   clockFormat: '12h' | '24h';
+  timeZone: string;
+  weatherLocationName: string;
+  weatherLatitude: number | null;
+  weatherLongitude: number | null;
   'information.idleTimeoutSeconds': number;
   'information.slideIntervalSeconds': number;
 }
@@ -76,6 +254,8 @@ export const DEFAULT_SETTINGS: SettingValues = {
   'realtime.replayMaxEvents': 100000,
   'requests.pageSizeDefault': 50,
   'requests.historyRetentionDays': 365,
+  'requests.pendingDelayWarningMinutes': 3,
+  'requests.inProgressDelayWarningMinutes': 15,
   'idempotency.retentionHours': 72,
   'client.offlineQueueTtlHours': 48,
   'audit.retentionDays': 180,
@@ -84,6 +264,10 @@ export const DEFAULT_SETTINGS: SettingValues = {
   hotelLogo: null,
   roomBackground: null,
   clockFormat: '12h',
+  timeZone: 'America/Cancun',
+  weatherLocationName: '',
+  weatherLatitude: null,
+  weatherLongitude: null,
   'information.idleTimeoutSeconds': 5,
   'information.slideIntervalSeconds': 5
 };
@@ -93,7 +277,7 @@ export const MAX_HOTEL_LOGO_LENGTH = 60 * 1024;
 export const MAX_ROOM_BACKGROUND_LENGTH = 120 * 1024;
 const LOCAL_IMAGE_PATTERN = /^data:image\/(?:png|jpeg|webp|svg\+xml);base64,[A-Za-z0-9+/]+={0,2}$/;
 
-const NUMERIC_SETTING_BOUNDS: Readonly<Record<Exclude<SettingKey, 'hotelName' | 'hotelNameEn' | 'hotelLogo' | 'roomBackground' | 'clockFormat'>, readonly [number, number]>> = {
+const NUMERIC_SETTING_BOUNDS: Readonly<Record<Exclude<SettingKey, 'hotelName' | 'hotelNameEn' | 'hotelLogo' | 'roomBackground' | 'clockFormat' | 'timeZone' | 'weatherLocationName' | 'weatherLatitude' | 'weatherLongitude'>, readonly [number, number]>> = {
   'heartbeat.intervalMs': [5000, 60000],
   'heartbeat.staleAfterMs': [15000, 300000],
   'heartbeat.offlineAfterMs': [15000, 3600000],
@@ -102,6 +286,8 @@ const NUMERIC_SETTING_BOUNDS: Readonly<Record<Exclude<SettingKey, 'hotelName' | 
   'realtime.replayMaxEvents': [100000, 10000000],
   'requests.pageSizeDefault': [10, 100],
   'requests.historyRetentionDays': [7, 3650],
+  'requests.pendingDelayWarningMinutes': [1, 1440],
+  'requests.inProgressDelayWarningMinutes': [1, 1440],
   'idempotency.retentionHours': [24, 720],
   'client.offlineQueueTtlHours': [1, 719],
   'audit.retentionDays': [30, 3650],
@@ -135,6 +321,8 @@ export type SettingValidationResult = SettingValidationSuccess | SettingValidati
 export function isValidSettingValue(key: SettingKey, value: unknown): value is SettingValue {
   const parsed = parseSettingValue(key, value);
   if (parsed === undefined) return false;
+  if (key === 'weatherLatitude') return parsed === null || (typeof parsed === 'number' && parsed >= -90 && parsed <= 90);
+  if (key === 'weatherLongitude') return parsed === null || (typeof parsed === 'number' && parsed >= -180 && parsed <= 180);
   return !isNumericSettingKey(key) || isWithinBounds(key, parsed);
 }
 
@@ -160,6 +348,24 @@ export function validateSettings(changes: Record<string, unknown>, current: Sett
     const [minimum, maximum] = NUMERIC_SETTING_BOUNDS[key];
     if (value < minimum || value > maximum) {
       errors.push({ key, message: `Value must be between ${minimum} and ${maximum}.` });
+    }
+  }
+
+  if (next.weatherLatitude !== null && (next.weatherLatitude < -90 || next.weatherLatitude > 90)) {
+    errors.push({ key: 'weatherLatitude', message: 'Latitude must be between -90 and 90.' });
+  }
+  if (next.weatherLongitude !== null && (next.weatherLongitude < -180 || next.weatherLongitude > 180)) {
+    errors.push({ key: 'weatherLongitude', message: 'Longitude must be between -180 and 180.' });
+  }
+  if (next.weatherLocationName.trim().length > 0 || next.weatherLatitude !== null || next.weatherLongitude !== null) {
+    if (next.weatherLocationName.trim().length === 0) {
+      errors.push({ key: 'weatherLocationName', message: 'Provide a location name with the coordinates.' });
+    }
+    if (next.weatherLatitude === null) {
+      errors.push({ key: 'weatherLatitude', message: 'Provide latitude and longitude together.' });
+    }
+    if (next.weatherLongitude === null) {
+      errors.push({ key: 'weatherLongitude', message: 'Provide latitude and longitude together.' });
     }
   }
 
@@ -199,7 +405,32 @@ function parseSettingValue(key: SettingKey, value: unknown): SettingValue | unde
   if (key === 'roomBackground') {
     return isRoomBackgroundValue(value) ? value : undefined;
   }
+  if (key === 'timeZone') {
+    if (typeof value !== 'string') return undefined;
+    const normalized = value.trim();
+    return normalized.length > 0 && normalized.length <= 64 && isValidIanaTimeZone(normalized) ? normalized : undefined;
+  }
+  if (key === 'weatherLocationName') {
+    if (typeof value !== 'string') return undefined;
+    const normalized = value.trim();
+    return normalized.length <= 120 ? normalized : undefined;
+  }
+  if (key === 'weatherLatitude' || key === 'weatherLongitude') {
+    if (value === null) return null;
+    if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+    const rounded = Math.round(value * 10_000) / 10_000;
+    return Object.is(rounded, -0) ? 0 : rounded;
+  }
   return value === '12h' || value === '24h' ? value : undefined;
+}
+
+function isValidIanaTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function isRoomBackgroundValue(value: unknown): value is RoomBackgroundValue {
@@ -236,5 +467,9 @@ function settingValueErrorMessage(key: SettingKey): string {
   if (key === 'hotelNameEn') return 'English hotel name must be a non-empty string of at most 120 characters.';
   if (key === 'hotelLogo') return `Hotel logo must be a local base64 image under ${MAX_HOTEL_LOGO_LENGTH / 1024} KB or null.`;
   if (key === 'roomBackground') return `Room background must be a legacy local base64 image under ${MAX_HOTEL_LOGO_LENGTH / 1024} KB, two local base64 variants under ${MAX_ROOM_BACKGROUND_LENGTH / 1024} KB total, or null.`;
+  if (key === 'timeZone') return 'Time zone must be a valid IANA time-zone identifier, such as America/Cancun.';
+  if (key === 'weatherLocationName') return 'Location name must be at most 120 characters.';
+  if (key === 'weatherLatitude') return 'Latitude must be a finite number between -90 and 90.';
+  if (key === 'weatherLongitude') return 'Longitude must be a finite number between -180 and 180.';
   return 'Clock format must be 12h or 24h.';
 }

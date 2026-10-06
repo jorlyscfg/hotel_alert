@@ -27,7 +27,7 @@ export default defineConfig({
       SESSION_SECRET: 'e2e-session-secret',
       TOKEN_PEPPER: 'e2e-token-pepper',
       SEED_DEMO: 'true',
-      SEED_ADMIN_USERNAME: 'admin',
+      SEED_ADMIN_USERNAME: 'e2e-admin',
       SEED_ADMIN_PASSWORD: 'correct-horse-battery-staple',
       LOGIN_RATE_LIMIT_MAX_REQUESTS: '100',
       SEED_CREDENTIALS_PATH: path.join(e2eDataDirectory, 'seed-credentials.json')

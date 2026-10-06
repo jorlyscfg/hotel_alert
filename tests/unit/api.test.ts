@@ -257,6 +257,30 @@ describe('web API error helpers', () => {
     expect(getSafeRequestId('<script>')).toBeNull();
   });
 
+  it('localizes a short safe native server reference without exposing native or server details', () => {
+    const error = Object.assign(new Error('INTERNAL_ERROR'), {
+      serverRequestId: 'server-request-12345678',
+      commandRequestId: 'native-command-1',
+      serverMessage: 'private stack and responsible name'
+    });
+
+    expect(getSafeRequestReference(error)).toBe('12345678');
+    expect(errorMessage(error, 'No se pudo actualizar la solicitud.', 'es'))
+      .toBe('No se pudo actualizar la solicitud. ID de referencia: 12345678.');
+    expect(errorMessage(error, 'No se pudo actualizar la solicitud.', 'es')).not.toContain('native-command-1');
+    expect(errorMessage(error, 'No se pudo actualizar la solicitud.', 'es')).not.toContain('private stack');
+  });
+
+  it('does not append an unsafe native server reference', () => {
+    const error = Object.assign(new Error('INTERNAL_ERROR'), {
+      serverRequestId: 'server request id with spaces'
+    });
+
+    expect(getSafeRequestReference(error)).toBeNull();
+    expect(errorMessage(error, 'The request could not be updated.', 'en'))
+      .toBe('The request could not be updated.');
+  });
+
   it('keeps startup failures generic while adding only an opaque reference', () => {
     const error = new ApiError(503, {
       error: {

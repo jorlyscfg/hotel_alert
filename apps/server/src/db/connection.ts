@@ -16,6 +16,10 @@ import { applyLocalizedCatalogTextMigration } from './migrations/011_localized_c
 import { applyInformationImageLocalizationMigration } from './migrations/012_information_image_localization';
 import { applyRoomDoNotDisturbActivationTimestampMigration } from './migrations/013_room_do_not_disturb_activation_timestamp';
 import { applyRequestHistoryRetentionMigration } from './migrations/014_request_history_retention';
+import { applyAdminQueueDelayThresholdsMigration } from './migrations/015_admin_queue_delay_thresholds';
+import { applyRequestResponsibleNameMigration } from './migrations/016_request_responsible_name';
+import { applyTimeZoneLocationSettingsMigration } from './migrations/017_timezone_location_settings';
+import { applyTimeZoneCancunDefaultMigration } from './migrations/018_timezone_cancun_default';
 import { applyAdminFirstLoginPasswordMigration } from './migrations/019_admin_first_login_password';
 
 export type SqliteDatabase = Database.Database;
@@ -100,6 +104,26 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
     version: 14,
     name: 'request-history-retention-one-year',
     apply: applyRequestHistoryRetentionMigration
+  },
+  {
+    version: 15,
+    name: 'admin-queue-delay-thresholds',
+    apply: applyAdminQueueDelayThresholdsMigration
+  },
+  {
+    version: 16,
+    name: 'request-responsible-name',
+    apply: applyRequestResponsibleNameMigration
+  },
+  {
+    version: 17,
+    name: 'timezone-location-settings',
+    apply: applyTimeZoneLocationSettingsMigration
+  },
+  {
+    version: 18,
+    name: 'timezone-cancun-default',
+    apply: applyTimeZoneCancunDefaultMigration
   },
   {
     version: 19,
